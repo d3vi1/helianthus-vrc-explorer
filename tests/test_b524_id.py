@@ -18,8 +18,22 @@ def test_parse_b524_id_local_register_examples() -> None:
         instance=0x00,
         register=0x0016,
     )
+    assert parse_b524_id("b524,020003001600") == B524RegisterSelector(
+        opcode=0x02,
+        optype=0x00,
+        group=0x03,
+        instance=0x00,
+        register=0x0016,
+    )
 
     assert parse_b524_id("020002000f00") == B524RegisterSelector(
+        opcode=0x02,
+        optype=0x00,
+        group=0x02,
+        instance=0x00,
+        register=0x000F,
+    )
+    assert parse_b524_id("B524,020002000f00") == B524RegisterSelector(
         opcode=0x02,
         optype=0x00,
         group=0x02,
@@ -36,8 +50,22 @@ def test_parse_b524_id_remote_register_examples() -> None:
         instance=0x01,
         register=0x0007,
     )
+    assert parse_b524_id("b524,060009010700") == B524RegisterSelector(
+        opcode=0x06,
+        optype=0x00,
+        group=0x09,
+        instance=0x01,
+        register=0x0007,
+    )
 
     assert parse_b524_id("06000a010f00") == B524RegisterSelector(
+        opcode=0x06,
+        optype=0x00,
+        group=0x0A,
+        instance=0x01,
+        register=0x000F,
+    )
+    assert parse_b524_id("  b524,06000a010f00  ") == B524RegisterSelector(
         opcode=0x06,
         optype=0x00,
         group=0x0A,
@@ -52,8 +80,18 @@ def test_parse_b524_id_timer_examples() -> None:
         selector=(0x00, 0x00, 0x01),
         weekday=0x00,
     )
+    assert parse_b524_id("b524,0300000100") == B524TimerSelector(
+        opcode=0x03,
+        selector=(0x00, 0x00, 0x01),
+        weekday=0x00,
+    )
 
     assert parse_b524_id("0400000106") == B524TimerSelector(
+        opcode=0x04,
+        selector=(0x00, 0x00, 0x01),
+        weekday=0x06,
+    )
+    assert parse_b524_id("B524,0x0400000106") == B524TimerSelector(
         opcode=0x04,
         selector=(0x00, 0x00, 0x01),
         weekday=0x06,

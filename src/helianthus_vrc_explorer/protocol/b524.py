@@ -101,13 +101,13 @@ def parse_b524_id(id_hex: str) -> B524IdSelector:
     - 0x00: directory probe selector (3 bytes, not expected in CSV)
 
     Examples (from `AGENTS.md`):
-    - ``020003001600`` -> opcode=0x02, optype=0x00, group=0x03, instance=0x00, register=0x0016
-    - ``060009010700`` -> opcode=0x06, optype=0x00, group=0x09, instance=0x01, register=0x0007
-    - ``0300000100``   -> opcode=0x03, selector=(0x00,0x00,0x01), weekday=0x00
+    - ``b524,020003001600`` -> opcode=0x02, optype=0x00, group=0x03, instance=0x00, register=0x0016
+    - ``b524,060009010700`` -> opcode=0x06, optype=0x00, group=0x09, instance=0x01, register=0x0007
+    - ``b524,0300000100``   -> opcode=0x03, selector=(0x00,0x00,0x01), weekday=0x00
 
     Args:
         id_hex: Hex-encoded payload bytes (e.g. ``"020003001600"``). A leading
-            ``0x`` prefix is accepted.
+            ``b524,`` (as found in ebusd CSV exports) and/or ``0x`` prefix is accepted.
 
     Returns:
         A typed selector dataclass corresponding to the opcode family.
@@ -119,6 +119,8 @@ def parse_b524_id(id_hex: str) -> B524IdSelector:
     """
 
     normalized = id_hex.strip()
+    if normalized.lower().startswith("b524,"):
+        normalized = normalized[5:].strip()
     if normalized.startswith(("0x", "0X")):
         normalized = normalized[2:]
 
