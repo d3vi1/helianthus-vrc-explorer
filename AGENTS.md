@@ -788,14 +788,14 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 ### Code Quality Standards
 
-**Python version:** 3.11+
+**Python version:** 3.12+
 
 **Dependencies (pyproject.toml):**
 
     [project]
     name = "helianthus-vrc-explorer"
     version = "0.1.0"
-    requires-python = ">=3.11"
+    requires-python = ">=3.12"
     dependencies = [
         "typer>=0.9.0",
         "rich>=13.0.0",
