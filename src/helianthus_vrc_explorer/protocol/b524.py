@@ -186,3 +186,62 @@ def parse_b524_id(id_hex: str) -> B524IdSelector:
 
         case _:
             raise B524UnknownOpcodeError(f"Unknown B524 opcode: 0x{opcode:02X}")
+
+
+def _validate_u8(field_name: str, value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{field_name} must be an int, got {type(value).__name__}")
+    if not (0x00 <= value <= 0xFF):
+        raise ValueError(f"{field_name} must be in range 0..255, got {value}")
+
+
+def _validate_u16(field_name: str, value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{field_name} must be an int, got {type(value).__name__}")
+    if not (0x0000 <= value <= 0xFFFF):
+        raise ValueError(f"{field_name} must be in range 0..65535, got {value}")
+
+
+def build_directory_probe_payload(group: int) -> bytes:
+    """Build a raw B524 directory probe payload.
+
+    Payload structure:
+
+        <opcode> <GG> 0x00
+
+    Where:
+    - opcode: 0x00
+    - GG: group
+    """
+
+    _validate_u8("group", group)
+    return bytes((0x00, group, 0x00))
+
+
+def build_register_read_payload(
+    opcode: RegisterOpcode, group: int, instance: int, register: int
+) -> bytes:
+    """Build a raw B524 register read payload.
+
+    Payload structure (`<RR>` is a little-endian u16):
+
+        <opcode> <optype> <GG> <II> <RR_LO> <RR_HI>
+
+    Where:
+    - opcode: 0x02 (local) or 0x06 (remote)
+    - optype: 0x00 (read)
+    - GG: group
+    - II: instance
+    - RR: register id
+    """
+
+    if opcode not in (0x02, 0x06):
+        raise ValueError(f"opcode must be 0x02 or 0x06, got 0x{opcode:02X}")
+
+    _validate_u8("group", group)
+    _validate_u8("instance", instance)
+    _validate_u16("register", register)
+
+    return bytes((opcode, 0x00, group, instance)) + register.to_bytes(
+        2, byteorder="little", signed=False
+    )
