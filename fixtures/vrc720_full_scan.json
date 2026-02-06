@@ -1,0 +1,22 @@
+{
+  "meta": {
+    "scan_timestamp": "1970-01-01T00:00:00Z",
+    "scan_duration_seconds": 0.0,
+    "destination_address": "0x15",
+    "source_address": "0x31",
+    "ebusd_host": "127.0.0.1",
+    "ebusd_port": 8888,
+    "device_info": {
+      "manufacturer": "Vaillant",
+      "ebus_model": "BASV2",
+      "marketing_name": "VRC 720f/2",
+      "model_number": "0020262148",
+      "serial_number": "REDACTED",
+      "software_version": "0507",
+      "hardware_version": "1704"
+    },
+    "schema_sources": [],
+    "incomplete": false
+  },
+  "groups": {}
+}

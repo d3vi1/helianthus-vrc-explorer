@@ -1,0 +1,1258 @@
+# HELIANTHUS VRC EXPLORER - MASTER PROMPT
+
+## PROJECT OVERVIEW
+
+You are building `helianthus-vrc-explorer`, a professional CLI tool for scanning Vaillant VRC heating regulators via eBUS protocol (command B5 24 / B524 GetExtendedRegisters). The tool produces:
+
+1. **Live terminal UI** with rich formatting (colors, progress bars, status lines)
+2. **Scrollable discovery log** showing groups, instances, and register counts
+3. **JSON artifact** with complete scan results and metadata
+4. **High-quality codebase** ready for production use and community contributions
+
+---
+
+## OPERATING MODEL (ORCHESTRATOR + SUB-AGENTS)
+
+This repository is operated by an orchestrator that delegates every issue to a sub-agent to protect context and keep work resumable.
+
+### Core rules
+
+- One issue at a time. All non-bootstrap work happens on a branch via a PR.
+- Every issue is executed by a sub-agent (coder). Testing is executed by a separate sub-agent (tester).
+- Max 3 concurrent agents: coder, tester, consultant. Close agents as soon as an issue is complete or an agent is idle.
+- Every new step is a new agent. Do not keep agents around "just in case".
+- End-of-milestone checkpoint: review all open issues for relevance and update scope/wording before starting the next milestone.
+
+### Merge gate (mandatory)
+
+- Wait for CI to be green and for the GitHub review bot feedback on the PR.
+- If the bot requests changes, implement fixes and wait for feedback again.
+- Squash-merge only when everything is green and the maintainer explicitly says OK.
+
+### State persistence (mandatory)
+
+When a sub-agent starts working on an issue or PR, it must immediately add or update an **Agent State** section in the GitHub Issue or PR description (or a comment if the description is already busy).
+
+All state must live in:
+- The GitHub Issue / PR description and comments
+- The current chat conversation
+
+Do not rely on agent memory or hidden local context.
+
+Agent State template:
+
+```text
+Status:
+Branch:
+Last verified (lint/tests):
+How to reproduce:
+Next steps:
+Notes (no secrets, no private infra):
+```
+
+### Privacy / audit constraints (mandatory)
+
+- Do not commit or post private identifiers (IPs other than `127.0.0.1`, serial numbers, hostnames, internal repo names).
+- Local-only secrets and infrastructure details live in `AGENTS-local.md` (gitignored). This file must never be committed.
+
+### External references
+
+- Example data representations (myVaillant): https://github.com/signalkraft/myPyllant/tree/main/src/myPyllant/tests/data
+- Naming should follow myVaillant where applicable. Do not merge logically split registers (for example date + time).
+
+---
+
+## PRODUCT REQUIREMENTS
+
+### Core Functionality
+
+**Scan VRC regulators using B524 protocol:**
+- Auto-discover register groups (GG) via directory probe
+- Enumerate instances (II) for instanced groups
+- Read all registers (RR) within defined ranges
+- Parse values into typed JSON (float32, u16, u8, strings, dates, times)
+- Map registers to semantic names using CSV-based schema
+- Resolve enum values to human-readable strings
+- Handle errors gracefully (timeouts, missing registers, partial scans)
+
+### User Experience
+
+**Terminal output must be polished and informative:**
+- Header with device info (model, serial, firmware, hardware version)
+- Live status line showing current operation (dim gray text)
+- Progress bars for each scan phase (discovery, instances, registers)
+- Final summary with group statistics (slots/present/active counts)
+- JSON file path printed at the end
+- Support for non-TTY environments (CI/CD pipelines)
+
+### Data Management
+
+**All configuration data is CSV-based (not embedded in code):**
+- `data/field_mappings.csv` - Register names, types, enums (auto-downloaded from GitHub)
+- `data/models.csv` - VRC model lookup table (manually curated)
+- `data/enums.csv` - Enum value mappings (auto-extracted from field_mappings.csv)
+
+---
+
+## TECHNICAL REQUIREMENTS
+
+### Architecture
+
+**Project structure:**
+
+    helianthus-vrc-explorer/
+    ├── src/
+    │   └── helianthus_vrc_explorer/
+    │       ├── __init__.py
+    │       ├── __main__.py              # Entry point: python -m helianthus_vrc_explorer
+    │       ├── cli.py                   # Typer CLI with all commands
+    │       ├── transport/
+    │       │   ├── __init__.py
+    │       │   ├── base.py              # TransportInterface (ABC)
+    │       │   ├── ebusd_tcp.py         # EbusdTcpTransport
+    │       │   └── dummy.py             # DummyTransport (for --dry-run)
+    │       ├── protocol/
+    │       │   ├── __init__.py
+    │       │   ├── b524.py              # B524 frame builder/parser
+    │       │   └── parser.py            # Value parser (bytes -> typed values)
+    │       ├── schema/
+    │       │   ├── __init__.py
+    │       │   ├── loader.py            # CSV schema loader
+    │       │   ├── mapper.py            # Register -> semantic name mapper
+    │       │   └── models.py            # Dataclasses for schema
+    │       ├── scanner/
+    │       │   ├── __init__.py
+    │       │   ├── director.py          # Group discovery orchestrator
+    │       │   └── register.py          # Register scanner
+    │       └── ui/
+    │           ├── __init__.py
+    │           ├── live.py              # Rich live display
+    │           └── summary.py           # Final output formatter
+    ├── data/
+    │   ├── field_mappings.csv           # Auto-downloaded from GitHub
+    │   ├── models.csv                   # VRC model database
+    │   └── enums.csv                    # Generated from field_mappings
+    ├── fixtures/
+    │   └── vrc720_full_scan.json        # Test data for --dry-run
+    ├── tests/
+    │   ├── test_transport.py
+    │   ├── test_protocol.py
+    │   ├── test_schema.py
+    │   └── test_scanner.py
+    ├── pyproject.toml                   # Poetry/setuptools config
+    ├── README.md
+    ├── AGENTS.md                        # Agent orchestration guide
+    ├── AGENTS-local.md                  # Local-only (gitignored)
+    ├── LICENSE                          # GPLv3
+    └── .github/
+        └── workflows/
+            └── ci.yml                   # Linting + tests
+
+### Transport Layer
+
+**EbusdTcpTransport implementation:**
+
+The ebusd daemon exposes a TCP interface (typically `127.0.0.1:8888`). Responses may be multiline: treat the first hex line as the payload and ignore trailing `ERR` lines.
+
+**Special types (from CSV schema):**
+- `HDA:3` = date (u24le encoded as DDMMYY)
+- `HTI` = time (u24le encoded as HH:MM:SS)
+- `EXP` = float32le (exponential/temperature)
+- `STR:*` = cstring
+- `UCH` = u8 with enum
+- `UIN` = u16le with enum
+
+**CSV encoding (id column):**
+
+    b524,020002000f00  ->  0x02 0x00 0x02 0x00 0x0F 0x00
+                          ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^^^^^^^
+                          opcode optype  GG    II      RR
+
+Examples from VRC720 CSV:
+- `b524,020003001600` -> GG=0x03, II=0x00, RR=0x0016 (zone name)
+- `b524,020002000f00` -> GG=0x02, II=0x00, RR=0x000F (heating curve)
+
+---
+
+**Family 0x06: Remote Register Space (Read/Write)**
+
+**Status:** CONFIRMED (VRC720 CSV patterns)
+
+**Request payload (READ):**
+
+    Length: 0x06
+    Bytes:  0x06 0x00 <GG> <II> <RR_LO> <RR_HI>
+
+    Semantics:
+    - byte 0: opcode 0x06 (remote register space)
+    - byte 1: optype 0x00 (read)
+    - byte 2-5: same as Family 0x02 (GG, II, RR)
+
+**Request payload (WRITE):**
+
+    Length: 0x06 + value_length
+    Bytes:  0x06 0x01 <GG> <II> <RR_LO> <RR_HI> <value_bytes...>
+
+**Response format:** Same as Family 0x02 (4-byte echo + value tail)
+
+**CSV encoding:**
+
+    b524,06000a010f00  ->  0x06 0x00 0x0A 0x01 0x0F 0x00
+                          ^^^^^ ^^^^^ ^^^^^ ^^^^^ ^^^^^^^^^^^
+                          opcode optype  GG    II      RR
+
+Examples from VRC720 CSV:
+- `b524,060009010700` -> GG=0x09, II=0x01, RR=0x0007 (room humidity, RoomState)
+- `b524,06000a010f00` -> GG=0x0A, II=0x01, RR=0x000F (room temp, VR92 addr 1)
+
+**Difference from Family 0x02:**
+- Opcode 0x06 targets **remote sensor units** (VR92, external thermostats)
+- Opcode 0x02 targets **local VRC regulator** registers
+- Same (GG, II, RR) structure, different address space
+
+---
+
+**Family 0x03/0x04: Timer Schedules (Read/Write)**
+
+**Status:** CONFIRMED (VRC700 CSV evidence, multiple timer categories)
+
+**CRITICAL DIFFERENCE:** Unlike families 0x02/0x06, timer families use **opcode itself** to distinguish read (0x03) vs write (0x04). There is NO separate optype byte.
+
+**Request payload (READ):**
+
+    Length: 0x05
+    Bytes:  0x03 <SEL1> <SEL2> <SEL3> <WEEKDAY>
+
+    Semantics:
+    - byte 0: opcode 0x03 (read timer)
+    - byte 1-3: selector tuple (domain/entity/kind)
+    - byte 4: weekday (0x00=Monday, 0x01=Tuesday, ..., 0x06=Sunday)
+
+**Request payload (WRITE):**
+
+    Length: 0x05 + schedule_data_length
+    Bytes:  0x04 <SEL1> <SEL2> <SEL3> <WEEKDAY> <TTM_blocks...>
+
+**Selector tuple semantics (INFERRED from CSV patterns):**
+
+    Category                | SEL1 | SEL2 | SEL3 | CSV ID Prefix
+    ------------------------|------|------|------|---------------
+    VentilationTimer        | 0x00 | 0x00 | 0x01 | 0300000100
+    NoiseReductionTimer     | 0x00 | 0x00 | 0x02 | 0300000200
+    TariffTimer             | 0x00 | 0x00 | 0x03 | 0300000300
+    HwcTimer (hot water)    | 0x01 | 0x00 | 0x01 | 0301000100
+    CcTimer (circulation)   | 0x01 | 0x00 | 0x02 | 0301000200
+    Z1HeatingTimer          | 0x03 | 0x00 | 0x02 | 0303000200
+    Z1CoolingTimer          | 0x03 | 0x00 | 0x01 | 0303000100
+    Z2HeatingTimer          | 0x03 | 0x01 | 0x02 | 0303010200
+    Z2CoolingTimer          | 0x03 | 0x01 | 0x01 | 0303010100
+    Z3HeatingTimer          | 0x03 | 0x02 | 0x02 | 0303020200
+
+**Pattern analysis:**
+- SEL1 appears to encode **domain** (0x00=system, 0x01=water, 0x03=zones)
+- SEL2 encodes **entity instance** (zone index for zones, 0x00 for singletons)
+- SEL3 encodes **timer kind** (heating=0x02, cooling=0x01, varies by domain)
+
+**Weekday encoding (CONFIRMED):**
+
+    0x00 = Monday
+    0x01 = Tuesday
+    0x02 = Wednesday
+    0x03 = Thursday
+    0x04 = Friday
+    0x05 = Saturday
+    0x06 = Sunday
+
+**Response format (READ):**
+
+Timer schedules are returned as **TTM (Time Tuple Matrix) blocks**. From CSV evidence:
+- Each day can have multiple time slots (e.g., 3 heating periods)
+- Each slot is represented as a TTM pair: `<from_time> <to_time>`
+- CSV templates show patterns like: `IGN:1, TTM, TTM, IGN:2` (read)
+- Write templates: `slotindex (UCH), slotcount (UCH), TTM, TTM, ...`
+
+**TTM encoding:** Time tuples in ebusd's proprietary format (details are tool-specific, not reversed here). Each TTM represents a time range like "06:00-22:00".
+
+**CSV encoding examples (VRC700):**
+
+READ timer (Monday):
+
+    b524,0300000100  ->  0x03 0x00 0x00 0x01 0x00
+                        ^^^^^ ^^^^^^^^^^^ ^^^^^
+                        opcode  selector  weekday
+
+WRITE timer (Sunday):
+
+    b524,0400000106  ->  0x04 0x00 0x00 0x01 0x06
+
+More examples proving weekday encoding:
+- VentilationTimer_Monday: `0300000100` (read), `0400000100` (write)
+- VentilationTimer_Sunday: `0300000106` (read), `0400000106` (write)
+- HwcTimer_Wednesday: `0301000102` (read), `0401000102` (write)
+- Z2CoolingTimer_Friday: `0303010104` (read), `0403010104` (write)
+
+**Implications:**
+- Timer scans are NOT register iteration (no RR loop)
+- Iteration is over: (selector_tuple, weekday=0..6)
+- Each combination yields one schedule (multiple TTM blocks per day)
+
+---
+
+#### Protocol Family Summary Table
+
+    Opcode | Family Name       | Payload Len | Structure                         | Status
+    -------|-------------------|-------------|-----------------------------------|----------
+    0x00   | Directory Probe   | 3           | 00 <GG> 00                        | CONFIRMED
+    0x02   | Local Registers   | 6 (+val)    | 02 <RW> <GG> <II> <RR_LO> <RR_HI> | CONFIRMED
+    0x06   | Remote Registers  | 6 (+val)    | 06 <RW> <GG> <II> <RR_LO> <RR_HI> | CONFIRMED
+    0x03   | Timer Read        | 5           | 03 <SEL1> <SEL2> <SEL3> <WD>      | CONFIRMED
+    0x04   | Timer Write       | 5 (+blocks) | 04 <SEL1> <SEL2> <SEL3> <WD> ...  | CONFIRMED
+
+**Notes:**
+- `<RW>` = optype (0x00=read, 0x01=write) for families 0x02/0x06
+- `<WD>` = weekday (0x00..0x06)
+- Timer families (0x03/0x04) do NOT use optype byte
+
+---
+
+### Implications for Tooling
+
+**Critical design decisions:**
+
+1. **DO NOT use "opclass" terminology** anywhere in code or documentation
+   - Use precise terms: `opcode`, `optype` (where applicable), `selector_bytes`
+   - Treat payload as raw bytes, parse by opcode dispatch
+
+2. **Schema loader must support variable-length CSV id fields:**
+   - Family 0x00: 3 bytes (directory probe, not in CSV)
+   - Family 0x02/0x06: 6 bytes (opcode + optype + GG + II + RR)
+   - Family 0x03/0x04: 5 bytes (opcode + selector_tuple + weekday)
+
+3. **Register scans (Phase D) only apply to families 0x02 and 0x06:**
+   - Iterate over (GG, II, RR) for discovered instances
+   - Use opcode 0x02 for local VRC registers
+   - Use opcode 0x06 for remote sensor registers (GG=0x09, 0x0A typical)
+
+4. **Timer scans are separate workflow (not in MVP scope):**
+   - Would iterate over (selector_tuple, weekday=0..6)
+   - Requires understanding TTM block parsing (ebusd-specific)
+   - Recommended for future enhancement
+
+5. **CSV id parsing algorithm:**
+
+```python
+def parse_b524_id(id_hex: str) -> dict:
+    """Parse ebusd CSV b524 id field into structured selector."""
+    payload = bytes.fromhex(id_hex)
+    opcode = payload[0]
+
+    if opcode == 0x00:
+        return {"family": "directory", "group": payload[1]}
+
+    elif opcode in {0x02, 0x06}:
+        return {
+            "family": "local_registers" if opcode == 0x02 else "remote_registers",
+            "optype": payload[1],  # 0x00=read, 0x01=write
+            "group": payload[2],
+            "instance": payload[3],
+            "register": struct.unpack('<H', payload[4:6])[0],
+        }
+
+    elif opcode in {0x03, 0x04}:
+        return {
+            "family": "timer_read" if opcode == 0x03 else "timer_write",
+            "selector": (payload[1], payload[2], payload[3]),
+            "weekday": payload[4],
+        }
+
+    else:
+        raise ValueError(f"Unknown B524 opcode: 0x{opcode:02X}")
+```
+
+6. **Agent discovery protocol:**
+   - If agent discovers NEW B524 opcode families during development, they MUST:
+     - Document findings in GitHub issue (if not repo owner)
+     - Submit PR with evidence (wire captures, CSV patterns)
+     - Update AGENTS.md with protocol details
+     - Add test fixtures demonstrating new family
+   - Do NOT guess at opcode semantics without evidence
+
+---
+
+### Group Configuration
+
+**Known groups (hardcoded reference, validated against CSV):**
+
+    GROUP_CONFIG = {
+        0x00: {"desc": 3.0, "name": "Discovery", "ii_max": 0x00, "rr_max": 0xFF},
+        0x01: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x8F},
+        0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x21},
+        0x03: {"desc": 1.0, "name": "Zones", "ii_max": 0x0A, "rr_max": 0x2F},
+        0x04: {"desc": 6.0, "name": "Solar Circuit", "ii_max": 0x0A, "rr_max": 0x40},
+        0x09: {"desc": 1.0, "name": "RoomState", "ii_max": 0x2F, "rr_max": 0x1F},
+        0x0A: {"desc": 1.0, "name": "RoomSensors", "ii_max": 0x2F, "rr_max": 0x4F},
+        0x0C: {"desc": 1.0, "name": "Unrecognized", "ii_max": 0x2F, "rr_max": 0x4F},
+    }
+
+**Register families by group:**
+
+    Group  | Opcode Family | Notes
+    -------|---------------|-----------------------------------------------
+    0x00   | 0x02 (local)  | Discovery/system registers
+    0x01   | 0x02 (local)  | Singleton (no instances)
+    0x02   | 0x02 (local)  | Heating circuits (instanced)
+    0x03   | 0x02 (local)  | Zones (instanced)
+    0x04   | 0x02 (local)  | Solar circuit (special Type 6 format)
+    0x09   | 0x06 (remote) | Room state sensors (typically VRC720 internal)
+    0x0A   | 0x06 (remote) | Room sensors (VR92 external units)
+    0x0C   | 0x06 (remote) | Unrecognized remote devices
+
+**Instance presence detection (per-group heuristics):**
+
+- **GG=0x02 (Heating Circuits):** Probe RR=0x0002 (CircuitType u16). Absent if response is 0x0000, 0xFFFF, or NaN.
+- **GG=0x03 (Zones):** Probe RR=0x001C (zone index u8). Absent if response is 0xFF.
+- **GG=0x09 / 0x0A (Sensors):** Present if RR=0x0007 or RR=0x000F returns non-NaN.
+- **GG=0x0C (Unknown):** Present if any of RR in {0x0002, 0x0007, 0x000F, 0x0016} responds.
+
+**Scan all instances from 0x00 to ii_max** (do not stop at gaps, they are legitimate holes).
+
+### Schema Loading
+
+**CSV source:**
+
+Download from GitHub (cache locally for 24h):
+
+    https://raw.githubusercontent.com/burmistrzak/ebusd-configuration/refs/heads/add-720-series/src/vaillant/15.720.csv
+
+**CSV structure (relevant columns):**
+
+    type,circuit,level,name,comment,qq,zz,pbsb,id,*name,part,type,divisor/values,unit,comment
+    r,,,Z1Shortname,short name of zone 1,,,b524,020003001600,value,,IGN:4,,,,value,,STR:*,,,name
+
+**Parsing logic:**
+
+Extract from `id` column (hex string):
+
+**For register families (6 bytes):**
+
+    b524,020003001600  ->  parse as: 02 00 03 00 16 00
+
+    - Bytes 0-1: opcode + optype (0x02 0x00)
+    - Byte 2: GG (group) = 0x03
+    - Byte 3: II (instance) = 0x00
+    - Bytes 4-5: RR (register, LE) = 0x0016
+
+**For timer families (5 bytes):**
+
+    b555,0300000100  ->  parse as: 03 00 00 01 00
+
+    - Byte 0: opcode 0x03 (read timer)
+    - Bytes 1-3: selector tuple (0x00, 0x00, 0x01)
+    - Byte 4: weekday = 0x00 (Monday)
+
+Extract from `type` column (after second occurrence):
+- `STR:*` -> cstring
+- `EXP` -> float32le
+- `UCH` -> u8
+- `UIN` -> u16le
+- `HDA:3` -> u24le date
+- `HTI` -> u24le time
+
+Extract enums from `divisor/values` column:
+
+    0=off;1=on;2=auto  ->  {0: "off", 1: "on", 2: "auto"}
+
+**Fallback:** If register not in CSV, use type inference from response length.
+
+### CLI Interface
+
+**Main command:**
+
+    python -m helianthus_vrc_explorer scan [OPTIONS]
+
+**Options:**
+
+    --dst ADDRESS               Destination address (default: 0x15, or parsed from --scan-line)
+    --host HOST                 ebusd TCP host (default: 127.0.0.1)
+    --port PORT                 ebusd TCP port (default: 8888)
+    --scan-line TEXT            ebusd scan line (file path if starts with @)
+    --dry-run                   Use DummyTransport with fixtures
+    --verbose                   Log raw hex to scan_<timestamp>.log
+    --output-dir PATH           Output directory (default: ./out)
+    --csv-dir PATH              Override CSV schema directory (default: auto-download)
+
+**Example:**
+
+    python -m helianthus_vrc_explorer scan \
+      --dst 0x15 \
+      --host 127.0.0.1 \
+      --port 8888 \
+      --scan-line @scan.txt
+
+**Scan line format (ebusd output):**
+
+    15;Vaillant;BASV2;0507;1704;0020262148;VRC 720f/2;21213400202621480001000001N7
+
+Parse fields:
+1. Address (15 -> 0x15)
+2. Manufacturer (Vaillant)
+3. eBUS Model (BASV2)
+4. Software version (0507)
+5. Hardware version (1704)
+6. Model number (0020262148)
+7. Marketing name (VRC 720f/2)
+8. Serial number (21213400202621480001000001N7)
+
+**If --scan-line not provided:** Attempt to fetch from ebusd via `scan` command, or display "Unknown" in header.
+
+### Terminal UI
+
+**Header (printed once at start):**
+
+    Scanning VRC type Regulator using GetExtendedRegisters (Vaillant B5 24) at address 15h:
+    eBUS Model: BASV2
+    Vaillant Model: 0020262148 (VRC 720f/2)
+    SN: 21213400202621480001000001N7
+    SW: 0507
+    HW: 1704
+
+**Live status area (using rich.live.Live):**
+
+    [Discovering groups...]           <- penultimate line (normal color)
+    Probing GG=0x03 -> Type 1.0       <- last line (dim gray)
+
+**Progress bars (rich.progress.Progress):**
+
+    Phase A: Group Discovery    #################### 100% (13/13)
+    Phase B: Instance Scan      #########-----------  45% (9/20)
+    Phase C: Register Dump      ##------------------  12% (127/1024)
+
+**Scrollback output (stable milestones only):**
+
+    Found 7 groups:
+      Group 0x01 - Singleton (Type 3) - Regulator Parameters
+      Group 0x02 - Instanced (Type 1) - Heating Circuits (8 slots / 2 present / 2 active)
+      Group 0x03 - Instanced (Type 1) - Zones (10 slots / 2 present / 2 active)
+      Group 0x04 - Instanced (Type 6) - Solar Circuit (recognized as Type 6)
+      Group 0x09 - Instanced (Type 1) - RoomState (48 slots / 1 present)
+      Group 0x0A - Instanced (Type 1) - RoomSensors (48 slots / 8 present)
+      Terminator at GG=0x0D (NaN)
+
+**Final output:**
+
+    Scan completed in 127.4s
+    Wrote JSON: ./out/b524_scan_0x15_2026-02-06T194424Z.json
+
+**Non-TTY mode (CI/CD):**
+
+Detect via `sys.stdout.isatty()`. If false, output JSON lines:
+
+    {"event":"group_found","group":"0x02","desc":1.0,"name":"Heating Circuits"}
+    {"event":"instance_present","group":"0x02","instance":"0x00"}
+    {"event":"register_read","group":"0x02","instance":"0x00","register":"0x0F","value":1.7}
+    {"event":"scan_complete","duration":127.4,"file":"./out/b524_scan_0x15_2026-02-06T194424Z.json"}
+
+### JSON Output
+
+**File path:**
+
+    ./out/b524_scan_<DST>_<ISO8601>.json
+
+Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
+
+**JSON structure:**
+
+    {
+      "meta": {
+        "scan_timestamp": "2026-02-06T19:44:24Z",
+        "scan_duration_seconds": 127.4,
+        "destination_address": "0x15",
+        "source_address": "0x31",
+        "ebusd_host": "127.0.0.1",
+        "ebusd_port": 8888,
+        "device_info": {
+          "manufacturer": "Vaillant",
+          "ebus_model": "BASV2",
+          "marketing_name": "VRC 720f/2",
+          "model_number": "0020262148",
+          "serial_number": "21213400202621480001000001N7",
+          "software_version": "0507",
+          "hardware_version": "1704"
+        },
+        "schema_sources": [
+          "https://raw.githubusercontent.com/burmistrzak/ebusd-configuration/refs/heads/add-720-series/src/vaillant/15.720.csv"
+        ],
+        "incomplete": false
+      },
+      "groups": {
+        "0x02": {
+          "name": "Heating Circuits",
+          "descriptor_type": 1.0,
+          "instances": {
+            "0x00": {
+              "present": true,
+              "registers": {
+                "0x0002": {
+                  "name": "heating_circuit_type",
+                  "type": "u16le",
+                  "value": 1,
+                  "enum_resolved": "MIXER_CIRCUIT_EXTERNAL",
+                  "raw_hex": "0100"
+                },
+                "0x000F": {
+                  "name": "heating_curve",
+                  "type": "float32",
+                  "value": 1.7,
+                  "unit": "C/C",
+                  "raw_hex": "9a99d93f"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+**NaN handling:** Represent as `null` in JSON.
+
+**Unknown enums:** If enum value not in CSV mappings, include both:
+
+    "value": 42,
+    "enum_resolved": "UNKNOWN_0x2A"
+
+**Partial scans (Ctrl+C):**
+
+    "meta": {
+      "incomplete": true,
+      "incomplete_reason": "user_interrupt",
+      "scan_duration_seconds": 45.2
+    }
+
+### Error Handling
+
+**Timeout handling:**
+1. Retry once after 1s delay
+2. If still timeout -> log to `errors.json`, mark register as timeout in main JSON
+3. Continue scanning (do not abort)
+
+**Invalid response:**
+- Log raw hex + expected format to `errors.json`
+- Mark as `"decode_error"` in JSON
+- Continue scanning
+
+**Signal handling:**
+- SIGINT (Ctrl+C) -> graceful shutdown, save partial JSON with `incomplete: true`
+- SIGTERM -> immediate save + exit(0)
+
+**Unknown enum values:**
+- Keep numeric value
+- Add `"enum_resolved": "UNKNOWN_0x42"`
+- In final summary, suggest: "Found unknown enum values. Please report at https://github.com/user/helianthus-vrc-explorer/issues"
+
+### Field Mappings (Schema)
+
+**Register-to-semantic-name mappings (from CSV):**
+
+**GG=0x02 (Heating Circuits, per-instance II):**
+
+    RR     | Type      | Enum                     | Semantic Name
+    -------|-----------|--------------------------|--------------------------------------------------
+    0x0002 | u16le     | 1=MIXER_CIRCUIT_EXTERNAL | circuits[].extra_fields.heating_circuit_type
+    0x000E | u16le     | 0=false;1=true           | circuits[].set_back_mode_enabled
+    0x000F | float32le | -                        | circuits[].heating_curve
+    0x0010 | float32le | -                        | circuits[].heating_flow_temperature_maximum_setpoint
+    0x0012 | float32le | -                        | circuits[].heating_flow_temperature_minimum_setpoint
+    0x0014 | float32le | -                        | circuits[].heat_demand_limited_by_outside_temperature
+    0x0015 | u16le     | 0=NON;2=THERMOSTAT_FUNCTION | circuits[].extra_fields.room_temperature_control_mode
+    0x000A | float32le | -                        | circuits[].extra_fields.epsilon
+
+**GG=0x03 (Zones, per-zone slot II):**
+
+    RR     | Type      | Enum                     | Semantic Name
+    -------|-----------|--------------------------|--------------------------------------------------
+    0x0016 | cstring   | -                        | configuration.zones[].general.name
+    0x0017 | cstring   | -                        | configuration.zones[].general.name_prefix
+    0x0018 | cstring   | -                        | configuration.zones[].general.name_suffix
+    0x0005 | float32le | -                        | configuration.zones[].general.holiday_setpoint
+    0x0003 | u24 (date)| -                        | configuration.zones[].general.holiday_start_date
+    0x0021 | u24 (time)| -                        | configuration.zones[].general.holiday_start_time
+    0x0004 | u24 (date)| -                        | configuration.zones[].general.holiday_end_date
+    0x0020 | u24 (time)| -                        | configuration.zones[].general.holiday_end_time
+    0x0006 | u16le     | 2=MANUAL                 | configuration.zones[].heating.operation_mode_heating
+    0x0009 | float32le | -                        | configuration.zones[].heating.set_back_temperature
+    0x0014 | float32le | -                        | configuration.zones[].heating.manual_mode_setpoint
+    0x0022 | float32le | -                        | configuration.zones[].heating.desired_setpoint
+    0x000E | u8        | 0=NONE                   | state.zones[].current_special_function
+    0x000F | float32le | -                        | state.zones[].current_room_temperature
+    0x0028 | float32le | -                        | state.zones[].current_room_humidity
+    0x0013 | u16le     | -                        | configuration.zones[].associated_circuit_index_raw (1-based)
+    0x001C | u8        | 0xFF=ABSENT_SLOT         | configuration.zones[].index
+    0x0008 | float32le | -                        | configuration.zones[].quick_veto.temperature
+    0x0024 | u24 (date)| -                        | configuration.zones[].quick_veto.end_date
+    0x001E | u24 (time)| -                        | configuration.zones[].quick_veto.end_time
+    0x0026 | u24 (time)| -                        | configuration.zones[].quick_veto.duration
+
+**GG=0x09 / 0x0A (Room sensors/state):**
+
+    RR     | Type      | Semantic Name
+    -------|-----------|---------------------------
+    0x0007 | float32le | room_humidity
+    0x000F | float32le | room_temperature
+
+**Known enums (extracted from CSV):**
+
+    GG=0x02, RR=0x0002 (heating_circuit_type):
+      1 -> "MIXER_CIRCUIT_EXTERNAL"
+
+    GG=0x02, RR=0x0015 (room_temperature_control_mode):
+      0 -> "NON"
+      2 -> "THERMOSTAT_FUNCTION"
+
+    GG=0x02, RR=0x000E (set_back_mode_enabled):
+      0 -> false
+      1 -> true
+
+    GG=0x03, RR=0x0006 (operation_mode_heating):
+      2 -> "MANUAL"
+
+    GG=0x03, RR=0x000E (current_special_function):
+      0 -> "NONE"
+
+    GG=0x03, RR=0x001C (zone index/presence):
+      0xFF -> "ABSENT_SLOT"
+
+### Testing Requirements
+
+**Unit tests (pytest):**
+- `test_transport.py` - EbusdTcpTransport parsing, retry logic, error handling
+- `test_protocol.py` - B524 frame encoding, value parsing (all types)
+- `test_schema.py` - CSV loading, enum resolution, fallback logic
+- `test_scanner.py` - Group discovery, instance detection, register scanning
+
+**Integration tests:**
+- DummyTransport with `fixtures/vrc720_full_scan.json` must complete without errors
+- Verify JSON output structure matches schema
+- Test partial scan (simulated interrupt)
+
+**Coverage target:** >80%
+
+**CI/CD (GitHub Actions):**
+
+    name: CI
+    on: [push, pull_request]
+    jobs:
+      lint:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v3
+          - uses: actions/setup-python@v4
+          - run: pip install ruff mypy
+          - run: ruff check .
+          - run: mypy src
+
+      test:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v3
+          - uses: actions/setup-python@v4
+          - run: pip install -e ".[dev]"
+          - run: pytest --cov --cov-report=xml
+          - uses: codecov/codecov-action@v3
+
+### Development Workflow
+
+**Issue-driven development:**
+1. Each feature/bugfix gets a GitHub issue
+2. Create branch from `main`: `git checkout -b issue-<N>-<description>`
+3. Implement with tests
+4. Run linting: `ruff check . && mypy src`
+5. Run tests: `pytest`
+6. Create PR, wait for CI + codex-bot review
+7. Address feedback, push updates
+8. When approved + CI green -> squash merge to `main`
+
+**Milestones:**
+- M1: Bootstrap (project structure, CI/CD, dummy transport)
+- M2: Protocol layer (B524 encoder/decoder, value parser)
+- M3: Transport layer (ebusd TCP client)
+- M4: Schema layer (CSV loader, enum resolver)
+- M5: Scanner (group discovery, instance enumeration, register dump)
+- M6: UI (rich live display, summary output)
+- M7: CLI (argument parsing, error handling)
+- M8: Documentation (README, examples, API docs)
+
+**Data files (non-code):**
+- All CSV/JSON files in `data/` and `fixtures/` are edited via separate PRs
+- No CSV parsing logic in PRs that modify CSV structure
+- Model database updates can be contributed by non-programmers
+
+### Code Quality Standards
+
+**Python version:** 3.11+
+
+**Dependencies (pyproject.toml):**
+
+    [project]
+    name = "helianthus-vrc-explorer"
+    version = "0.1.0"
+    requires-python = ">=3.11"
+    dependencies = [
+        "typer>=0.9.0",
+        "rich>=13.0.0",
+        "httpx>=0.24.0",
+    ]
+
+    [project.optional-dependencies]
+    dev = [
+        "pytest>=7.0.0",
+        "pytest-cov>=4.0.0",
+        "ruff>=0.1.0",
+        "mypy>=1.5.0",
+    ]
+
+**Linting:** ruff with strict settings
+**Type checking:** mypy in strict mode
+**Formatting:** ruff format (black-compatible)
+
+**Docstrings:** Google style
+
+    def parse_b524_response(data: bytes) -> dict[str, Any]:
+        """Parse B524 response payload into typed values.
+
+        Args:
+            data: Raw response bytes (after stripping 4-byte header)
+
+        Returns:
+            Dictionary with keys: type, value, raw_hex
+
+        Raises:
+            ValueError: If data length is invalid for any known type
+        """
+
+**Logging:** Use Python `logging` module, not print statements (except for final output)
+
+### README.md Structure
+
+**Include:**
+1. Project description (1-2 paragraphs)
+2. Features (bullet list)
+3. Installation (`pip install helianthus-vrc-explorer`)
+4. Quick start example
+5. CLI reference (generated from typer)
+6. CSV schema documentation
+7. Contributing guide
+8. License (GPLv3)
+9. Credits/acknowledgments
+
+**Example:**
+
+    # Helianthus VRC Explorer
+
+    Professional CLI tool for scanning Vaillant VRC heating regulators via eBUS protocol.
+
+    ## Features
+
+    - Auto-discover register groups and instances
+    - Parse typed values (float32, u16, u8, strings, dates, times)
+    - Resolve enums to human-readable names
+    - Rich terminal UI with live progress
+    - JSON output for integration
+    - CSV-based schema (contribute without coding)
+
+    ## Installation
+
+        pip install helianthus-vrc-explorer
+
+    ## Quick Start
+
+        # Scan VRC at address 0x15
+        helianthus-vrc-explorer scan --dst 0x15
+
+    ## Contributing
+
+    See CONTRIBUTING.md
+
+    ## License
+
+    GPLv3 - see LICENSE
+
+### AGENTS.md (For Codex Orchestration)
+
+**Include:**
+1. Project goals and architecture overview
+2. Issue workflow (branch -> PR -> review -> merge)
+3. Testing requirements (coverage, CI)
+4. Code quality standards (linting, typing)
+5. Data file contribution process
+6. Review checklist for codex-bot
+7. **B524 Protocol Family Documentation** (detailed protocol reverse-engineering notes)
+
+**Example structure:**
+
+    # Agent Orchestration Guide
+
+    ## Workflow
+
+    1. Pick next issue from milestone
+    2. Create branch: `issue-<N>-<description>`
+    3. Implement feature with tests
+    4. Ensure linting passes: `ruff check . && mypy src`
+    5. Ensure tests pass: `pytest --cov`
+    6. Create PR, tag @codex-bot for review
+    7. Address feedback, push updates
+    8. When approved + CI green -> squash merge
+
+    ## Quality Gates
+
+    - Linting: ruff + mypy (no warnings)
+    - Tests: pytest coverage >80%
+    - CI: All checks green
+    - Review: Codex-bot approval required
+
+    ## Data File Updates
+
+    CSV/JSON files in data/ and fixtures/ are edited via separate PRs.
+    Do not mix code changes with data changes.
+
+    ## B524 Protocol Family (Reverse Engineering Notes)
+
+    [Full B524 protocol documentation from "B524 Protocol Family" section above]
+
+    ### Protocol Discovery Process
+
+    If you discover new B524 opcode families during development:
+
+    1. **Document evidence:**
+       - Capture wire frames (hex dumps)
+       - Extract CSV patterns showing new opcode
+       - Note which VRC models exhibit this behavior
+
+    2. **Submission process:**
+       - If you are NOT d3vi1 (repo owner):
+         - Create GitHub issue: "New B524 opcode discovered: 0xXX"
+         - Include all evidence (frames, CSV excerpts, test cases)
+         - Submit PR updating AGENTS.md with findings
+       - If you ARE d3vi1:
+         - Update AGENTS.md directly in your PR
+         - Add test fixtures demonstrating new family
+
+    3. **Required documentation:**
+       - Payload byte layout diagram
+       - Selector semantics (GG/II/RR or alternative)
+       - Response format expectations
+       - CSV id encoding rules
+       - Confidence level: CONFIRMED vs INFERRED
+
+    4. **Do NOT:**
+       - Guess at opcode semantics without evidence
+       - Implement untested protocol variants
+       - Mix protocol discovery with feature PRs
+
+---
+
+## SCAN ALGORITHM
+
+### Phase A: Group Discovery
+
+**Objective:** Identify all register groups (GG) supported by the device.
+
+**Method:**
+
+    for GG in range(0x00, 0xFF):
+        # Build directory probe: opcode=0x00, GG, padding
+        payload = bytes([0x00, GG, 0x00])
+        response = transport.send(B524Frame(dst=0x15, payload=payload))
+        descriptor = struct.unpack('<f', response)[0]
+
+        if descriptor == 0.0:
+            # Hole, skip
+            continue
+
+        if math.isnan(descriptor):
+            nan_streak += 1
+            if nan_streak >= 2:
+                print(f"Terminator at GG={hex(GG)}")
+                break
+        else:
+            nan_streak = 0
+            record_group(GG, descriptor)
+            print(f"Found GG={hex(GG)}, Type={descriptor}")
+
+**Output:**
+
+    Found 7 groups:
+      Group 0x01 - Singleton (Type 3) - Regulator Parameters
+      Group 0x02 - Instanced (Type 1) - Heating Circuits
+      ...
+      Terminator at GG=0x0D (NaN)
+
+### Phase B: Group Classification
+
+**Objective:** Map discovered groups to known names and warn about unknown types.
+
+**Method:**
+
+    for GG, descriptor in discovered_groups:
+        if GG in GROUP_CONFIG:
+            if GROUP_CONFIG[GG]["desc"] != descriptor:
+                warn(f"Descriptor mismatch for GG={hex(GG)}: expected {GROUP_CONFIG[GG]['desc']}, got {descriptor}")
+            print(f"Group {hex(GG)} - {GROUP_CONFIG[GG]['name']}")
+        else:
+            if descriptor == 6.0:
+                warn(f"Found group in unknown format type 6.0: GG={hex(GG)}")
+            print(f"Group {hex(GG)} - Unknown (Type {descriptor})")
+
+### Phase C: Instance Discovery
+
+**Objective:** For instanced groups (desc==1.0), identify which instance slots are populated.
+
+**Method (per group GG):**
+
+    if descriptor != 1.0:
+        # Singleton or Type 6, no instance enumeration
+        return
+
+    ii_max = GROUP_CONFIG[GG]["ii_max"]
+    present_instances = []
+
+    # Determine opcode based on group
+    opcode = 0x06 if GG in {0x09, 0x0A, 0x0C} else 0x02
+
+    for II in range(0x00, ii_max + 1):
+        if is_instance_present(GG, II, opcode):
+            present_instances.append(II)
+
+    print(f"Group {hex(GG)}: {len(present_instances)} present / {ii_max + 1} slots")
+
+**Presence detection logic:**
+
+    def is_instance_present(GG, II, opcode):
+        """Probe instance using appropriate opcode (0x02 or 0x06)."""
+        if GG == 0x02:  # Heating Circuits
+            value = read_register(opcode, GG, II, 0x0002)
+            return value not in {0x0000, 0xFFFF, None}
+
+        elif GG == 0x03:  # Zones
+            value = read_register(opcode, GG, II, 0x001C)
+            return value != 0xFF
+
+        elif GG in {0x09, 0x0A}:  # Sensors (always use opcode 0x06)
+            val1 = read_register(0x06, GG, II, 0x0007)
+            val2 = read_register(0x06, GG, II, 0x000F)
+            return val1 is not None or val2 is not None
+
+        elif GG == 0x0C:  # Unknown (always use opcode 0x06)
+            for RR in {0x0002, 0x0007, 0x000F, 0x0016}:
+                if read_register(0x06, GG, II, RR) is not None:
+                    return True
+            return False
+
+**Scan ALL instances 0x00..ii_max** (do not stop at gaps, they are legitimate holes).
+
+### Phase D: Register Scan
+
+**Objective:** Read all registers within defined ranges for each present instance.
+
+**Method (per group GG, instance II):**
+
+    rr_max = GROUP_CONFIG[GG]["rr_max"]
+
+    # Determine opcode based on group
+    opcode = 0x06 if GG in {0x09, 0x0A, 0x0C} else 0x02
+
+    for RR in range(0x00, rr_max + 1):
+        try:
+            # Build payload: opcode, optype=0x00 (read), GG, II, RR (LE)
+            payload = struct.pack('<BBBBH', opcode, 0x00, GG, II, RR)
+            raw_response = transport.send(B524Frame(dst=0x15, payload=payload))
+
+            # Strip 4-byte echo header
+            value_bytes = raw_response[4:]
+
+            parsed = parse_value(value_bytes, GG, II, RR)
+            store_in_json(GG, II, RR, parsed)
+        except TransportTimeout:
+            mark_as_timeout(GG, II, RR)
+        except Exception as e:
+            log_error(GG, II, RR, e)
+
+**Live UI update (last line only):**
+
+    Reading GG=0x03 II=0x00 RR=0x0F -> 22.5C
+
+**Do NOT spam scrollback with every register read.** Only update live status line.
+
+### Final Summary
+
+**Print to scrollback:**
+
+    Scan Summary:
+    -------------
+    Total groups discovered: 7
+    Total instances scanned: 127
+    Total registers read: 1,024
+    Timeouts: 3
+    Decode errors: 0
+
+    Group 0x02 - Heating Circuits (8 slots / 2 present / 2 active)
+    Group 0x03 - Zones (10 slots / 2 present / 2 active)
+    ...
+
+    Scan completed in 127.4s
+    Wrote JSON: ./out/b524_scan_0x15_2026-02-06T194424Z.json
+
+---
+
+## EXAMPLE SESSION
+
+**Command:**
+
+    python -m helianthus_vrc_explorer scan --dst 0x15 --scan-line @scan.txt
+
+**Terminal output:**
+
+    Scanning VRC type Regulator using GetExtendedRegisters (Vaillant B5 24) at address 15h:
+    eBUS Model: BASV2
+    Vaillant Model: 0020262148 (VRC 720f/2)
+    SN: 21213400202621480001000001N7
+    SW: 0507
+    HW: 1704
+
+    Phase A: Group Discovery    #################### 100% (13/13)
+
+    Found 7 groups:
+      Group 0x01 - Singleton (Type 3) - Regulator Parameters
+      Group 0x02 - Instanced (Type 1) - Heating Circuits
+      Group 0x03 - Instanced (Type 1) - Zones
+      Group 0x04 - Instanced (Type 6) - Solar Circuit (recognized as Type 6)
+      Group 0x09 - Instanced (Type 1) - RoomState
+      Group 0x0A - Instanced (Type 1) - RoomSensors
+      Group 0x0C - Instanced (Type 1) - Unrecognized
+      Terminator at GG=0x0D (NaN)
+
+    Phase B: Instance Scan      #################### 100% (127/127)
+
+    Group 0x02 - Heating Circuits: 2 present / 8 slots
+    Group 0x03 - Zones: 2 present / 10 slots
+    Group 0x09 - RoomState: 1 present / 48 slots
+    Group 0x0A - RoomSensors: 8 present / 48 slots
+
+    Phase C: Register Dump      #################### 100% (1024/1024)
+
+    Scan Summary:
+    -------------
+    Total groups discovered: 7
+    Total instances scanned: 127
+    Total registers read: 1,024
+    Timeouts: 3
+    Decode errors: 0
+
+    Scan completed in 127.4s
+    Wrote JSON: ./out/b524_scan_0x15_2026-02-06T194424Z.json
+
+**Generated JSON (excerpt):**
+
+    {
+      "meta": {
+        "scan_timestamp": "2026-02-06T19:44:24Z",
+        "scan_duration_seconds": 127.4,
+        "destination_address": "0x15",
+        "device_info": {
+          "manufacturer": "Vaillant",
+          "ebus_model": "BASV2",
+          "marketing_name": "VRC 720f/2",
+          "model_number": "0020262148",
+          "software_version": "0507",
+          "hardware_version": "1704"
+        }
+      },
+      "groups": {
+        "0x03": {
+          "name": "Zones",
+          "descriptor_type": 1.0,
+          "opcode_family": "0x02",
+          "instances": {
+            "0x00": {
+              "present": true,
+              "registers": {
+                "0x0016": {
+                  "name": "zone_name",
+                  "type": "cstring",
+                  "value": "Living Room",
+                  "raw_hex": "4c6976696e6720526f6f6d00"
+                },
+                "0x000F": {
+                  "name": "current_room_temperature",
+                  "type": "float32",
+                  "value": 22.5,
+                  "unit": "C",
+                  "raw_hex": "0000b441"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+---
+
+## DELIVERABLES CHECKLIST
+
+**For Issue #1 Bootstrap:**
+
+- [ ] GitHub repo created: `helianthus-vrc-explorer`
+- [ ] License: GPLv3
+- [ ] Project structure (src/, data/, fixtures/, tests/)
+- [ ] pyproject.toml with dependencies
+- [ ] CI/CD workflow (.github/workflows/ci.yml)
+- [ ] README.md with quick start
+- [ ] AGENTS.md with orchestration guide + B524 protocol documentation
+- [ ] Empty data/models.csv with header row
+- [ ] fixtures/vrc720_full_scan.json (minimal valid fixture)
+- [ ] Initial commit on main branch
+- [ ] CI passing (linting + tests on empty structure)
+- [ ] All bootstrap issues created and tagged
+
+**For subsequent issues:**
+
+- [ ] Feature implemented with unit tests
+- [ ] Tests pass (coverage >80%)
+- [ ] Linting passes (ruff + mypy)
+- [ ] PR created with clear description
+- [ ] CI green
+- [ ] Codex-bot review approved
+- [ ] Squash merge to main
+
+---
+
+## CRITICAL REMINDERS
+
+1. **B524 is a protocol FAMILY, not a single opcode** - dispatch by first byte, parse accordingly
+2. **Use opcode 0x02 for local registers** (GG 0x00-0x04) and **opcode 0x06 for remote sensors** (GG 0x09, 0x0A, 0x0C)
+3. **CSV schema is NOT hardcoded** - always load from data/field_mappings.csv
+4. **ebusd responses are multiline** - parse correctly (first hex line = payload, ignore ERR after)
+5. **Retry timeouts once** - then skip register and continue
+6. **Scan ALL instances 0x00..ii_max** - do not stop at gaps
+7. **NaN terminator requires 2 consecutive** - not just one
+8. **Live UI updates only last line** - do not spam scrollback
+9. **Non-TTY mode outputs JSON lines** - detect via sys.stdout.isatty()
+10. **Partial scans are valid** - save with incomplete: true on Ctrl+C
+11. **Unknown enums are NOT errors** - keep numeric value + UNKNOWN_0xXX
+12. **Data files are edited via separate PRs** - never mix code + CSV changes
+13. **Document new protocol discoveries via issue/PR** - do not guess at semantics
+
+---
+
+## NOTES FOR AGENT
+
+- Read this entire prompt carefully before starting
+- Clarify ambiguities before implementing
+- Test incrementally (unit -> integration -> E2E)
+- Document decisions in commit messages
+- Ask for user feedback on UX choices
+- Prioritize code quality over speed
+- Each issue should be mergeable independently
+- **If you discover new B524 opcodes, follow the protocol discovery process in AGENTS.md**
+
+**Good luck building helianthus-vrc-explorer!**

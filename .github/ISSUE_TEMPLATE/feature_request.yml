@@ -1,0 +1,48 @@
+name: Feature Request
+description: Propose a new feature or improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: One sentence describing what this issue implements.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: Explain why this matters (link to docs/issues if relevant).
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: List specific, testable conditions.
+      value: |
+        - [ ] ...
+        - [ ] Unit tests cover the implemented code
+        - [ ] CI green
+        - [ ] Smoke test required: YES / NO
+
+  - type: input
+    id: deps
+    attributes:
+      label: Dependencies
+      description: "Depends on issue(s) (if any)."
+      placeholder: "#123"
+
+  - type: textarea
+    id: agent_state
+    attributes:
+      label: Agent State / Work Log
+      description: Keep this updated while work is in progress so another agent can resume. Do not include secrets or private infrastructure details.
+      value: |
+        Status:
+        Branch:
+        Last verified (lint/tests):
+        How to reproduce:
+        Next steps:
+        Notes (no secrets, no private infra):
