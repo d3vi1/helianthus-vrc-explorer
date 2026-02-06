@@ -491,7 +491,7 @@ Extract enums from `divisor/values` column:
 
 **Scan line format (ebusd output):**
 
-    15;Vaillant;BASV2;0507;1704;0020262148;VRC 720f/2;21213400202621480001000001N7
+    15;Vaillant;BASV2;0507;1704;0020262148;VRC 720f/2;<SERIAL_NUMBER_REDACTED>
 
 Parse fields:
 1. Address (15 -> 0x15)
@@ -501,7 +501,7 @@ Parse fields:
 5. Hardware version (1704)
 6. Model number (0020262148)
 7. Marketing name (VRC 720f/2)
-8. Serial number (21213400202621480001000001N7)
+8. Serial number (<SERIAL_NUMBER_REDACTED>)
 
 **If --scan-line not provided:** Attempt to fetch from ebusd via `scan` command, or display "Unknown" in header.
 
@@ -512,7 +512,7 @@ Parse fields:
     Scanning VRC type Regulator using GetExtendedRegisters (Vaillant B5 24) at address 15h:
     eBUS Model: BASV2
     Vaillant Model: 0020262148 (VRC 720f/2)
-    SN: 21213400202621480001000001N7
+    SN: <SERIAL_NUMBER_REDACTED>
     SW: 0507
     HW: 1704
 
@@ -575,7 +575,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
           "ebus_model": "BASV2",
           "marketing_name": "VRC 720f/2",
           "model_number": "0020262148",
-          "serial_number": "21213400202621480001000001N7",
+          "serial_number": "<SERIAL_NUMBER_REDACTED>",
           "software_version": "0507",
           "hardware_version": "1704"
         },
@@ -1114,7 +1114,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
     Scanning VRC type Regulator using GetExtendedRegisters (Vaillant B5 24) at address 15h:
     eBUS Model: BASV2
     Vaillant Model: 0020262148 (VRC 720f/2)
-    SN: 21213400202621480001000001N7
+    SN: <SERIAL_NUMBER_REDACTED>
     SW: 0507
     HW: 1704
 
