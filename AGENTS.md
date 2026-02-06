@@ -767,7 +767,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 3. Implement with tests
 4. Run linting: `ruff check . && mypy src`
 5. Run tests: `pytest`
-6. Create PR, wait for CI + codex-bot review
+6. Create PR, wait for CI + @codex review
 7. Address feedback, push updates
 8. When approved + CI green -> squash merge to `main`
 
@@ -884,7 +884,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 3. Testing requirements (coverage, CI)
 4. Code quality standards (linting, typing)
 5. Data file contribution process
-6. Review checklist for codex-bot
+6. Review checklist for @codex
 7. **B524 Protocol Family Documentation** (detailed protocol reverse-engineering notes)
 
 **Example structure:**
@@ -898,7 +898,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
     3. Implement feature with tests
     4. Ensure linting passes: `ruff check . && mypy src`
     5. Ensure tests pass: `pytest --cov`
-    6. Create PR, tag @codex-bot for review
+    6. Create PR, tag @codex for review
     7. Address feedback, push updates
     8. When approved + CI green -> squash merge
 
@@ -907,7 +907,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
     - Linting: ruff + mypy (no warnings)
     - Tests: pytest coverage >80%
     - CI: All checks green
-    - Review: Codex-bot approval required
+    - Review: @codex approval required
 
     ## Data File Updates
 
@@ -1221,7 +1221,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 - [ ] Linting passes (ruff + mypy)
 - [ ] PR created with clear description
 - [ ] CI green
-- [ ] Codex-bot review approved
+- [ ] @codex review approved
 - [ ] Squash merge to main
 
 ---
