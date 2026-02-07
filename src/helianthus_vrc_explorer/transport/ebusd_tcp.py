@@ -87,9 +87,14 @@ def _build_read_h_command(dst: int, payload: bytes) -> bytes:
     if len(payload) > 0xFF:
         raise ValueError(f"payload too large for ebusd hex command: {len(payload)} bytes")
 
-    # ebusd expects hex without length/CRC; it derives length from remaining bytes.
+    # ebusd expects hex without CRC, but *with* the data length byte.
+    # See `ebusd_rawscan.py` in the parent repo for the same framing.
+    payload_len = len(payload)
     payload_hex = payload.hex().upper()
-    hex_text = f"{dst:02X}{_PRIMARY_VAILLANT:02X}{_SECONDARY_EXTENDED_REGISTER:02X}{payload_hex}"
+    hex_text = (
+        f"{dst:02X}{_PRIMARY_VAILLANT:02X}{_SECONDARY_EXTENDED_REGISTER:02X}"
+        f"{payload_len:02X}{payload_hex}"
+    )
     cmd = f"read -h {hex_text}"
     return cmd.encode("ascii") + _EBUSD_COMMAND_TERMINATOR
 
