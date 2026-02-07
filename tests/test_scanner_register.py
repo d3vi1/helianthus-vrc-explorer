@@ -111,6 +111,29 @@ class _AlwaysTransportErrorTransport(TransportInterface):
         raise TransportError("nope")
 
 
+class _StatusOnlyTransport(TransportInterface):
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        return b"\x00"
+
+
+def test_read_register_status_only_response_is_not_decode_error() -> None:
+    transport = _StatusOnlyTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0000,
+    )
+
+    assert entry["raw_hex"] == "00"
+    assert entry["type"] is None
+    assert entry["value"] is None
+    assert entry["error"] == "status_only_response: 0x00"
+
+
 def test_is_instance_present_group_0c_requires_valid_register_response() -> None:
     transport = _AlwaysDecodeErrorTransport()
 

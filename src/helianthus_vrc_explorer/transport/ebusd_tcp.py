@@ -24,6 +24,14 @@ _EBUSD_COMMAND_TERMINATOR: Final[bytes] = b"\n"
 _HEX_CHARS: Final[set[str]] = set(string.hexdigits)
 _TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
 _POST_RESPONSE_DRAIN_TIMEOUT_S: Final[float] = 0.01
+_RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "syn received",
+    "wrong symbol received",
+)
+
+
+def _is_retryable_transport_error(exc: TransportError) -> bool:
+    return any(token in str(exc).lower() for token in _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS)
 
 
 def _maybe_strip_length_prefix(payload: bytes) -> bytes:
@@ -126,6 +134,7 @@ class EbusdTcpTransport(TransportInterface):
 
     def send(self, dst: int, payload: bytes) -> bytes:
         last_timeout: TransportTimeout | None = None
+        last_retryable_error: TransportError | None = None
         for attempt in range(2):
             try:
                 return self._send_once(dst, payload)
@@ -135,9 +144,17 @@ class EbusdTcpTransport(TransportInterface):
                     time.sleep(_TIMEOUT_RETRY_DELAY_S)
                     continue
                 raise
+            except TransportError as exc:
+                if attempt == 0 and _is_retryable_transport_error(exc):
+                    last_retryable_error = exc
+                    time.sleep(_TIMEOUT_RETRY_DELAY_S)
+                    continue
+                raise
         # Defensive: loop returns or raises.
-        assert last_timeout is not None
-        raise last_timeout
+        if last_timeout is not None:
+            raise last_timeout
+        assert last_retryable_error is not None
+        raise last_retryable_error
 
     def _send_once(self, dst: int, payload: bytes) -> bytes:
         cmd = _build_hex_command(self._config, dst, payload)

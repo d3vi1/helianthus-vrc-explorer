@@ -163,6 +163,17 @@ def read_register(
             }
     assert response is not None
 
+    # Some registers respond with a single status byte (no GG/RR echo and no value bytes).
+    # We treat this as a valid "no data" reply rather than a decoder bug.
+    if len(response) == 1:
+        status = response[0]
+        return {
+            "raw_hex": response.hex(),
+            "type": None,
+            "value": None,
+            "error": f"status_only_response: 0x{status:02X}",
+        }
+
     try:
         value_bytes = _strip_echo_header(payload, response)
     except ValueError as exc:

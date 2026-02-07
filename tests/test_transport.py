@@ -150,6 +150,29 @@ def test_transport_send_retries_timeout_once_then_raises(monkeypatch: pytest.Mon
     assert sleep_calls == [1.0]
 
 
+@pytest.mark.parametrize("err_line", ["ERR: SYN received", "ERR: wrong symbol received"])
+def test_transport_send_retries_retryable_transport_errors_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    err_line: str,
+) -> None:
+    with _run_ebusd_test_server([[err_line], ["010203"]]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        payload = bytes.fromhex("020002000F00")
+        result = transport.send(0x15, payload)
+
+    assert result == bytes.fromhex("010203")
+    assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
+    assert sleep_calls == [1.0]
+
+
 def test_transport_send_retries_socket_timeout_once_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
