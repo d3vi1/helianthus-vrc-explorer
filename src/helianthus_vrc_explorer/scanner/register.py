@@ -55,16 +55,33 @@ def _looks_like_nul_terminated_latin1(value_bytes: bytes) -> bool:
 
 
 def _strip_echo_header(payload: bytes, response: bytes) -> bytes:
-    """Strip the 4-byte echo header from a register read response."""
+    """Strip the 4-byte header from a register read response.
+
+    Empirically, ebusd's B524 register read replies look like:
+
+        <STATUS> <GG> <RR_LO> <RR_HI> <VALUE_BYTES...>
+
+    This differs from the request selector bytes:
+
+        <OPCODE> <OPTYPE> <GG> <II> <RR_LO> <RR_HI>
+
+    We validate that the response's (GG, RR) match the request and then strip
+    the 4-byte response header, returning only the register value bytes.
+    """
 
     if len(response) < 4:
         raise ValueError(f"Short register response: expected >=4 bytes, got {len(response)} bytes")
-    echo = response[:4]
-    expected_echo = payload[:4]
-    if echo != expected_echo:
+    header = response[:4]
+
+    expected_group = payload[2]
+    expected_rr = payload[4:6]
+    group = header[1]
+    rr = header[2:4]
+    if group != expected_group or rr != expected_rr:
         raise ValueError(
-            "Echo header mismatch: "
-            f"expected={expected_echo.hex()} got={echo.hex()} payload={payload.hex()}"
+            "Register header mismatch: "
+            f"expected_gg={expected_group:02x} expected_rr={expected_rr.hex()} "
+            f"got={header.hex()} payload={payload.hex()}"
         )
     return response[4:]
 

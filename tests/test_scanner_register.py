@@ -18,8 +18,11 @@ class _FlakyOnceTransport(TransportInterface):
         self.calls += 1
         if self.calls == 1:
             raise TransportTimeout("boom")
-        # Return echo header + a u16le value (UIN) so parsing succeeds.
-        return payload[:4] + b"\x01\x00"
+        # Return a register response header + a u16le value (UIN) so parsing succeeds.
+        group = payload[2]
+        rr = payload[4:6]
+        header = bytes((0x00, group)) + rr
+        return header + b"\x01\x00"
 
 
 class _AlwaysTimeoutTransport(TransportInterface):

@@ -15,7 +15,7 @@ class DummyTransport(TransportInterface):
     It supports the minimal subset needed for offline scanner tests:
 
     - Directory probe (opcode 0x00): returns a float32le descriptor type for known groups
-    - Register read (opcode 0x02 / 0x06, optype 0x00): returns `echo(4 bytes) + value_bytes`
+    - Register read (opcode 0x02 / 0x06, optype 0x00): returns `header(4 bytes) + value_bytes`
     """
 
     def __init__(self, fixture_path: Path) -> None:
@@ -84,8 +84,10 @@ class DummyTransport(TransportInterface):
                 f"GG=0x{group:02X}, II=0x{instance:02X}, RR=0x{register:04X}"
             )
 
-        echo_header = payload[:4]
-        return echo_header + value
+        # Empirically, register replies include a 4-byte header:
+        #   <STATUS> <GG> <RR_LO> <RR_HI>
+        header = bytes((0x00, group)) + payload[4:6]
+        return header + value
 
     @staticmethod
     def _parse_hex_key_u8(key: str, field: str) -> int:
