@@ -22,6 +22,7 @@ class DummyTransport(TransportInterface):
         self._fixture_path = fixture_path
         self._group_descriptor: dict[int, float] = {}
         self._register_values: dict[tuple[int, int, int], bytes] = {}
+        self._directory_terminator_group: int | None = None
         self._load_fixture()
 
     def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
@@ -45,6 +46,11 @@ class DummyTransport(TransportInterface):
             raise TransportError(f"Directory probe expects final byte 0x00, got 0x{payload[2]:02X}")
 
         group = payload[1]
+        if (
+            self._directory_terminator_group is not None
+            and group >= self._directory_terminator_group
+        ):
+            return struct.pack("<f", float("nan"))
         descriptor = self._group_descriptor.get(group, 0.0)
         return struct.pack("<f", float(descriptor))
 
@@ -100,6 +106,22 @@ class DummyTransport(TransportInterface):
         data: Any = json.loads(raw)
         if not isinstance(data, dict):
             raise ValueError("Fixture root must be a JSON object")
+
+        meta = data.get("meta", {})
+        if not isinstance(meta, dict):
+            raise ValueError('Fixture top-level key "meta" must be an object')
+        dummy_meta = meta.get("dummy_transport", {})
+        if not isinstance(dummy_meta, dict):
+            raise ValueError('Fixture meta key "dummy_transport" must be an object')
+        terminator_group = dummy_meta.get("directory_terminator_group")
+        if terminator_group is not None:
+            if not isinstance(terminator_group, str):
+                raise ValueError(
+                    "Fixture meta dummy_transport.directory_terminator_group must be a string"
+                )
+            self._directory_terminator_group = self._parse_hex_key_u8(
+                terminator_group, "directory_terminator_group"
+            )
 
         groups = data.get("groups")
         if not isinstance(groups, dict):
