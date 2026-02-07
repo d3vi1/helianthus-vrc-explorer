@@ -22,6 +22,7 @@ _SECONDARY_EXTENDED_REGISTER: Final[int] = 0x24
 _EBUSD_COMMAND_TERMINATOR: Final[bytes] = b"\n"
 _HEX_CHARS: Final[set[str]] = set(string.hexdigits)
 _TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
+_POST_RESPONSE_DRAIN_TIMEOUT_S: Final[float] = 0.01
 
 
 def _parse_ebusd_response_lines(lines: Sequence[str]) -> bytes:
@@ -126,6 +127,9 @@ class EbusdTcpTransport(TransportInterface):
                     sock_file.flush()
 
                     lines: list[str] = []
+                    # ebusd typically terminates responses with a blank line. Some versions keep
+                    # the socket open after sending a single payload/ERR line; do not block on
+                    # waiting for the terminator after we've received a non-empty line.
                     while True:
                         raw = sock_file.readline()
                         if not raw:
@@ -133,7 +137,35 @@ class EbusdTcpTransport(TransportInterface):
                         text = raw.decode("ascii", errors="replace").rstrip("\r\n")
                         if text == "":
                             break
+                        if text.strip() == "":
+                            continue
                         lines.append(text)
+                        break
+
+                    if lines:
+                        # Best-effort: drain any trailing lines (e.g. spurious ERR lines) using a
+                        # short timeout. A drain timeout must not be treated as a request timeout.
+                        prev_timeout = sock.gettimeout()
+                        drain_timeout = _POST_RESPONSE_DRAIN_TIMEOUT_S
+                        if prev_timeout is not None:
+                            drain_timeout = min(prev_timeout, drain_timeout)
+                        sock.settimeout(drain_timeout)
+                        try:
+                            while True:
+                                try:
+                                    raw = sock_file.readline()
+                                except TimeoutError:
+                                    break
+                                if not raw:
+                                    break
+                                text = raw.decode("ascii", errors="replace").rstrip("\r\n")
+                                if text == "":
+                                    break
+                                if text.strip() == "":
+                                    continue
+                                lines.append(text)
+                        finally:
+                            sock.settimeout(prev_timeout)
         except TimeoutError as exc:
             # This catches socket read timeouts too: `socket.timeout` is an alias of
             # builtin `TimeoutError` on Python 3.12+ (including `sock.makefile().readline()`).

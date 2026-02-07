@@ -4,6 +4,7 @@ import socketserver
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from queue import Queue
 
 import pytest
@@ -16,20 +17,28 @@ from helianthus_vrc_explorer.transport.ebusd_tcp import (
 )
 
 
+@dataclass(frozen=True)
+class _EbusdTestServerResponse:
+    lines: list[str]
+    send_terminator: bool = True
+    keep_open: bool = False
+
+
 @contextmanager
 def _run_ebusd_test_server(
-    responses: list[list[str] | None],
+    responses: list[list[str] | None | _EbusdTestServerResponse],
 ) -> Iterator[tuple[str, int, list[str]]]:
     """Run a local TCP server that mimics ebusd's command port framing.
 
     Each connection consumes one entry from `responses`:
     - `list[str]`: response lines (without terminators). A blank line terminator is added.
+    - `_EbusdTestServerResponse`: response lines with configurable framing/connection behavior.
     - `None`: accept the command but keep the socket open without responding
       (useful for socket-timeout tests).
     """
 
     commands: list[str] = []
-    queue: Queue[list[str] | None] = Queue()
+    queue: Queue[list[str] | None | _EbusdTestServerResponse] = Queue()
     for response in responses:
         queue.put(response)
 
@@ -46,10 +55,21 @@ def _run_ebusd_test_server(
                 stop_event.wait(timeout=5)
                 return
 
-            for line in response:
+            keep_open = False
+            send_terminator = True
+            lines = response
+            if isinstance(response, _EbusdTestServerResponse):
+                keep_open = response.keep_open
+                send_terminator = response.send_terminator
+                lines = response.lines
+
+            for line in lines:
                 self.wfile.write(line.encode("ascii") + b"\n")
-            self.wfile.write(b"\n")
+            if send_terminator:
+                self.wfile.write(b"\n")
             self.wfile.flush()
+            if keep_open:
+                stop_event.wait(timeout=5)
 
     server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
@@ -149,3 +169,23 @@ def test_transport_send_retries_socket_timeout_once_then_succeeds(
     assert result == bytes.fromhex("010203")
     assert commands == ["read -h 15B524020002000F00", "read -h 15B524020002000F00"]
     assert sleep_calls == [1.0]
+
+
+def test_transport_send_does_not_timeout_if_ebusd_keeps_socket_open_after_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+    monkeypatch.setattr(ebusd_tcp.time, "sleep", lambda _seconds: None)
+    response = _EbusdTestServerResponse(
+        lines=["010203"],
+        send_terminator=False,
+        keep_open=True,
+    )
+    with _run_ebusd_test_server([response, response]) as (host, port, commands):
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.05))
+        payload = bytes.fromhex("020002000F00")
+        result = transport.send(0x15, payload)
+
+    assert result == bytes.fromhex("010203")
+    assert commands == ["read -h 15B524020002000F00"]
