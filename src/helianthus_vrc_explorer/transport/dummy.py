@@ -1,19 +1,158 @@
 from __future__ import annotations
 
+import json
+import struct
 from pathlib import Path
+from typing import Any
 
-from .base import TransportInterface
+from .base import TransportError, TransportInterface, TransportTimeout
 
 
 class DummyTransport(TransportInterface):
     """Fixture-backed transport used for --dry-run.
 
-    This is intentionally a stub in bootstrap. Follow-up issues will define
-    the fixture format and behavior.
+    The dummy transport replays *responses* from a scan artifact fixture (JSON).
+    It supports the minimal subset needed for offline scanner tests:
+
+    - Directory probe (opcode 0x00): returns a float32le descriptor type for known groups
+    - Register read (opcode 0x02 / 0x06, optype 0x00): returns `echo(4 bytes) + value_bytes`
     """
 
     def __init__(self, fixture_path: Path) -> None:
         self._fixture_path = fixture_path
+        self._group_descriptor: dict[int, float] = {}
+        self._register_values: dict[tuple[int, int, int], bytes] = {}
+        self._load_fixture()
 
     def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
-        raise NotImplementedError("DummyTransport is not implemented yet")
+        if not payload:
+            raise TransportError("Empty payload")
+
+        opcode = payload[0]
+
+        if opcode == 0x00:
+            return self._handle_directory_probe(payload)
+
+        if opcode in {0x02, 0x06}:
+            return self._handle_register_read(payload)
+
+        raise TransportError(f"Unsupported opcode 0x{opcode:02X} for DummyTransport")
+
+    def _handle_directory_probe(self, payload: bytes) -> bytes:
+        if len(payload) != 3:
+            raise TransportError(f"Directory probe expects 3 bytes, got {len(payload)}")
+        if payload[2] != 0x00:
+            raise TransportError(f"Directory probe expects final byte 0x00, got 0x{payload[2]:02X}")
+
+        group = payload[1]
+        descriptor = self._group_descriptor.get(group, 0.0)
+        return struct.pack("<f", float(descriptor))
+
+    def _handle_register_read(self, payload: bytes) -> bytes:
+        if len(payload) < 2:
+            raise TransportError(f"Register payload too short: {len(payload)} bytes")
+
+        optype = payload[1]
+        if optype != 0x00:
+            raise TransportError(
+                f"DummyTransport only supports register reads (optype=0x00), got 0x{optype:02X}"
+            )
+
+        if len(payload) != 6:
+            raise TransportError(f"Register read expects 6 bytes, got {len(payload)}")
+
+        group = payload[2]
+        instance = payload[3]
+        register = int.from_bytes(payload[4:6], byteorder="little", signed=False)
+
+        value = self._register_values.get((group, instance, register))
+        if value is None:
+            raise TransportTimeout(
+                "Fixture missing register raw_hex for "
+                f"GG=0x{group:02X}, II=0x{instance:02X}, RR=0x{register:04X}"
+            )
+
+        echo_header = payload[:4]
+        return echo_header + value
+
+    @staticmethod
+    def _parse_hex_key_u8(key: str, field: str) -> int:
+        try:
+            value = int(key, 16)
+        except ValueError as exc:
+            raise ValueError(f"Invalid {field} key (expected hex): {key!r}") from exc
+        if not (0x00 <= value <= 0xFF):
+            raise ValueError(f"{field} key out of range 0..255: {key!r}")
+        return value
+
+    @staticmethod
+    def _parse_hex_key_u16(key: str, field: str) -> int:
+        try:
+            value = int(key, 16)
+        except ValueError as exc:
+            raise ValueError(f"Invalid {field} key (expected hex): {key!r}") from exc
+        if not (0x0000 <= value <= 0xFFFF):
+            raise ValueError(f"{field} key out of range 0..65535: {key!r}")
+        return value
+
+    def _load_fixture(self) -> None:
+        raw = self._fixture_path.read_text(encoding="utf-8")
+        data: Any = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("Fixture root must be a JSON object")
+
+        groups = data.get("groups")
+        if not isinstance(groups, dict):
+            raise ValueError('Fixture must contain top-level key "groups" as an object')
+
+        for group_key, group_value in groups.items():
+            if not isinstance(group_key, str):
+                raise ValueError(f"Group keys must be strings, got {type(group_key).__name__}")
+            group = self._parse_hex_key_u8(group_key, "group")
+            if not isinstance(group_value, dict):
+                raise ValueError(f"Group {group_key!r} must be a JSON object")
+
+            descriptor = group_value.get("descriptor_type")
+            if not isinstance(descriptor, (int, float)) or isinstance(descriptor, bool):
+                raise ValueError(f"Group {group_key!r} must contain numeric descriptor_type")
+            self._group_descriptor[group] = float(descriptor)
+
+            instances = group_value.get("instances", {})
+            if not isinstance(instances, dict):
+                raise ValueError(f'Group {group_key!r} field "instances" must be an object')
+
+            for instance_key, instance_value in instances.items():
+                if not isinstance(instance_key, str):
+                    raise ValueError(
+                        f"Instance keys must be strings, got {type(instance_key).__name__}"
+                    )
+                instance = self._parse_hex_key_u8(instance_key, "instance")
+                if not isinstance(instance_value, dict):
+                    raise ValueError(f"Instance {instance_key!r} must be a JSON object")
+
+                registers = instance_value.get("registers", {})
+                if not isinstance(registers, dict):
+                    raise ValueError(
+                        f'Instance {instance_key!r} field "registers" must be an object'
+                    )
+
+                for register_key, register_value in registers.items():
+                    if not isinstance(register_key, str):
+                        raise ValueError(
+                            f"Register keys must be strings, got {type(register_key).__name__}"
+                        )
+                    register = self._parse_hex_key_u16(register_key, "register")
+                    if not isinstance(register_value, dict):
+                        raise ValueError(f"Register {register_key!r} must be a JSON object")
+
+                    raw_hex = register_value.get("raw_hex")
+                    if not isinstance(raw_hex, str):
+                        raise ValueError(f"Register {register_key!r} must contain raw_hex string")
+                    try:
+                        value_bytes = bytes.fromhex(raw_hex)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Register {register_key!r} has invalid raw_hex: {raw_hex!r}"
+                        ) from exc
+
+                    self._register_values[(group, instance, register)] = value_bytes
