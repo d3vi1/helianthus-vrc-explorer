@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import pytest
+
+from helianthus_vrc_explorer.scanner.director import (
+    DiscoveredGroup,
+    classify_groups,
+    discover_groups,
+)
+from helianthus_vrc_explorer.transport.base import TransportInterface
+from helianthus_vrc_explorer.transport.dummy import DummyTransport
+
+
+class RecordingTransport(TransportInterface):
+    def __init__(self, inner: TransportInterface) -> None:
+        self._inner = inner
+        self.probed_groups: list[int] = []
+
+    def send(self, dst: int, payload: bytes) -> bytes:
+        if payload and payload[0] == 0x00 and len(payload) >= 2:
+            self.probed_groups.append(payload[1])
+        return self._inner.send(dst, payload)
+
+
+def _write_directory_fixture(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x05"}},
+        "groups": {
+            "0x00": {"descriptor_type": 3.0, "instances": {}},
+            # Intentional hole at 0x01/0x02 (unknown groups => descriptor==0.0)
+            "0x03": {"descriptor_type": 1.0, "instances": {}},
+        },
+    }
+    fixture_path = tmp_path / "fixture.json"
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+    return fixture_path
+
+
+def test_discover_groups_stops_after_second_nan_and_skips_holes(tmp_path: Path) -> None:
+    transport = RecordingTransport(DummyTransport(_write_directory_fixture(tmp_path)))
+
+    discovered = discover_groups(transport, dst=0x15)
+
+    # Holes (descriptor==0.0) should not be recorded as discovered groups.
+    assert [group.group for group in discovered] == [0x00, 0x03]
+
+    # Terminator is triggered by the *second* NaN (GG=0x06), so probing stops there.
+    assert transport.probed_groups == [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]
+
+
+def test_classify_groups_warns_on_descriptor_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="helianthus_vrc_explorer.scanner.director")
+
+    classified = classify_groups([DiscoveredGroup(group=0x02, descriptor=3.0)])
+
+    assert classified[0].descriptor_mismatch is True
+    assert classified[0].expected_descriptor == 1.0
+    assert any("Descriptor mismatch for GG=0x02" in record.message for record in caplog.records)
