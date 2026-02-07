@@ -18,5 +18,18 @@
     "schema_sources": [],
     "incomplete": false
   },
-  "groups": {}
+  "groups": {
+    "0x02": {
+      "descriptor_type": 1.0,
+      "instances": {
+        "0x00": {
+          "registers": {
+            "0x000f": {
+              "raw_hex": "3412"
+            }
+          }
+        }
+      }
+    }
+  }
 }

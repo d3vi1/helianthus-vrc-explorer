@@ -1,0 +1,61 @@
+# Fixtures
+
+This directory contains **scan artifact fixtures** used for deterministic, offline tests and for
+`scan --dry-run` output.
+
+## Format (Minimal, Stable)
+
+A fixture is a JSON object with:
+
+- `meta`: arbitrary metadata about the scan (timestamps, device info, etc.).
+- `groups`: mapping of group id -> group data.
+
+### `groups`
+
+`groups` is an object keyed by **hex strings**:
+
+- group key: `0xGG` (u8)
+- instance key: `0xII` (u8)
+- register key: `0xRRRR` (u16)
+
+Each group entry contains:
+
+- `descriptor_type` (number): Value returned by the B524 directory probe (`opcode=0x00`), encoded
+  as float32 little-endian on the wire.
+- `instances` (object, optional): Mapping of instance id -> instance data.
+
+Each instance entry contains:
+
+- `registers` (object, optional): Mapping of register id -> register data.
+
+Each register entry contains:
+
+- `raw_hex` (string): Hex-encoded **value bytes only** for a register read response (no 4-byte echo
+  header).
+
+### Example
+
+```json
+{
+  "meta": {},
+  "groups": {
+    "0x02": {
+      "descriptor_type": 1.0,
+      "instances": {
+        "0x00": {
+          "registers": {
+            "0x000f": { "raw_hex": "3412" }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## DummyTransport Behavior
+
+- Directory probe (`00 <GG> 00`): returns `float32le(descriptor_type)` for known groups, otherwise
+  `0.0`.
+- Register read (`02/06 00 <GG> <II> <RR_LO> <RR_HI>`): returns `echo(4 bytes) + value_bytes`
+  where `value_bytes = bytes.fromhex(raw_hex)`. If missing, `TransportTimeout` is raised.
