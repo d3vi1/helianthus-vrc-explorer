@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Final, TypedDict
 
 from ..protocol.b524 import build_directory_probe_payload
-from ..transport.base import TransportInterface
+from ..transport.base import TransportError, TransportInterface, TransportTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,16 @@ def discover_groups(transport: TransportInterface, dst: int) -> list[DiscoveredG
 
     for gg in range(0x00, 0x100):
         payload = build_directory_probe_payload(gg)
-        resp = transport.send(dst, payload)
-        descriptor = _parse_directory_descriptor(resp, gg)
+        try:
+            resp = transport.send(dst, payload)
+        except TransportTimeout:
+            # Treat directory timeouts as NaN so the terminator streak logic can kick in.
+            descriptor = float("nan")
+        except TransportError as exc:
+            logger.warning("Directory probe transport error for GG=0x%02X: %s", gg, exc)
+            descriptor = float("nan")
+        else:
+            descriptor = _parse_directory_descriptor(resp, gg)
 
         if descriptor == 0.0:
             # Hole: skip without resetting the NaN streak.

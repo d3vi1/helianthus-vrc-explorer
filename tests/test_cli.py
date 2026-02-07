@@ -16,7 +16,7 @@ def test_version_prints_version() -> None:
 
 def test_scan_command_is_present() -> None:
     runner = CliRunner()
-    result = runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["scan", "--help"])
     assert result.exit_code == 0
 
 
@@ -25,7 +25,7 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
     result = runner.invoke(app, ["scan", "--dry-run", "--output-dir", str(tmp_path)])
     assert result.exit_code == 0
 
-    output_path = tmp_path / "scan.json"
+    output_path = Path(result.stdout.strip())
     assert output_path.exists()
 
     artifact = json.loads(output_path.read_text(encoding="utf-8"))

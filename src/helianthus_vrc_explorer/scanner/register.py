@@ -1,5 +1,238 @@
 from __future__ import annotations
 
+import logging
+from typing import Final, TypedDict
 
-def scan_registers() -> None:
-    """Scan registers for a given group/instance (stub)."""
+from ..protocol.b524 import RegisterOpcode, build_register_read_payload
+from ..protocol.parser import ValueParseError, parse_typed_value
+from ..transport.base import TransportError, TransportInterface, TransportTimeout
+
+logger = logging.getLogger(__name__)
+
+_REMOTE_GROUPS: Final[set[int]] = {0x09, 0x0A, 0x0C}
+_PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100))
+
+
+class RegisterEntry(TypedDict):
+    raw_hex: str | None
+    type: str | None
+    value: object | None
+    error: str | None
+
+
+def opcode_for_group(group: int) -> RegisterOpcode:
+    """Return the B524 register opcode family for a group."""
+
+    return 0x06 if group in _REMOTE_GROUPS else 0x02
+
+
+def _looks_like_nul_terminated_latin1(value_bytes: bytes) -> bool:
+    """Heuristic for identifying C strings when the schema is missing.
+
+    We only treat values as strings when they look like NUL-terminated latin1 and
+    the bytes before the first NUL are "printable-ish". This avoids misclassifying
+    packed binary values.
+    """
+
+    if not value_bytes:
+        return False
+
+    try:
+        nul_index = value_bytes.index(0x00)
+    except ValueError:
+        return False
+
+    # After the first NUL, allow only more NUL padding.
+    if any(b != 0x00 for b in value_bytes[nul_index:]):
+        return False
+
+    prefix = value_bytes[:nul_index]
+    if not prefix:
+        return False
+    return all(b in _PRINTABLE_LATIN1 for b in prefix)
+
+
+def _strip_echo_header(payload: bytes, response: bytes) -> bytes:
+    """Strip the 4-byte echo header from a register read response."""
+
+    if len(response) < 4:
+        raise ValueError(f"Short register response: expected >=4 bytes, got {len(response)} bytes")
+    echo = response[:4]
+    expected_echo = payload[:4]
+    if echo != expected_echo:
+        raise ValueError(
+            "Echo header mismatch: "
+            f"expected={expected_echo.hex()} got={echo.hex()} payload={payload.hex()}"
+        )
+    return response[4:]
+
+
+def _parse_inferred_value(value_bytes: bytes) -> tuple[str | None, object | None, str | None]:
+    """Infer a type from byte length and parse it.
+
+    Returns:
+        (type_spec, value, error)
+    """
+
+    if len(value_bytes) == 4:
+        try:
+            return "EXP", parse_typed_value("EXP", value_bytes), None
+        except ValueParseError as exc:
+            return "EXP", None, f"parse_error: {exc}"
+
+    if len(value_bytes) == 2:
+        try:
+            return "UIN", parse_typed_value("UIN", value_bytes), None
+        except ValueParseError as exc:
+            return "UIN", None, f"parse_error: {exc}"
+
+    if len(value_bytes) == 1:
+        try:
+            return "UCH", parse_typed_value("UCH", value_bytes), None
+        except ValueParseError as exc:
+            return "UCH", None, f"parse_error: {exc}"
+
+    if len(value_bytes) == 3:
+        try:
+            return "HDA:3", parse_typed_value("HDA:3", value_bytes), None
+        except ValueParseError:
+            pass
+        try:
+            return "HTI", parse_typed_value("HTI", value_bytes), None
+        except ValueParseError as exc:
+            # Fallback to raw_hex only for unparseable u24 values.
+            return None, None, f"parse_error: {exc}"
+
+    if _looks_like_nul_terminated_latin1(value_bytes):
+        try:
+            return "STR:*", parse_typed_value("STR:*", value_bytes), None
+        except ValueParseError as exc:
+            return "STR:*", None, f"parse_error: {exc}"
+
+    return None, None, f"unknown_value_length: {len(value_bytes)}"
+
+
+def read_register(
+    transport: TransportInterface,
+    dst: int,
+    opcode: RegisterOpcode,
+    group: int,
+    instance: int,
+    register: int,
+    *,
+    type_hint: str | None = None,
+) -> RegisterEntry:
+    """Read a B524 register and parse it into an artifact-ready entry."""
+
+    payload = build_register_read_payload(opcode, group=group, instance=instance, register=register)
+    try:
+        response = transport.send(dst, payload)
+    except TransportTimeout:
+        return {"raw_hex": None, "type": None, "value": None, "error": "timeout"}
+    except TransportError as exc:
+        return {"raw_hex": None, "type": None, "value": None, "error": f"transport_error: {exc}"}
+
+    try:
+        value_bytes = _strip_echo_header(payload, response)
+    except ValueError as exc:
+        return {
+            "raw_hex": response.hex(),
+            "type": None,
+            "value": None,
+            "error": f"decode_error: {exc}",
+        }
+
+    raw_hex = value_bytes.hex()
+    if type_hint is not None:
+        try:
+            value = parse_typed_value(type_hint, value_bytes)
+            return {"raw_hex": raw_hex, "type": type_hint, "value": value, "error": None}
+        except ValueParseError as exc:
+            return {
+                "raw_hex": raw_hex,
+                "type": type_hint,
+                "value": None,
+                "error": f"parse_error: {exc}",
+            }
+
+    inferred_type, inferred_value, inferred_error = _parse_inferred_value(value_bytes)
+    return {
+        "raw_hex": raw_hex,
+        "type": inferred_type,
+        "value": inferred_value,
+        "error": inferred_error,
+    }
+
+
+def is_instance_present(transport: TransportInterface, dst: int, group: int, instance: int) -> bool:
+    """Presence heuristic for instanced groups (desc==1.0).
+
+    Source of truth: `AGENTS.md` (keep in sync).
+    """
+
+    opcode = opcode_for_group(group)
+
+    if group == 0x02:
+        entry = read_register(
+            transport, dst, opcode, group=group, instance=instance, register=0x0002, type_hint="UIN"
+        )
+        if entry["error"] is not None:
+            return False
+        value = entry["value"]
+        if value is None:
+            return False
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False
+        return value not in {0x0000, 0xFFFF}
+
+    if group == 0x03:
+        entry = read_register(
+            transport, dst, opcode, group=group, instance=instance, register=0x001C, type_hint="UCH"
+        )
+        if entry["error"] is not None:
+            return False
+        value = entry["value"]
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False
+        return value != 0xFF
+
+    if group in {0x09, 0x0A}:
+        entry_1 = read_register(
+            transport, dst, 0x06, group=group, instance=instance, register=0x0007, type_hint="EXP"
+        )
+        if entry_1["error"] is None and entry_1["value"] is not None:
+            return True
+        entry_2 = read_register(
+            transport, dst, 0x06, group=group, instance=instance, register=0x000F, type_hint="EXP"
+        )
+        return entry_2["error"] is None and entry_2["value"] is not None
+
+    if group == 0x0C:
+        for rr in (0x0002, 0x0007, 0x000F, 0x0016):
+            entry = read_register(transport, dst, 0x06, group=group, instance=instance, register=rr)
+            if entry["error"] != "timeout":
+                return True
+        return False
+
+    logger.debug(
+        "No presence heuristic for GG=0x%02X; assuming present for II=0x%02X", group, instance
+    )
+    return True
+
+
+def scan_registers_for_instance(
+    transport: TransportInterface,
+    dst: int,
+    group: int,
+    instance: int,
+    rr_max: int,
+) -> dict[str, RegisterEntry]:
+    """Phase D: scan RR=0x0000..rr_max for a (present) instance."""
+
+    opcode = opcode_for_group(group)
+    registers: dict[str, RegisterEntry] = {}
+    for rr in range(0x0000, rr_max + 1):
+        registers[f"0x{rr:04x}"] = read_register(
+            transport, dst, opcode, group=group, instance=instance, register=rr
+        )
+    return registers
