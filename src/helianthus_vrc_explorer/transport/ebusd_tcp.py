@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import string
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -20,6 +21,7 @@ _PRIMARY_VAILLANT: Final[int] = 0xB5
 _SECONDARY_EXTENDED_REGISTER: Final[int] = 0x24
 _EBUSD_COMMAND_TERMINATOR: Final[bytes] = b"\n"
 _HEX_CHARS: Final[set[str]] = set(string.hexdigits)
+_TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
 
 
 def _parse_ebusd_response_lines(lines: Sequence[str]) -> bytes:
@@ -105,6 +107,7 @@ class EbusdTcpTransport(TransportInterface):
             except TransportTimeout as exc:
                 last_timeout = exc
                 if attempt == 0:
+                    time.sleep(_TIMEOUT_RETRY_DELAY_S)
                     continue
                 raise
         # Defensive: loop returns or raises.
@@ -132,6 +135,8 @@ class EbusdTcpTransport(TransportInterface):
                             break
                         lines.append(text)
         except TimeoutError as exc:
+            # This catches socket read timeouts too: `socket.timeout` is an alias of
+            # builtin `TimeoutError` on Python 3.12+ (including `sock.makefile().readline()`).
             raise TransportTimeout(
                 f"Timed out talking to ebusd at {self._config.host}:{self._config.port}"
             ) from exc

@@ -24,13 +24,16 @@ def _run_ebusd_test_server(
 
     Each connection consumes one entry from `responses`:
     - `list[str]`: response lines (without terminators). A blank line terminator is added.
-    - `None`: accept the command but do not respond (useful for socket-timeout tests).
+    - `None`: accept the command but keep the socket open without responding
+      (useful for socket-timeout tests).
     """
 
     commands: list[str] = []
     queue: Queue[list[str] | None] = Queue()
     for response in responses:
         queue.put(response)
+
+    stop_event = threading.Event()
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self) -> None:  # noqa: D401 - socketserver signature
@@ -39,6 +42,8 @@ def _run_ebusd_test_server(
 
             response = queue.get_nowait()
             if response is None:
+                # Keep connection open without responding so the client hits its socket timeout.
+                stop_event.wait(timeout=5)
                 return
 
             for line in response:
@@ -57,6 +62,7 @@ def _run_ebusd_test_server(
         assert isinstance(port, int)
         yield host, port, commands
     finally:
+        stop_event.set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=1)
@@ -86,21 +92,60 @@ def test_transport_send_parses_multiline_response_and_ignores_trailing_err() -> 
     assert commands == ["read -h 15B524020002000F00"]
 
 
-def test_transport_send_retries_timeout_once_then_succeeds() -> None:
+def test_transport_send_retries_timeout_once_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     with _run_ebusd_test_server([["ERR: timeout"], ["010203"]]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
         payload = bytes.fromhex("020002000F00")
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
     assert commands == ["read -h 15B524020002000F00", "read -h 15B524020002000F00"]
+    assert sleep_calls == [1.0]
 
 
-def test_transport_send_retries_timeout_once_then_raises() -> None:
+def test_transport_send_retries_timeout_once_then_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     with _run_ebusd_test_server([["ERR: timeout"], ["ERR: timeout"]]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
         payload = bytes.fromhex("020002000F00")
         with pytest.raises(TransportTimeout):
             transport.send(0x15, payload)
 
     assert commands == ["read -h 15B524020002000F00", "read -h 15B524020002000F00"]
+    assert sleep_calls == [1.0]
+
+
+def test_transport_send_retries_socket_timeout_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _run_ebusd_test_server([None, ["010203"]]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.05))
+        payload = bytes.fromhex("020002000F00")
+        result = transport.send(0x15, payload)
+
+    assert result == bytes.fromhex("010203")
+    assert commands == ["read -h 15B524020002000F00", "read -h 15B524020002000F00"]
+    assert sleep_calls == [1.0]
