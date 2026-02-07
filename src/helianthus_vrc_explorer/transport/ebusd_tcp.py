@@ -26,6 +26,22 @@ _TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
 _POST_RESPONSE_DRAIN_TIMEOUT_S: Final[float] = 0.01
 
 
+def _maybe_strip_length_prefix(payload: bytes) -> bytes:
+    """Strip ebusd's leading length byte when using the `hex` command.
+
+    In daemon TCP mode, `hex` returns the response data prefixed with a single
+    byte indicating the remaining payload length. Higher-level B524 parsing in
+    this project expects only the raw response payload bytes.
+    """
+
+    # B524 responses are at least 4 bytes, so a length-prefixed response is
+    # always >=5 bytes. Keeping the guard tight avoids accidentally stripping
+    # legitimate data that happens to match the pattern.
+    if len(payload) >= 5 and payload[0] == len(payload) - 1:
+        return payload[1:]
+    return payload
+
+
 def _parse_ebusd_response_lines(lines: Sequence[str]) -> bytes:
     """Parse ebusd TCP response lines and return the first hex payload line as bytes.
 
@@ -185,4 +201,4 @@ class EbusdTcpTransport(TransportInterface):
                 f"Failed talking to ebusd at {self._config.host}:{self._config.port}: {exc}"
             ) from exc
 
-        return _parse_ebusd_response_lines(lines)
+        return _maybe_strip_length_prefix(_parse_ebusd_response_lines(lines))

@@ -189,3 +189,13 @@ def test_transport_send_does_not_timeout_if_ebusd_keeps_socket_open_after_payloa
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00"]
+
+
+def test_transport_send_strips_length_prefix_from_hex_response() -> None:
+    with _run_ebusd_test_server([["040000803F"]]) as (host, port, commands):
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        payload = bytes.fromhex("000000")
+        result = transport.send(0x15, payload)
+
+    assert result == bytes.fromhex("0000803F")
+    assert commands == ["hex 15B52403000000"]
