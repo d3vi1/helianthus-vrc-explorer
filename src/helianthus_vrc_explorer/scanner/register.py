@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Final, TypedDict
 
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 _REMOTE_GROUPS: Final[set[int]] = {0x09, 0x0A, 0x0C}
 _PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100))
+_TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
 
 
 class RegisterEntry(TypedDict):
@@ -125,12 +127,24 @@ def read_register(
     """Read a B524 register and parse it into an artifact-ready entry."""
 
     payload = build_register_read_payload(opcode, group=group, instance=instance, register=register)
-    try:
-        response = transport.send(dst, payload)
-    except TransportTimeout:
-        return {"raw_hex": None, "type": None, "value": None, "error": "timeout"}
-    except TransportError as exc:
-        return {"raw_hex": None, "type": None, "value": None, "error": f"transport_error: {exc}"}
+    response: bytes | None = None
+    for attempt in range(2):
+        try:
+            response = transport.send(dst, payload)
+            break
+        except TransportTimeout:
+            if attempt == 0:
+                time.sleep(_TIMEOUT_RETRY_DELAY_S)
+                continue
+            return {"raw_hex": None, "type": None, "value": None, "error": "timeout"}
+        except TransportError as exc:
+            return {
+                "raw_hex": None,
+                "type": None,
+                "value": None,
+                "error": f"transport_error: {exc}",
+            }
+    assert response is not None
 
     try:
         value_bytes = _strip_echo_header(payload, response)
@@ -210,7 +224,7 @@ def is_instance_present(transport: TransportInterface, dst: int, group: int, ins
     if group == 0x0C:
         for rr in (0x0002, 0x0007, 0x000F, 0x0016):
             entry = read_register(transport, dst, 0x06, group=group, instance=instance, register=rr)
-            if entry["error"] != "timeout":
+            if entry["error"] is None:
                 return True
         return False
 
