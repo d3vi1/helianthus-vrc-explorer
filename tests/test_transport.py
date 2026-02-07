@@ -109,7 +109,7 @@ def test_transport_send_parses_multiline_response_and_ignores_trailing_err() -> 
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
-    assert commands == ["read -h 15B52406020002000F00"]
+    assert commands == ["hex 15B52406020002000F00"]
 
 
 def test_transport_send_retries_timeout_once_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,7 +127,7 @@ def test_transport_send_retries_timeout_once_then_succeeds(monkeypatch: pytest.M
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
-    assert commands == ["read -h 15B52406020002000F00", "read -h 15B52406020002000F00"]
+    assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
     assert sleep_calls == [1.0]
 
 
@@ -146,7 +146,7 @@ def test_transport_send_retries_timeout_once_then_raises(monkeypatch: pytest.Mon
         with pytest.raises(TransportTimeout):
             transport.send(0x15, payload)
 
-    assert commands == ["read -h 15B52406020002000F00", "read -h 15B52406020002000F00"]
+    assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
     assert sleep_calls == [1.0]
 
 
@@ -167,7 +167,7 @@ def test_transport_send_retries_socket_timeout_once_then_succeeds(
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
-    assert commands == ["read -h 15B52406020002000F00", "read -h 15B52406020002000F00"]
+    assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
     assert sleep_calls == [1.0]
 
 
@@ -188,4 +188,4 @@ def test_transport_send_does_not_timeout_if_ebusd_keeps_socket_open_after_payloa
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
-    assert commands == ["read -h 15B52406020002000F00"]
+    assert commands == ["hex 15B52406020002000F00"]

@@ -15,6 +15,7 @@ class EbusdTcpConfig:
     host: str = "127.0.0.1"
     port: int = 8888
     timeout_s: float = 5.0
+    src: int | None = None
 
 
 _PRIMARY_VAILLANT: Final[int] = 0xB5
@@ -80,8 +81,10 @@ def _validate_u8(field_name: str, value: int) -> None:
         raise ValueError(f"{field_name} must be in range 0..255, got {value}")
 
 
-def _build_read_h_command(dst: int, payload: bytes) -> bytes:
+def _build_hex_command(config: EbusdTcpConfig, dst: int, payload: bytes) -> bytes:
     _validate_u8("dst", dst)
+    if config.src is not None:
+        _validate_u8("src", config.src)
     if not isinstance(payload, (bytes, bytearray, memoryview)):
         raise TypeError(f"payload must be bytes-like, got {type(payload).__name__}")
     if len(payload) > 0xFF:
@@ -95,7 +98,7 @@ def _build_read_h_command(dst: int, payload: bytes) -> bytes:
         f"{dst:02X}{_PRIMARY_VAILLANT:02X}{_SECONDARY_EXTENDED_REGISTER:02X}"
         f"{payload_len:02X}{payload_hex}"
     )
-    cmd = f"read -h {hex_text}"
+    cmd = f"hex {hex_text}" if config.src is None else f"hex -s {config.src:02X} {hex_text}"
     return cmd.encode("ascii") + _EBUSD_COMMAND_TERMINATOR
 
 
@@ -121,7 +124,7 @@ class EbusdTcpTransport(TransportInterface):
         raise last_timeout
 
     def _send_once(self, dst: int, payload: bytes) -> bytes:
-        cmd = _build_read_h_command(dst, payload)
+        cmd = _build_hex_command(self._config, dst, payload)
         addr = (self._config.host, self._config.port)
 
         try:
