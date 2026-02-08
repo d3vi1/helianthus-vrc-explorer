@@ -128,15 +128,15 @@ def scan_b524(
             for ii in range(0x00, ii_max + 1):
                 if observer is not None:
                     observer.status(f"Probe presence GG=0x{group.group:02X} II=0x{ii:02X}")
-                present = is_instance_present(
+                is_present = is_instance_present(
                     transport,
                     dst=dst,
                     group=group.group,
                     instance=ii,
                 )
-                if present:
+                if is_present:
                     present_count += 1
-                group_obj["instances"][_hex_u8(ii)] = {"present": present}
+                group_obj["instances"][_hex_u8(ii)] = {"present": is_present}
                 if observer is not None:
                     observer.phase_advance("instance_discovery", advance=1)
 
@@ -203,7 +203,7 @@ def scan_b524(
                 group_obj = artifact["groups"][_hex_u8(group.group)]
                 if group.descriptor == 1.0:
                     ii_max = int(config["ii_max"])
-                    present: list[int] = [
+                    present_instances_list: list[int] = [
                         int(ii_key, 0)
                         for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
                         if isinstance(ii_obj, dict) and ii_obj.get("present") is True
@@ -215,7 +215,7 @@ def scan_b524(
                             descriptor=group.descriptor,
                             ii_max=ii_max,
                             rr_max=int(config["rr_max"]),
-                            present_instances=tuple(sorted(present)),
+                            present_instances=tuple(sorted(present_instances_list)),
                         )
                     )
                 else:

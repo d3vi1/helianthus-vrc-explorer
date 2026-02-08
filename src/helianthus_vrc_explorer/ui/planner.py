@@ -66,8 +66,10 @@ def prompt_scan_plan(
 
     default_plan: dict[int, GroupScanPlan] = {}
     for g in eligible.values():
-        instances = (0x00,) if g.ii_max is None else g.present_instances
-        default_plan[g.group] = GroupScanPlan(group=g.group, rr_max=g.rr_max, instances=instances)
+        default_instances = (0x00,) if g.ii_max is None else g.present_instances
+        default_plan[g.group] = GroupScanPlan(
+            group=g.group, rr_max=g.rr_max, instances=default_instances
+        )
 
     console.print(Rule("Scan Planner", style="dim"))
     console.print(
@@ -108,10 +110,9 @@ def prompt_scan_plan(
     )
 
     if not Confirm.ask("Customize scan plan?", default=False, console=console):
-        plan = default_plan
         if not Confirm.ask("Proceed with register scan?", default=True, console=console):
             raise KeyboardInterrupt
-        return plan
+        return default_plan
 
     # Step 1: select groups.
     while True:
@@ -141,14 +142,14 @@ def prompt_scan_plan(
         selected_groups = parsed
         break
 
-    plan: dict[int, GroupScanPlan] = {}
+    selected_plan: dict[int, GroupScanPlan] = {}
 
     # Step 2: per-group instance selection + rr_max override.
     for gg in selected_groups:
         g = eligible[gg]
-        instances: tuple[int, ...]
+        selected_instances: tuple[int, ...]
         if g.ii_max is None:
-            instances = (0x00,)
+            selected_instances = (0x00,)
         else:
             default_instances_mode = "present" if g.present_instances else "none"
             while True:
@@ -160,13 +161,13 @@ def prompt_scan_plan(
                 ).strip()
                 lowered = raw_instances.lower()
                 if lowered in {"present", "p"}:
-                    instances = g.present_instances
+                    selected_instances = g.present_instances
                     break
                 if lowered in {"all", "*"}:
-                    instances = tuple(range(0x00, g.ii_max + 1))
+                    selected_instances = tuple(range(0x00, g.ii_max + 1))
                     break
                 if lowered in {"none", "no"}:
-                    instances = ()
+                    selected_instances = ()
                     break
                 try:
                     parsed_instances = parse_int_set(
@@ -177,7 +178,7 @@ def prompt_scan_plan(
                 except ValueError as exc:
                     console.print(f"[red]Invalid instance selection:[/red] {exc}")
                     continue
-                instances = tuple(parsed_instances)
+                selected_instances = tuple(parsed_instances)
                 break
 
         while True:
@@ -195,10 +196,14 @@ def prompt_scan_plan(
             if not (0x0000 <= rr_max <= 0xFFFF):
                 console.print("[red]RR_max out of range (0x0000..0xFFFF).[/red]")
                 continue
-            plan[gg] = GroupScanPlan(group=gg, rr_max=rr_max, instances=instances)
+            selected_plan[gg] = GroupScanPlan(
+                group=gg,
+                rr_max=rr_max,
+                instances=selected_instances,
+            )
             break
 
-    requests = estimate_register_requests(plan)
+    requests = estimate_register_requests(selected_plan)
     eta_s = estimate_eta_seconds(requests=requests, request_rate_rps=request_rate_rps)
     eta_txt = _format_seconds(eta_s) if eta_s is not None else "n/a"
     rps_txt = f"{request_rate_rps:.2f}" if request_rate_rps is not None else "n/a"
@@ -211,4 +216,4 @@ def prompt_scan_plan(
     if not Confirm.ask("Proceed with register scan?", default=True, console=console):
         raise KeyboardInterrupt
 
-    return plan
+    return selected_plan
