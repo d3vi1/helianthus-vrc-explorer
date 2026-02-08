@@ -11,7 +11,11 @@ from helianthus_vrc_explorer.scanner.director import (
     classify_groups,
     discover_groups,
 )
-from helianthus_vrc_explorer.transport.base import TransportInterface
+from helianthus_vrc_explorer.transport.base import (
+    TransportError,
+    TransportInterface,
+    TransportTimeout,
+)
 from helianthus_vrc_explorer.transport.dummy import DummyTransport
 
 
@@ -50,6 +54,50 @@ def test_discover_groups_stops_after_second_nan_and_skips_holes(tmp_path: Path) 
 
     # Terminator is triggered by the *second* NaN (GG=0x06), so probing stops there.
     assert transport.probed_groups == [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]
+
+
+class FlakyDirectoryTransport(TransportInterface):
+    def __init__(
+        self,
+        inner: TransportInterface,
+        *,
+        timeouts: set[int] | None = None,
+        errors: set[int] | None = None,
+        short_responses: set[int] | None = None,
+    ) -> None:
+        self._inner = inner
+        self._timeouts = timeouts or set()
+        self._errors = errors or set()
+        self._short_responses = short_responses or set()
+
+    def send(self, dst: int, payload: bytes) -> bytes:
+        if payload and payload[0] == 0x00 and len(payload) >= 2:
+            gg = payload[1]
+            if gg in self._timeouts:
+                raise TransportTimeout("boom")
+            if gg in self._errors:
+                raise TransportError("nope")
+            if gg in self._short_responses:
+                return b"\x00"
+        return self._inner.send(dst, payload)
+
+
+def test_discover_groups_does_not_terminate_on_transient_transport_failures(tmp_path: Path) -> None:
+    # Terminator (NaN) starts at GG=0x08 -> second NaN at GG=0x09.
+    fixture_path = _write_directory_fixture(tmp_path)
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    fixture["meta"]["dummy_transport"]["directory_terminator_group"] = "0x08"
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    inner = DummyTransport(fixture_path)
+    flaky = FlakyDirectoryTransport(inner, timeouts={0x04}, errors={0x05}, short_responses={0x06})
+    transport = RecordingTransport(flaky)
+
+    discovered = discover_groups(transport, dst=0x15)
+
+    assert [group.group for group in discovered] == [0x00, 0x03]
+    # Failures at 0x04/0x05/0x06 must not count toward the NaN terminator streak.
+    assert transport.probed_groups == [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]
 
 
 def test_classify_groups_warns_on_descriptor_mismatch(
