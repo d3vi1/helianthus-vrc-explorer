@@ -89,8 +89,41 @@ Notes (no secrets, no private infra):
 
 **All configuration data is CSV-based (not embedded in code):**
 - `data/field_mappings.csv` - Register names, types, enums (auto-downloaded from GitHub)
-- `data/models.csv` - VRC model lookup table (manually curated)
+- `data/models.csv` - VRC model lookup table (generated from the canonical list in this file)
 - `data/enums.csv` - Enum value mappings (auto-extracted from field_mappings.csv)
+
+**VRC model database (source for `data/models.csv`):**
+
+Regenerate `data/models.csv` with:
+
+    python scripts/generate_models_csv.py
+
+<!-- models.csv:start -->
+```csv
+model_number,marketing_name,ebus_model,notes
+0010036819,VRC 720/2,,sensoCOMFORT
+0020028521,VRC 430f,,calorMATIC 430f
+0020028524,VRC 430f,,calorMATIC 430f
+0020040079,VRC 630,,calorMATIC 630
+0020058640,VRC 430f,,calorMATIC 430f
+0020060427,VRC 430,,calorMATIC 430
+0020080463,VRC 620,,auroMATIC
+0020080467,VRC 630,,calorMATIC 630
+0020080468,VRC 630,,calorMATIC 630
+0020080472,VRC 630,,calorMATIC 630
+0020092435,VRC 630,,calorMATIC 630
+0020092440,VRC 630,,calorMATIC 630
+0020108135,VRC 470f,,calorMATIC 470f
+0020108137,VRC 470f,,calorMATIC 470f
+0020112594,VRC 470f,,calorMATIC 470f
+0020171314,VRC 700/2,,multiMATIC
+0020171315,VRC 700/4,,multiMATIC
+0020218357,VRC 700/4,,multiMATIC
+0020231561,VRC 700(f)/4,,multiMATIC
+0020262148,VRC 720f/2,BASV2,sensoCOMFORT RF
+0020274790,VRC 710,,sensoDIRECT
+```
+<!-- models.csv:end -->
 
 ---
 
