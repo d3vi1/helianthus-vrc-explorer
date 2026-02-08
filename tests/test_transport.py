@@ -222,3 +222,15 @@ def test_transport_send_strips_length_prefix_from_hex_response() -> None:
 
     assert result == bytes.fromhex("0000803F")
     assert commands == ["hex 15B52403000000"]
+
+
+def test_transport_send_strips_length_prefix_from_short_hex_response() -> None:
+    # Some ebusd replies are status-only (1 byte). When returned via the `hex` command they may
+    # still carry the leading length byte (0x01). Ensure we strip it.
+    with _run_ebusd_test_server([["0100"]]) as (host, port, commands):
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        payload = bytes.fromhex("000000")
+        result = transport.send(0x15, payload)
+
+    assert result == bytes.fromhex("00")
+    assert commands == ["hex 15B52403000000"]

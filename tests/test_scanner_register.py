@@ -155,3 +155,41 @@ def test_is_instance_present_group_0c_true_on_first_valid_register_response() ->
     assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is True
     # First RR=0x0002 read times out then succeeds on retry, so two calls.
     assert transport.calls == 2
+
+
+def test_is_instance_present_group_09_rejects_nan_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[int] = []
+
+    def _fake_read_register(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(int(kwargs["register"]))
+        return {
+            "raw_hex": "00000000",
+            "type": "EXP",
+            "value": float("nan"),
+            "error": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    assert is_instance_present(transport=_StatusOnlyTransport(), dst=0x15, group=0x09, instance=0x00) is False
+    assert calls == [0x0007, 0x000F]
+
+
+def test_is_instance_present_group_09_accepts_non_nan_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    values = iter([float("nan"), 1.0])
+
+    def _fake_read_register(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "raw_hex": "00000000",
+            "type": "EXP",
+            "value": next(values),
+            "error": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    assert is_instance_present(transport=_StatusOnlyTransport(), dst=0x15, group=0x09, instance=0x00) is True

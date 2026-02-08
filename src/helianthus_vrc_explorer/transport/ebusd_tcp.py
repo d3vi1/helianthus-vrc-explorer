@@ -57,10 +57,9 @@ def _maybe_strip_length_prefix(payload: bytes) -> bytes:
     this project expects only the raw response payload bytes.
     """
 
-    # B524 responses are at least 4 bytes, so a length-prefixed response is
-    # always >=5 bytes. Keeping the guard tight avoids accidentally stripping
-    # legitimate data that happens to match the pattern.
-    if len(payload) >= 5 and payload[0] == len(payload) - 1:
+    # ebusd uses a 1-byte length prefix for `hex` responses. While most B524 replies
+    # are >=4 bytes, some error/status replies are shorter; accept those too.
+    if len(payload) >= 2 and payload[0] == len(payload) - 1:
         return payload[1:]
     return payload
 

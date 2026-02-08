@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import logging
 import time
 from typing import Final, TypedDict
@@ -242,12 +243,22 @@ def is_instance_present(transport: TransportInterface, dst: int, group: int, ins
         entry_1 = read_register(
             transport, dst, 0x06, group=group, instance=instance, register=0x0007, type_hint="EXP"
         )
-        if entry_1["error"] is None and entry_1["value"] is not None:
+        value_1 = entry_1["value"]
+        if (
+            entry_1["error"] is None
+            and value_1 is not None
+            and not (isinstance(value_1, float) and math.isnan(value_1))
+        ):
             return True
         entry_2 = read_register(
             transport, dst, 0x06, group=group, instance=instance, register=0x000F, type_hint="EXP"
         )
-        return entry_2["error"] is None and entry_2["value"] is not None
+        value_2 = entry_2["value"]
+        return (
+            entry_2["error"] is None
+            and value_2 is not None
+            and not (isinstance(value_2, float) and math.isnan(value_2))
+        )
 
     if group == 0x0C:
         for rr in (0x0002, 0x0007, 0x000F, 0x0016):
