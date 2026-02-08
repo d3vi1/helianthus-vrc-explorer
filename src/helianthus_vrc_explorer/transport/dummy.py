@@ -15,13 +15,14 @@ class DummyTransport(TransportInterface):
     It supports the minimal subset needed for offline scanner tests:
 
     - Directory probe (opcode 0x00): returns a float32le descriptor type for known groups
-    - Register read (opcode 0x02 / 0x06, optype 0x00): returns `echo(4 bytes) + value_bytes`
+    - Register read (opcode 0x02 / 0x06, optype 0x00): returns `header(4 bytes) + value_bytes`
     """
 
     def __init__(self, fixture_path: Path) -> None:
         self._fixture_path = fixture_path
         self._group_descriptor: dict[int, float] = {}
         self._register_values: dict[tuple[int, int, int], bytes] = {}
+        self._register_timeouts: set[tuple[int, int, int]] = set()
         self._directory_terminator_group: int | None = None
         self._load_fixture()
 
@@ -72,14 +73,21 @@ class DummyTransport(TransportInterface):
         register = int.from_bytes(payload[4:6], byteorder="little", signed=False)
 
         value = self._register_values.get((group, instance, register))
+        if (group, instance, register) in self._register_timeouts:
+            raise TransportTimeout(
+                "Fixture marks register as timeout for "
+                f"GG=0x{group:02X}, II=0x{instance:02X}, RR=0x{register:04X}"
+            )
         if value is None:
             raise TransportTimeout(
                 "Fixture missing register raw_hex for "
                 f"GG=0x{group:02X}, II=0x{instance:02X}, RR=0x{register:04X}"
             )
 
-        echo_header = payload[:4]
-        return echo_header + value
+        # Empirically, register replies include a 4-byte header:
+        #   <STATUS> <GG> <RR_LO> <RR_HI>
+        header = bytes((0x00, group)) + payload[4:6]
+        return header + value
 
     @staticmethod
     def _parse_hex_key_u8(key: str, field: str) -> int:
@@ -168,13 +176,22 @@ class DummyTransport(TransportInterface):
                         raise ValueError(f"Register {register_key!r} must be a JSON object")
 
                     raw_hex = register_value.get("raw_hex")
-                    if not isinstance(raw_hex, str):
-                        raise ValueError(f"Register {register_key!r} must contain raw_hex string")
-                    try:
-                        value_bytes = bytes.fromhex(raw_hex)
-                    except ValueError as exc:
-                        raise ValueError(
-                            f"Register {register_key!r} has invalid raw_hex: {raw_hex!r}"
-                        ) from exc
+                    if isinstance(raw_hex, str):
+                        try:
+                            value_bytes = bytes.fromhex(raw_hex)
+                        except ValueError as exc:
+                            raise ValueError(
+                                f"Register {register_key!r} has invalid raw_hex: {raw_hex!r}"
+                            ) from exc
+                        self._register_values[(group, instance, register)] = value_bytes
+                        continue
 
-                    self._register_values[(group, instance, register)] = value_bytes
+                    error = register_value.get("error")
+                    if isinstance(error, str) and error == "timeout":
+                        self._register_timeouts.add((group, instance, register))
+                        continue
+
+                    raise ValueError(
+                        f"Register {register_key!r} must contain raw_hex string "
+                        'or have error="timeout"'
+                    )

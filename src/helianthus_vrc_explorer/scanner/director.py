@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Final, TypedDict
 
 from ..protocol.b524 import build_directory_probe_payload
-from ..transport.base import TransportInterface
+from ..transport.base import TransportError, TransportInterface, TransportTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,12 @@ class ClassifiedGroup:
 
 def _parse_directory_descriptor(resp: bytes, group: int) -> float:
     if len(resp) < 4:
-        logger.warning(
-            "Short directory probe response for GG=0x%02X: expected >=4 bytes, got %d",
-            group,
-            len(resp),
+        # A short response isn't evidence of a terminator (NaN). Treat it as a transient
+        # failure and let discovery continue.
+        raise ValueError(
+            "Short directory probe response: "
+            f"expected >=4 bytes, got {len(resp)} bytes for GG=0x{group:02X}"
         )
-        return float("nan")
     return struct.unpack("<f", resp[:4])[0]
 
 
@@ -71,8 +71,22 @@ def discover_groups(transport: TransportInterface, dst: int) -> list[DiscoveredG
 
     for gg in range(0x00, 0x100):
         payload = build_directory_probe_payload(gg)
-        resp = transport.send(dst, payload)
-        descriptor = _parse_directory_descriptor(resp, gg)
+        try:
+            resp = transport.send(dst, payload)
+        except TransportTimeout:
+            logger.warning("Directory probe timeout for GG=0x%02X", gg)
+            # Transport failures are not evidence of a NaN terminator; skip without advancing the
+            # NaN streak.
+            continue
+        except TransportError as exc:
+            logger.warning("Directory probe transport error for GG=0x%02X: %s", gg, exc)
+            continue
+
+        try:
+            descriptor = _parse_directory_descriptor(resp, gg)
+        except ValueError as exc:
+            logger.warning("%s", exc)
+            continue
 
         if descriptor == 0.0:
             # Hole: skip without resetting the NaN streak.
