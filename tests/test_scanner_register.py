@@ -173,11 +173,21 @@ def test_is_instance_present_group_09_rejects_nan_values(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
 
-    assert is_instance_present(transport=_StatusOnlyTransport(), dst=0x15, group=0x09, instance=0x00) is False
+    assert (
+        is_instance_present(
+            transport=_StatusOnlyTransport(),
+            dst=0x15,
+            group=0x09,
+            instance=0x00,
+        )
+        is False
+    )
     assert calls == [0x0007, 0x000F]
 
 
-def test_is_instance_present_group_09_accepts_non_nan_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_instance_present_group_09_accepts_non_nan_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import helianthus_vrc_explorer.scanner.register as register
 
     values = iter([float("nan"), 1.0])
@@ -192,4 +202,12 @@ def test_is_instance_present_group_09_accepts_non_nan_values(monkeypatch: pytest
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
 
-    assert is_instance_present(transport=_StatusOnlyTransport(), dst=0x15, group=0x09, instance=0x00) is True
+    assert (
+        is_instance_present(
+            transport=_StatusOnlyTransport(),
+            dst=0x15,
+            group=0x09,
+            instance=0x00,
+        )
+        is True
+    )

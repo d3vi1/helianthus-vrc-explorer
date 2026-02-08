@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 import logging
+import math
 import time
 from typing import Final, TypedDict
 
