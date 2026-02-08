@@ -17,6 +17,7 @@ from .transport.base import TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 from .ui.live import make_scan_observer
 from .ui.summary import render_summary
+from .ui.viewer import run_results_viewer
 
 app = typer.Typer(
     add_completion=False,
@@ -121,6 +122,12 @@ def scan(
         json.dumps(artifact, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+    if run_results_viewer(console, artifact):
+        output_path.write_text(
+            json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     # Summary to stderr; keep stdout stable for scripting (artifact path only).
     render_summary(console, artifact, output_path=output_path)
