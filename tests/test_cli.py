@@ -20,6 +20,12 @@ def test_scan_command_is_present() -> None:
     assert result.exit_code == 0
 
 
+def test_discover_command_is_present() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["discover", "--help"])
+    assert result.exit_code == 0
+
+
 def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["scan", "--dry-run", "--output-dir", str(tmp_path)])
