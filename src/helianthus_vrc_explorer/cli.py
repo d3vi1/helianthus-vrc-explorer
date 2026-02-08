@@ -17,6 +17,7 @@ from .schema.ebusd_csv import EbusdCsvSchema
 from .schema.myvaillant_map import MyvaillantRegisterMap
 from .transport.base import TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
+from .ui.html_report import render_html_report
 from .ui.live import make_scan_observer
 from .ui.summary import render_summary
 from .ui.viewer import run_results_viewer
@@ -171,6 +172,15 @@ def scan(
             json.dumps(artifact, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+    html_path = output_path.with_suffix(".html")
+    html_path.write_text(
+        render_html_report(
+            artifact,
+            title=f"helianthus-vrc-explorer scan report ({output_path.name})",
+        ),
+        encoding="utf-8",
+    )
 
     # Summary to stderr; keep stdout stable for scripting (artifact path only).
     render_summary(console, artifact, output_path=output_path)

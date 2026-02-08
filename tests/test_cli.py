@@ -33,6 +33,7 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
 
     output_path = Path(result.stdout.strip())
     assert output_path.exists()
+    assert output_path.with_suffix(".html").exists()
 
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
     assert isinstance(artifact, dict)
