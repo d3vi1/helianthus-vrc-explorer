@@ -175,6 +175,51 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
     assert registers["0x0000"]["raw_hex"] == "00"
 
 
+def test_scan_b524_scans_absent_instances_when_planner_overrides(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    transport = RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path)))
+
+    def fake_prompt_scan_plan(*_args, **_kwargs):
+        return {
+            0x02: GroupScanPlan(
+                group=0x02,
+                rr_max=0x0002,
+                instances=(
+                    0x00,  # present (fixture)
+                    0x01,  # absent (forced by planner override)
+                ),
+            )
+        }
+
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+    )
+
+    group = artifact["groups"]["0x02"]
+    assert group["instances"]["0x00"]["present"] is True
+
+    absent = group["instances"]["0x01"]
+    assert absent["present"] is False
+    assert set(absent["registers"].keys()) == {"0x0000", "0x0001", "0x0002"}
+
+    scanned_registers = {
+        rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x01
+    }
+    assert scanned_registers == set(range(0x0002 + 1))
+
+
 def test_scan_b524_marks_incomplete_on_keyboard_interrupt(tmp_path: Path) -> None:
     inner = DummyTransport(_write_fixture_group_02(tmp_path))
     transport = InterruptingTransport(inner, interrupt_after=10)
