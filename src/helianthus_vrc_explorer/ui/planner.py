@@ -23,6 +23,7 @@ class PlannerGroup:
     group: int
     name: str
     descriptor: float
+    known: bool
     ii_max: int | None
     rr_max: int
     present_instances: tuple[int, ...]
@@ -73,6 +74,8 @@ def prompt_scan_plan(
                 default_selected_plan[gg] = group_plan
     else:
         for g in eligible.values():
+            if not g.known:
+                continue
             default_instances = (0x00,) if g.ii_max is None else g.present_instances
             default_selected_plan[g.group] = GroupScanPlan(
                 group=g.group,
@@ -89,22 +92,38 @@ def prompt_scan_plan(
         )
     )
 
-    table = Table(show_lines=False, header_style="bold dim")
-    table.add_column("GG", style="cyan", no_wrap=True)
-    table.add_column("Name", style="white")
-    table.add_column("Desc", style="dim", justify="right", no_wrap=True)
-    table.add_column("Present/Total", style="dim", justify="right", no_wrap=True)
-    table.add_column("RR_max", style="magenta", justify="right", no_wrap=True)
-    for g in sorted(groups, key=lambda x: x.group):
-        present_total = "n/a" if g.ii_max is None else f"{len(g.present_instances)}/{g.ii_max + 1}"
-        table.add_row(
-            _hex_u8(g.group),
-            g.name,
-            f"{g.descriptor:.1f}",
-            present_total,
-            _hex_u16(g.rr_max),
-        )
-    console.print(table)
+    known_groups = sorted([g for g in groups if g.known], key=lambda x: x.group)
+    unknown_groups = sorted([g for g in groups if not g.known], key=lambda x: x.group)
+
+    def _render_table(title: str, rows: list[PlannerGroup], *, unknown: bool) -> None:
+        if not rows:
+            return
+        console.print(Rule(title, style="dim"))
+        table = Table(show_lines=False, header_style="bold dim")
+        table.add_column("GG", style="cyan", no_wrap=True)
+        table.add_column("Name", style="white")
+        table.add_column("Desc", style="dim", justify="right", no_wrap=True)
+        table.add_column("Present/Total", style="dim", justify="right", no_wrap=True)
+        table.add_column("RR_max", style="magenta", justify="right", no_wrap=True)
+        for g in rows:
+            if g.ii_max is None:
+                present_total = "n/a"
+            elif unknown:
+                present_total = f"default {g.ii_max + 1}"
+            else:
+                present_total = f"{len(g.present_instances)}/{g.ii_max + 1}"
+            name = g.name if not unknown else f"{g.name} (unknown)"
+            table.add_row(
+                _hex_u8(g.group),
+                name,
+                f"{g.descriptor:.1f}",
+                present_total,
+                _hex_u16(g.rr_max),
+            )
+        console.print(table)
+
+    _render_table("Known Groups", known_groups, unknown=False)
+    _render_table("Unknown Groups (Disabled By Default)", unknown_groups, unknown=True)
 
     default_requests = estimate_register_requests(default_selected_plan)
     default_eta_s = estimate_eta_seconds(
