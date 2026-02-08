@@ -103,6 +103,7 @@ def scan(
                 ebusd_host=host,
                 ebusd_port=port,
                 observer=observer,
+                console=console,
             )
 
     output_dir.mkdir(parents=True, exist_ok=True)
