@@ -8,7 +8,7 @@ from typing import Any
 
 from rich.console import Console
 
-from ..transport.base import TransportInterface
+from ..transport.base import TransportInterface, emit_trace_label
 from ..transport.instrumented import CountingTransport
 from ..ui.planner import PlannerGroup, prompt_scan_plan
 from .director import GROUP_CONFIG, classify_groups, discover_groups
@@ -94,6 +94,7 @@ def scan_b524(
     try:
         if observer is not None:
             observer.log(f"Starting scan dst={_hex_u8(dst)}", level="info")
+        emit_trace_label(transport, f"Starting scan dst={_hex_u8(dst)}")
 
         group_discovery_requests = 0
         group_discovery_duration_s = 0.0
@@ -102,6 +103,7 @@ def scan_b524(
 
         if observer is not None:
             observer.phase_start("group_discovery", total=0x100)
+        emit_trace_label(transport, "Discovering Groups")
         group_discovery_start = time.perf_counter()
         group_discovery_start_calls = counting_transport.counters.send_calls
         discovered = discover_groups(transport, dst=dst, observer=observer)
@@ -128,6 +130,11 @@ def scan_b524(
         instance_discovery_start = time.perf_counter()
         instance_discovery_start_calls = counting_transport.counters.send_calls
         for group in classified:
+            if group.descriptor == 1.0:
+                emit_trace_label(
+                    transport,
+                    f"Identifying instances in group 0x{group.group:02X}",
+                )
             group_key = _hex_u8(group.group)
             group_obj: dict[str, Any] = {
                 "name": group.name,
@@ -276,6 +283,7 @@ def scan_b524(
         work_queue = deque(build_work_queue(plan, done=done))
         if observer is not None:
             observer.phase_start("register_scan", total=len(work_queue) or 1)
+        emit_trace_label(transport, "Register Scan")
 
         active_start = time.perf_counter()
         active_elapsed = 0.0

@@ -7,7 +7,7 @@ from typing import Final, TypedDict
 
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
-from ..transport.base import TransportError, TransportInterface, TransportTimeout
+from ..transport.base import TransportError, TransportInterface, TransportTimeout, emit_trace_label
 from .observer import ScanObserver
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,10 @@ def read_register(
 ) -> RegisterEntry:
     """Read a B524 register and parse it into an artifact-ready entry."""
 
+    emit_trace_label(
+        transport,
+        f"Reading dst=0x{dst:02X} GG=0x{group:02X} II=0x{instance:02X} RR=0x{register:04X}",
+    )
     payload = build_register_read_payload(opcode, group=group, instance=instance, register=register)
     response: bytes | None = None
     for attempt in range(2):

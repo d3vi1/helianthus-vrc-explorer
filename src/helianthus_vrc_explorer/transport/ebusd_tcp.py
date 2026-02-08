@@ -220,6 +220,16 @@ class EbusdTcpTransport(TransportInterface):
             with trace_path.open("a", encoding="utf-8") as f:
                 f.write(f"{_utc_ts()} {message}\n")
 
+    def trace_label(self, label: str) -> None:
+        """Emit a human-readable label into the trace log (if enabled)."""
+
+        if not isinstance(label, str):
+            raise TypeError(f"label must be a str, got {type(label).__name__}")
+        label_txt = label.strip()
+        if not label_txt:
+            return
+        self._trace(f"OP {label_txt}")
+
     def close(self) -> None:
         session = self._session
         if session is None:
