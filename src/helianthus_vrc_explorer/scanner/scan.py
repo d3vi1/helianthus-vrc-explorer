@@ -100,6 +100,7 @@ def scan_b524(
                 continue
 
             ii_max = int(config["ii_max"])
+            rr_max = int(config["rr_max"])
             present_count = 0
             for ii in range(0x00, ii_max + 1):
                 if observer is not None:
@@ -118,7 +119,8 @@ def scan_b524(
 
             if observer is not None:
                 observer.log(
-                    f"GG=0x{group.group:02X} {group.name}: present {present_count}/{ii_max + 1}",
+                    f"GG=0x{group.group:02X} {group.name}: present {present_count}/{ii_max + 1} "
+                    f"rr_max=0x{rr_max:04X} ({rr_max + 1} regs/instance)",
                     level="info",
                 )
 
