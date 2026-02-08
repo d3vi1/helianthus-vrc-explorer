@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import socket
 import string
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final
 
 from .base import TransportError, TransportInterface, TransportTimeout
@@ -16,6 +19,7 @@ class EbusdTcpConfig:
     port: int = 8888
     timeout_s: float = 5.0
     src: int | None = None
+    trace_path: Path | None = None
 
 
 _PRIMARY_VAILLANT: Final[int] = 0xB5
@@ -32,6 +36,17 @@ _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS: Final[tuple[str, ...]] = (
 
 def _is_retryable_transport_error(exc: TransportError) -> bool:
     return any(token in str(exc).lower() for token in _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS)
+
+
+def _utc_ts() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _short_hex(blob: bytes, max_bytes: int = 48) -> str:
+    hx = blob.hex()
+    if len(blob) > max_bytes:
+        return hx[: max_bytes * 2] + "..."
+    return hx
 
 
 def _maybe_strip_length_prefix(payload: bytes) -> bytes:
@@ -131,13 +146,26 @@ class EbusdTcpTransport(TransportInterface):
 
     def __init__(self, config: EbusdTcpConfig) -> None:
         self._config = config
+        self._trace_seq = 0
+
+    def _trace(self, message: str) -> None:
+        trace_path = self._config.trace_path
+        if trace_path is None:
+            return
+        # Best-effort tracing: never let trace failures break a scan.
+        with contextlib.suppress(OSError):
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            with trace_path.open("a", encoding="utf-8") as f:
+                f.write(f"{_utc_ts()} {message}\n")
 
     def send(self, dst: int, payload: bytes) -> bytes:
+        self._trace_seq += 1
+        seq = self._trace_seq
         last_timeout: TransportTimeout | None = None
         last_retryable_error: TransportError | None = None
         for attempt in range(2):
             try:
-                return self._send_once(dst, payload)
+                return self._send_once(seq, dst, payload)
             except TransportTimeout as exc:
                 last_timeout = exc
                 if attempt == 0:
@@ -156,8 +184,10 @@ class EbusdTcpTransport(TransportInterface):
         assert last_retryable_error is not None
         raise last_retryable_error
 
-    def _send_once(self, dst: int, payload: bytes) -> bytes:
+    def _send_once(self, seq: int, dst: int, payload: bytes) -> bytes:
         cmd = _build_hex_command(self._config, dst, payload)
+        cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
+        self._trace(f"#{seq} SEND attempt_payload={_short_hex(payload)} cmd={cmd_txt}")
         addr = (self._config.host, self._config.port)
 
         try:
@@ -218,4 +248,10 @@ class EbusdTcpTransport(TransportInterface):
                 f"Failed talking to ebusd at {self._config.host}:{self._config.port}: {exc}"
             ) from exc
 
-        return _maybe_strip_length_prefix(_parse_ebusd_response_lines(lines))
+        self._trace(f"#{seq} RECV lines={lines!r}")
+        parsed = _parse_ebusd_response_lines(lines)
+        self._trace(f"#{seq} PARSED len={len(parsed)} hex={_short_hex(parsed)}")
+        stripped = _maybe_strip_length_prefix(parsed)
+        if stripped != parsed:
+            self._trace(f"#{seq} STRIP in={_short_hex(parsed)} out={_short_hex(stripped)}")
+        return stripped

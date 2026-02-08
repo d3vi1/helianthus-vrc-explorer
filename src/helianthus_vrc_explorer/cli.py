@@ -64,6 +64,12 @@ def scan(
         "--output-dir",
         help="Directory to write the scan JSON artifact to.",
     ),
+    trace_file: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--trace-file",
+        envvar="HELIA_EBUSD_TRACE_PATH",
+        help="Write an ebusd request/response trace log to this file.",
+    ),
 ) -> None:
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
     dst_u8 = _parse_u8_address(dst)
@@ -79,7 +85,7 @@ def scan(
             typer.echo(f"Invalid JSON fixture: {fixture_path} ({exc})", err=True)
             raise typer.Exit(2) from exc
     else:
-        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port))
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
         artifact = scan_b524(transport, dst=dst_u8, ebusd_host=host, ebusd_port=port)
 
     output_dir.mkdir(parents=True, exist_ok=True)
