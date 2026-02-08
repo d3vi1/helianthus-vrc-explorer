@@ -209,16 +209,19 @@ def _build_sheets(artifact: dict[str, Any]) -> list[_Sheet]:
                     rr_key_set.add(rr_key)
 
         rr_keys = _sorted_hex_keys(sorted(rr_key_set))
+
+        descriptor_obj = group_obj.get("descriptor_type")
+        descriptor: float | None
+        if isinstance(descriptor_obj, (int, float)) and not isinstance(descriptor_obj, bool):
+            descriptor = float(descriptor_obj)
+        else:
+            descriptor = None
+
         sheets.append(
             _Sheet(
                 group_key=group_key,
                 name=str(group_obj.get("name") or "Unknown"),
-                descriptor=(
-                    float(group_obj.get("descriptor_type"))
-                    if isinstance(group_obj.get("descriptor_type"), (int, float))
-                    and not isinstance(group_obj.get("descriptor_type"), bool)
-                    else None
-                ),
+                descriptor=descriptor,
                 instance_keys=instance_keys,
                 rr_keys=rr_keys,
             )
