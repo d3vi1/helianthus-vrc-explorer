@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 
 import typer
+from rich.console import Console
 
 from . import __version__
 from .scanner.scan import default_output_filename, scan_b524
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
+from .ui.live import make_scan_observer
+from .ui.summary import render_summary
 
 app = typer.Typer(
     add_completion=False,
@@ -78,6 +81,7 @@ def scan(
 ) -> None:
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
     dst_u8 = _parse_u8_address(dst)
+    console = Console(stderr=True)
 
     if dry_run:
         fixture_path = Path(__file__).resolve().parents[2] / "fixtures" / "vrc720_full_scan.json"
@@ -91,7 +95,15 @@ def scan(
             raise typer.Exit(2) from exc
     else:
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
-        artifact = scan_b524(transport, dst=dst_u8, ebusd_host=host, ebusd_port=port)
+        title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
+        with make_scan_observer(console=console, title=title) as observer:
+            artifact = scan_b524(
+                transport,
+                dst=dst_u8,
+                ebusd_host=host,
+                ebusd_port=port,
+                observer=observer,
+            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / default_output_filename(
@@ -102,4 +114,7 @@ def scan(
         json.dumps(artifact, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+    # Summary to stderr; keep stdout stable for scripting (artifact path only).
+    render_summary(console, artifact, output_path=output_path)
     typer.echo(str(output_path))

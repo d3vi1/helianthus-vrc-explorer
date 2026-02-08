@@ -6,6 +6,7 @@ from typing import Any
 
 from ..transport.base import TransportInterface
 from .director import GROUP_CONFIG, classify_groups, discover_groups
+from .observer import ScanObserver
 from .register import is_instance_present, scan_registers_for_instance
 
 
@@ -19,6 +20,7 @@ def scan_b524(
     dst: int,
     ebusd_host: str | None = None,
     ebusd_port: int | None = None,
+    observer: ScanObserver | None = None,
 ) -> dict[str, Any]:
     """Scan a VRC regulator using B524 and return a JSON-serializable artifact.
 
@@ -52,8 +54,27 @@ def scan_b524(
     incomplete_reason: str | None = None
 
     try:
-        discovered = discover_groups(transport, dst=dst)
-        classified = classify_groups(discovered)
+        if observer is not None:
+            observer.log(f"Starting scan dst={_hex_u8(dst)}", level="info")
+
+        if observer is not None:
+            observer.phase_start("group_discovery", total=0x100)
+        discovered = discover_groups(transport, dst=dst, observer=observer)
+        classified = classify_groups(discovered, observer=observer)
+        if observer is not None:
+            observer.phase_finish("group_discovery")
+            observer.log(f"Discovered {len(classified)} groups", level="info")
+
+        # Phase C: instance discovery (desc==1.0 groups only).
+        instance_total = 0
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            if config is None:
+                continue
+            if group.descriptor == 1.0:
+                instance_total += int(config["ii_max"]) + 1
+        if observer is not None:
+            observer.phase_start("instance_discovery", total=instance_total or 1)
 
         for group in classified:
             group_key = _hex_u8(group.group)
@@ -66,41 +87,135 @@ def scan_b524(
 
             config = GROUP_CONFIG.get(group.group)
             if config is None:
-                # Unknown group: preserve discovery info, but skip deep scan (no ranges available).
+                if observer is not None:
+                    observer.log(
+                        f"Skipping GG=0x{group.group:02X} (no group config/ranges yet)",
+                        level="warn",
+                    )
+                continue
+
+            if group.descriptor != 1.0:
+                # Singleton / Type 6 groups: no instance enumeration; scan II=0x00 later.
+                group_obj["instances"][_hex_u8(0x00)] = {"present": True}
+                continue
+
+            ii_max = int(config["ii_max"])
+            present_count = 0
+            for ii in range(0x00, ii_max + 1):
+                if observer is not None:
+                    observer.status(f"Probe presence GG=0x{group.group:02X} II=0x{ii:02X}")
+                present = is_instance_present(
+                    transport,
+                    dst=dst,
+                    group=group.group,
+                    instance=ii,
+                )
+                if present:
+                    present_count += 1
+                group_obj["instances"][_hex_u8(ii)] = {"present": present}
+                if observer is not None:
+                    observer.phase_advance("instance_discovery", advance=1)
+
+            if observer is not None:
+                observer.log(
+                    f"GG=0x{group.group:02X} {group.name}: present {present_count}/{ii_max + 1}",
+                    level="info",
+                )
+
+        if observer is not None:
+            observer.phase_finish("instance_discovery")
+
+        # Phase D: register scan for all present instances.
+        register_total = 0
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            if config is None:
                 continue
 
             rr_max = int(config["rr_max"])
+            if group.descriptor == 1.0:
+                group_obj = artifact["groups"][_hex_u8(group.group)]
+                instances = group_obj.get("instances", {})
+                present_instances = [
+                    ii_key
+                    for (ii_key, ii_obj) in instances.items()
+                    if isinstance(ii_obj, dict) and ii_obj.get("present") is True
+                ]
+                register_total += len(present_instances) * (rr_max + 1)
+            else:
+                register_total += rr_max + 1
+
+        if observer is not None:
+            observer.phase_start("register_scan", total=register_total or 1)
+
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            if config is None:
+                continue
+            rr_max = int(config["rr_max"])
+            group_key = _hex_u8(group.group)
+            group_obj = artifact["groups"][group_key]
+            scanned_registers = 0
+            scanned_errors = 0
+            scanned_instances = 0
 
             if group.descriptor == 1.0:
-                ii_max = int(config["ii_max"])
-                for ii in range(0x00, ii_max + 1):
-                    instance_key = _hex_u8(ii)
-                    present = is_instance_present(
+                for instance_key, instance_obj in group_obj["instances"].items():
+                    if not isinstance(instance_obj, dict):
+                        continue
+                    if instance_obj.get("present") is not True:
+                        continue
+                    ii = int(instance_key, 0)
+                    registers = scan_registers_for_instance(
                         transport,
                         dst=dst,
                         group=group.group,
                         instance=ii,
+                        rr_max=rr_max,
+                        observer=observer,
                     )
-                    instance_obj: dict[str, Any] = {"present": present}
-                    if present:
-                        instance_obj["registers"] = scan_registers_for_instance(
-                            transport,
-                            dst=dst,
-                            group=group.group,
-                            instance=ii,
-                            rr_max=rr_max,
-                        )
-                    group_obj["instances"][instance_key] = instance_obj
+                    instance_obj["registers"] = registers
+                    scanned_instances += 1
+                    scanned_registers += len(registers)
+                    scanned_errors += sum(
+                        1 for entry in registers.values() if entry.get("error") is not None
+                    )
+                if observer is not None and scanned_instances > 0:
+                    observer.log(
+                        f"GG=0x{group.group:02X} {group.name}: scanned {scanned_registers} "
+                        f"registers across {scanned_instances} instance(s) "
+                        f"(errors={scanned_errors})",
+                        level="info",
+                    )
                 continue
 
-            # Singleton / Type 6 groups: no instance enumeration, but still scan II=0x00.
+            # Singleton / Type 6 groups: scan II=0x00.
             instance_key = _hex_u8(0x00)
-            group_obj["instances"][instance_key] = {
-                "present": True,
-                "registers": scan_registers_for_instance(
-                    transport, dst=dst, group=group.group, instance=0x00, rr_max=rr_max
-                ),
-            }
+            instance_obj = group_obj["instances"][instance_key]
+            if isinstance(instance_obj, dict):
+                registers = scan_registers_for_instance(
+                    transport,
+                    dst=dst,
+                    group=group.group,
+                    instance=0x00,
+                    rr_max=rr_max,
+                    observer=observer,
+                )
+                instance_obj["registers"] = registers
+                scanned_instances = 1
+                scanned_registers = len(registers)
+                scanned_errors = sum(
+                    1 for entry in registers.values() if entry.get("error") is not None
+                )
+                if observer is not None:
+                    observer.log(
+                        f"GG=0x{group.group:02X} {group.name}: scanned {scanned_registers} "
+                        f"registers (errors={scanned_errors})",
+                        level="info",
+                    )
+
+        if observer is not None:
+            observer.phase_finish("register_scan")
 
     except KeyboardInterrupt:
         artifact["meta"]["incomplete"] = True

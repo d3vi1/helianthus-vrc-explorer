@@ -8,6 +8,7 @@ from typing import Final, TypedDict
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
 from ..transport.base import TransportError, TransportInterface, TransportTimeout
+from .observer import ScanObserver
 
 logger = logging.getLogger(__name__)
 
@@ -279,12 +280,18 @@ def scan_registers_for_instance(
     group: int,
     instance: int,
     rr_max: int,
+    *,
+    observer: ScanObserver | None = None,
 ) -> dict[str, RegisterEntry]:
     """Phase D: scan RR=0x0000..rr_max for a (present) instance."""
 
     opcode = opcode_for_group(group)
     registers: dict[str, RegisterEntry] = {}
     for rr in range(0x0000, rr_max + 1):
+        if observer is not None:
+            if rr % 8 == 0:
+                observer.status(f"Read GG=0x{group:02X} II=0x{instance:02X} RR=0x{rr:04X}")
+            observer.phase_advance("register_scan", advance=1)
         registers[f"0x{rr:04x}"] = read_register(
             transport, dst, opcode, group=group, instance=instance, register=rr
         )

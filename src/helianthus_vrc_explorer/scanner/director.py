@@ -8,6 +8,7 @@ from typing import Final, TypedDict
 
 from ..protocol.b524 import build_directory_probe_payload
 from ..transport.base import TransportError, TransportInterface, TransportTimeout
+from .observer import ScanObserver
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,12 @@ def _parse_directory_descriptor(resp: bytes, group: int) -> float:
     return struct.unpack("<f", resp[:4])[0]
 
 
-def discover_groups(transport: TransportInterface, dst: int) -> list[DiscoveredGroup]:
+def discover_groups(
+    transport: TransportInterface,
+    dst: int,
+    *,
+    observer: ScanObserver | None = None,
+) -> list[DiscoveredGroup]:
     """Phase A: Probe GG=0x00..0xFF via directory probe (opcode 0x00).
 
     Terminator logic: stop after 2 consecutive NaN descriptors.
@@ -68,24 +74,38 @@ def discover_groups(transport: TransportInterface, dst: int) -> list[DiscoveredG
 
     discovered: list[DiscoveredGroup] = []
     nan_streak = 0
+    probes = 0
 
     for gg in range(0x00, 0x100):
+        probes += 1
+        if observer is not None:
+            observer.status(f"Directory probe GG=0x{gg:02X}")
+            observer.phase_advance("group_discovery", advance=1)
         payload = build_directory_probe_payload(gg)
         try:
             resp = transport.send(dst, payload)
         except TransportTimeout:
             logger.warning("Directory probe timeout for GG=0x%02X", gg)
+            if observer is not None:
+                observer.log(f"Directory probe timeout for GG=0x{gg:02X}", level="warn")
             # Transport failures are not evidence of a NaN terminator; skip without advancing the
             # NaN streak.
             continue
         except TransportError as exc:
             logger.warning("Directory probe transport error for GG=0x%02X: %s", gg, exc)
+            if observer is not None:
+                observer.log(
+                    f"Directory probe transport error for GG=0x{gg:02X}: {exc}",
+                    level="warn",
+                )
             continue
 
         try:
             descriptor = _parse_directory_descriptor(resp, gg)
         except ValueError as exc:
             logger.warning("%s", exc)
+            if observer is not None:
+                observer.log(str(exc), level="warn")
             continue
 
         if descriptor == 0.0:
@@ -96,16 +116,30 @@ def discover_groups(transport: TransportInterface, dst: int) -> list[DiscoveredG
             nan_streak += 1
             if nan_streak >= 2:
                 logger.info("Directory terminator after GG=0x%02X (NaN streak=%d)", gg, nan_streak)
+                if observer is not None:
+                    observer.log(
+                        f"Directory terminator after GG=0x{gg:02X} (NaN streak={nan_streak})",
+                        level="info",
+                    )
                 break
             continue
 
         nan_streak = 0
         discovered.append(DiscoveredGroup(group=gg, descriptor=descriptor))
+        if observer is not None:
+            observer.log(f"Discovered group GG=0x{gg:02X} desc={descriptor}", level="info")
+
+    if observer is not None:
+        observer.phase_set_total("group_discovery", total=probes)
 
     return discovered
 
 
-def classify_groups(discovered: list[DiscoveredGroup]) -> list[ClassifiedGroup]:
+def classify_groups(
+    discovered: list[DiscoveredGroup],
+    *,
+    observer: ScanObserver | None = None,
+) -> list[ClassifiedGroup]:
     """Phase C (per issue wording): Map discovered groups using GROUP_CONFIG.
 
     Emits a warning when a known group's descriptor doesn't match `GROUP_CONFIG`.
@@ -135,6 +169,12 @@ def classify_groups(discovered: list[DiscoveredGroup]) -> list[ClassifiedGroup]:
                 expected,
                 group.descriptor,
             )
+            if observer is not None:
+                observer.log(
+                    f"Descriptor mismatch for GG=0x{group.group:02X}: "
+                    f"expected {expected}, got {group.descriptor}",
+                    level="warn",
+                )
         classified.append(
             ClassifiedGroup(
                 group=group.group,
