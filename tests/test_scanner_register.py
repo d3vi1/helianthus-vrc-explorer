@@ -116,6 +116,14 @@ class _StatusOnlyTransport(TransportInterface):
         return b"\x00"
 
 
+class _UnparseableU24Transport(TransportInterface):
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        group = payload[2]
+        rr = payload[4:6]
+        # 3-byte value that is neither HTI nor HDA:3 (invalid BCD) -> should fallback to HEX:3.
+        return bytes((0x03, group)) + rr + b"\x0e\x38\x03"
+
+
 def test_read_register_status_only_response_is_not_decode_error() -> None:
     transport = _StatusOnlyTransport()
 
@@ -134,6 +142,27 @@ def test_read_register_status_only_response_is_not_decode_error() -> None:
     assert entry["raw_hex"] is None
     assert entry["type"] is None
     assert entry["value"] is None
+    assert entry["error"] is None
+
+
+def test_read_register_infers_hex_for_unparseable_u24_values() -> None:
+    transport = _UnparseableU24Transport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0035,
+    )
+
+    assert entry["reply_hex"] == "030035000e3803"
+    assert entry["tt"] == 0x03
+    assert entry["tt_kind"] == "parameter_config"
+    assert entry["raw_hex"] == "0e3803"
+    assert entry["type"] == "HEX:3"
+    assert entry["value"] == "0x0e3803"
     assert entry["error"] is None
 
 
