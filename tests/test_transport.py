@@ -5,16 +5,22 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from queue import Queue
 
 import pytest
 
-from helianthus_vrc_explorer.transport.base import TransportError, TransportTimeout
+from helianthus_vrc_explorer.transport.base import (
+    TransportError,
+    TransportTimeout,
+    emit_trace_label,
+)
 from helianthus_vrc_explorer.transport.ebusd_tcp import (
     EbusdTcpConfig,
     EbusdTcpTransport,
     _parse_ebusd_response_lines,
 )
+from helianthus_vrc_explorer.transport.instrumented import CountingTransport
 
 
 @dataclass(frozen=True)
@@ -171,6 +177,24 @@ def test_transport_send_parses_multiline_response_and_ignores_trailing_err() -> 
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00"]
+
+
+def test_trace_labels_are_emitted_before_send_lines(tmp_path: Path) -> None:
+    trace_path = tmp_path / "ebusd-trace.log"
+    with _run_ebusd_test_server([["010203"]]) as (host, port, _commands):
+        transport = EbusdTcpTransport(
+            EbusdTcpConfig(host=host, port=port, timeout_s=0.5, trace_path=trace_path)
+        )
+        wrapped = CountingTransport(transport)
+        emit_trace_label(wrapped, "Discovering Groups")
+        wrapped.send(0x15, bytes.fromhex("020002000F00"))
+
+    text = trace_path.read_text(encoding="utf-8")
+    op_index = text.find("OP Discovering Groups")
+    send_index = text.find("SEND attempt_payload=")
+    assert op_index != -1
+    assert send_index != -1
+    assert op_index < send_index
 
 
 def test_transport_send_retries_timeout_once_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:

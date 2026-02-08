@@ -23,3 +23,8 @@ class CountingTransport(TransportInterface):
     def send(self, dst: int, payload: bytes) -> bytes:
         self.counters.send_calls += 1
         return self._inner.send(dst, payload)
+
+    def trace_label(self, label: str) -> None:
+        fn = getattr(self._inner, "trace_label", None)
+        if callable(fn):
+            fn(label)

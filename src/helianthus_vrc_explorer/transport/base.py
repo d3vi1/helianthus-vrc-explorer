@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 
 class TransportError(Exception):
@@ -22,3 +23,15 @@ class TransportInterface(ABC):
             dst: Destination address (0x00..0xFF).
             payload: Raw B524 payload bytes (without ebus framing).
         """
+
+
+def emit_trace_label(transport: TransportInterface, label: str) -> None:
+    """Best-effort: emit a trace label on transports that support it.
+
+    This avoids changing the `TransportInterface.send()` signature while still allowing
+    higher-level code to annotate ebusd traces with human-readable operation labels.
+    """
+
+    fn: Any = getattr(transport, "trace_label", None)
+    if callable(fn):
+        fn(label)
