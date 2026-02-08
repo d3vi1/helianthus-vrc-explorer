@@ -20,6 +20,24 @@ def test_parse_uch_u8() -> None:
     assert parse_typed_value("UCH", bytes.fromhex("7f")) == 0x7F
 
 
+def test_parse_i8_i16_i32_and_u32() -> None:
+    assert parse_typed_value("I8", bytes.fromhex("ff")) == -1
+    assert parse_typed_value("I16", bytes.fromhex("ffff")) == -1
+    assert parse_typed_value("U32", bytes.fromhex("01000000")) == 1
+    assert parse_typed_value("I32", bytes.fromhex("ffffffff")) == -1
+
+
+def test_parse_bool_u8_to_bool() -> None:
+    assert parse_typed_value("BOOL", bytes.fromhex("00")) is False
+    assert parse_typed_value("BOOL", bytes.fromhex("01")) is True
+    assert parse_typed_value("BOOL", bytes.fromhex("02")) is True
+
+
+def test_parse_hex_n_preserves_byte_order() -> None:
+    assert parse_typed_value("HEX:2", bytes.fromhex("3412")) == "0x3412"
+    assert parse_typed_value("hex:4", bytes.fromhex("01020304")) == "0x01020304"
+
+
 def test_parse_str_cstring_strips_trailing_nuls_and_decodes_latin1() -> None:
     assert parse_typed_value(" str:* ", b"hello\x00\x00") == "hello"
 
@@ -51,6 +69,10 @@ def test_parse_hti_time_u24le_hhmmss() -> None:
         ("HTI", ""),
         ("HTI", "0102"),
         ("HTI", "01020304"),
+        ("HEX:2", "00"),
+        ("HEX:4", "00"),
+        ("I16", "00"),
+        ("I32", "0000"),
     ],
 )
 def test_parse_wrong_lengths_raise(type_spec: str, data_hex: str) -> None:

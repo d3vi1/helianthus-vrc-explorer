@@ -52,6 +52,48 @@ def parse_uch(data: bytes) -> int:
     return data[0]
 
 
+def parse_i8(data: bytes) -> int:
+    """Parse an `I8` value (i8)."""
+
+    _expect_len("I8", data, 1)
+    return int.from_bytes(data, byteorder="little", signed=True)
+
+
+def parse_i16(data: bytes) -> int:
+    """Parse an `I16` value (i16le)."""
+
+    _expect_len("I16", data, 2)
+    return int.from_bytes(data, byteorder="little", signed=True)
+
+
+def parse_u32(data: bytes) -> int:
+    """Parse an `U32` value (u32le)."""
+
+    _expect_len("U32", data, 4)
+    return int.from_bytes(data, byteorder="little", signed=False)
+
+
+def parse_i32(data: bytes) -> int:
+    """Parse an `I32` value (i32le)."""
+
+    _expect_len("I32", data, 4)
+    return int.from_bytes(data, byteorder="little", signed=True)
+
+
+def parse_bool(data: bytes) -> bool:
+    """Parse a `BOOL` value (u8 -> bool)."""
+
+    _expect_len("BOOL", data, 1)
+    return data[0] != 0x00
+
+
+def parse_hex(type_spec: str, data: bytes, expected_len: int) -> str:
+    """Parse a `HEX:n` value as a hex string preserving byte order."""
+
+    _expect_len(type_spec, data, expected_len)
+    return "0x" + data.hex()
+
+
 def parse_str_cstring(data: bytes) -> str:
     """Parse a `STR:*` value (cstring).
 
@@ -137,6 +179,13 @@ def parse_typed_value(type_spec: str, data: bytes) -> object:
     if normalized.startswith("STR:"):
         return parse_str_cstring(data)
 
+    if normalized.startswith("HEX:"):
+        try:
+            expected = int(normalized.split(":", 1)[1], 10)
+        except ValueError as exc:
+            raise ValueParseError(f"Invalid HEX length in type spec: {type_spec!r}") from exc
+        return parse_hex(normalized, data, expected_len=expected)
+
     match normalized:
         case "EXP":
             return parse_exp(data)
@@ -144,6 +193,16 @@ def parse_typed_value(type_spec: str, data: bytes) -> object:
             return parse_uin(data)
         case "UCH":
             return parse_uch(data)
+        case "I8":
+            return parse_i8(data)
+        case "I16":
+            return parse_i16(data)
+        case "U32":
+            return parse_u32(data)
+        case "I32":
+            return parse_i32(data)
+        case "BOOL":
+            return parse_bool(data)
         case "HDA:3":
             return parse_hda3_date(data)
         case "HTI":
