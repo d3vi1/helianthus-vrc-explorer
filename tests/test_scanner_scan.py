@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
+from helianthus_vrc_explorer.scanner.observer import ScanObserver
+from helianthus_vrc_explorer.scanner.plan import GroupScanPlan
 from helianthus_vrc_explorer.scanner.scan import scan_b524
 from helianthus_vrc_explorer.transport.base import TransportInterface
 from helianthus_vrc_explorer.transport.dummy import DummyTransport
@@ -61,6 +64,56 @@ def _write_fixture_group_02(tmp_path: Path) -> Path:
     return path
 
 
+def _write_fixture_unknown_group_69(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x6a"}},
+        "groups": {
+            "0x69": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_unknown.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
+class _NoopObserver(ScanObserver):
+    def phase_start(self, phase: str, *, total: int) -> None:  # noqa: ARG002
+        return
+
+    def phase_advance(self, phase: str, *, advance: int = 1) -> None:  # noqa: ARG002
+        return
+
+    def phase_set_total(self, phase: str, *, total: int) -> None:  # noqa: ARG002
+        return
+
+    def phase_finish(self, phase: str) -> None:  # noqa: ARG002
+        return
+
+    def status(self, message: str) -> None:  # noqa: ARG002
+        return
+
+    def log(self, message: str, *, level: str = "info") -> None:  # noqa: ARG002
+        return
+
+    def suspend(self):  # type: ignore[override]
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            yield None
+
+        return _cm()
+
+
 def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> None:
     transport = RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path)))
 
@@ -95,6 +148,31 @@ def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> Non
         rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
     }
     assert scanned_registers == set(range(0x21 + 1))
+
+
+def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path: Path) -> None:
+    import sys
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    transport = DummyTransport(_write_fixture_unknown_group_69(tmp_path))
+
+    def fake_prompt_scan_plan(*_args, **_kwargs):
+        return {0x69: GroupScanPlan(group=0x69, rr_max=0x0000, instances=(0x00,))}
+
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+    )
+
+    assert "0x69" in artifact["groups"]
+    registers = artifact["groups"]["0x69"]["instances"]["0x00"]["registers"]
+    assert registers["0x0000"]["raw_hex"] == "00"
 
 
 def test_scan_b524_marks_incomplete_on_keyboard_interrupt(tmp_path: Path) -> None:

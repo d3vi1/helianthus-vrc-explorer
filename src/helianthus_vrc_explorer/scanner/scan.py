@@ -147,8 +147,9 @@ def scan_b524(
             if config is None:
                 if observer is not None:
                     observer.log(
-                        f"Skipping GG=0x{group.group:02X} (no group config/ranges yet)",
-                        level="warn",
+                        f"Unknown group GG=0x{group.group:02X} (disabled by default; "
+                        "enable via planner to scan)",
+                        level="info",
                     )
                 continue
 
@@ -199,16 +200,16 @@ def scan_b524(
 
             group_obj = artifact["groups"][_hex_u8(group.group)]
             if group.descriptor == 1.0:
-                present_instances: list[int] = []
+                present_instances_for_plan: list[int] = []
                 for ii_key, ii_obj in group_obj.get("instances", {}).items():
                     if not isinstance(ii_obj, dict):
                         continue
                     if ii_obj.get("present") is True:
-                        present_instances.append(int(ii_key, 0))
+                        present_instances_for_plan.append(int(ii_key, 0))
                 plan[group.group] = GroupScanPlan(
                     group=group.group,
                     rr_max=rr_max,
-                    instances=tuple(sorted(present_instances)),
+                    instances=tuple(sorted(present_instances_for_plan)),
                 )
             else:
                 plan[group.group] = GroupScanPlan(
@@ -234,11 +235,32 @@ def scan_b524(
             for group in classified:
                 config = GROUP_CONFIG.get(group.group)
                 if config is None:
+                    rr_max_default = 0x30
+                    ii_max_default: int | None
+                    present_instances_default: tuple[int, ...]
+                    if group.descriptor == 1.0:
+                        ii_max_default = 0x0A
+                        present_instances_default = tuple(range(0x00, 0x0A + 1))
+                    else:
+                        ii_max_default = None
+                        present_instances_default = (0x00,)
+                    planner_groups.append(
+                        PlannerGroup(
+                            group=group.group,
+                            name=group.name,
+                            descriptor=group.descriptor,
+                            known=False,
+                            ii_max=ii_max_default,
+                            rr_max=rr_max_default,
+                            present_instances=present_instances_default,
+                        )
+                    )
                     continue
+
                 group_obj = artifact["groups"][_hex_u8(group.group)]
                 if group.descriptor == 1.0:
                     ii_max = int(config["ii_max"])
-                    present_instances_list: list[int] = [
+                    present_instances_for_planner: list[int] = [
                         int(ii_key, 0)
                         for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
                         if isinstance(ii_obj, dict) and ii_obj.get("present") is True
@@ -248,9 +270,10 @@ def scan_b524(
                             group=group.group,
                             name=group.name,
                             descriptor=group.descriptor,
+                            known=True,
                             ii_max=ii_max,
                             rr_max=int(config["rr_max"]),
-                            present_instances=tuple(sorted(present_instances_list)),
+                            present_instances=tuple(sorted(present_instances_for_planner)),
                         )
                     )
                 else:
@@ -259,6 +282,7 @@ def scan_b524(
                             group=group.group,
                             name=group.name,
                             descriptor=group.descriptor,
+                            known=True,
                             ii_max=None,
                             rr_max=int(config["rr_max"]),
                             present_instances=(0x00,),

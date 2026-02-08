@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from rich.console import Console
+
+from helianthus_vrc_explorer.scanner.plan import GroupScanPlan
+from helianthus_vrc_explorer.ui.planner import PlannerGroup, prompt_scan_plan
+
+
+def test_prompt_scan_plan_disables_unknown_groups_by_default(monkeypatch) -> None:
+    import helianthus_vrc_explorer.ui.planner as planner
+
+    calls = {"n": 0}
+
+    def fake_confirm(*_args, **_kwargs) -> bool:
+        calls["n"] += 1
+        # 1) "Customize scan plan?" -> False
+        # 2) "Proceed with register scan?" -> True
+        return calls["n"] != 1
+
+    monkeypatch.setattr(planner.Confirm, "ask", fake_confirm)
+
+    console = Console(force_terminal=True)
+    groups = [
+        PlannerGroup(
+            group=0x02,
+            name="Heating Circuits",
+            descriptor=1.0,
+            known=True,
+            ii_max=0x0A,
+            rr_max=0x21,
+            present_instances=(0x00,),
+        ),
+        PlannerGroup(
+            group=0x69,
+            name="Unknown",
+            descriptor=1.0,
+            known=False,
+            ii_max=0x0A,
+            rr_max=0x30,
+            present_instances=tuple(range(0x0A + 1)),
+        ),
+    ]
+
+    plan = prompt_scan_plan(console, groups, request_rate_rps=None, default_plan=None)
+    assert sorted(plan.keys()) == [0x02]
+
+
+def test_prompt_scan_plan_unknown_group_defaults_when_enabled(monkeypatch) -> None:
+    import helianthus_vrc_explorer.ui.planner as planner
+
+    def fake_confirm(*_args, **_kwargs) -> bool:
+        return True
+
+    monkeypatch.setattr(planner.Confirm, "ask", fake_confirm)
+
+    prompt_answers = iter(
+        [
+            "0x69",  # groups to scan
+            "present",  # instances
+            "0x0030",  # rr_max override
+        ]
+    )
+
+    def fake_prompt(*_args, **_kwargs) -> str:
+        return next(prompt_answers)
+
+    monkeypatch.setattr(planner.Prompt, "ask", fake_prompt)
+
+    console = Console(force_terminal=True)
+    groups = [
+        PlannerGroup(
+            group=0x69,
+            name="Unknown",
+            descriptor=1.0,
+            known=False,
+            ii_max=0x0A,
+            rr_max=0x30,
+            present_instances=tuple(range(0x0A + 1)),
+        )
+    ]
+
+    plan = prompt_scan_plan(console, groups, request_rate_rps=None, default_plan=None)
+    assert plan == {0x69: GroupScanPlan(group=0x69, rr_max=0x30, instances=tuple(range(0x0A + 1)))}
