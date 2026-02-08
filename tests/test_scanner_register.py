@@ -21,7 +21,7 @@ class _FlakyOnceTransport(TransportInterface):
         # Return a register response header + a u16le value (UIN) so parsing succeeds.
         group = payload[2]
         rr = payload[4:6]
-        header = bytes((0x00, group)) + rr
+        header = bytes((0x01, group)) + rr
         return header + b"\x01\x00"
 
 
@@ -128,10 +128,13 @@ def test_read_register_status_only_response_is_not_decode_error() -> None:
         register=0x0000,
     )
 
-    assert entry["raw_hex"] == "00"
+    assert entry["reply_hex"] == "00"
+    assert entry["tt"] == 0x00
+    assert entry["tt_kind"] == "no_data"
+    assert entry["raw_hex"] is None
     assert entry["type"] is None
     assert entry["value"] is None
-    assert entry["error"] == "status_only_response: 0x00"
+    assert entry["error"] is None
 
 
 def test_is_instance_present_group_0c_requires_valid_register_response() -> None:

@@ -8,6 +8,8 @@ from typing import Any
 
 from rich.console import Console
 
+from ..schema.ebusd_csv import EbusdCsvSchema
+from ..schema.myvaillant_map import MyvaillantRegisterMap
 from ..transport.base import TransportInterface, emit_trace_label
 from ..transport.instrumented import CountingTransport
 from ..ui.planner import PlannerGroup, prompt_scan_plan
@@ -54,6 +56,8 @@ def scan_b524(
     dst: int,
     ebusd_host: str | None = None,
     ebusd_port: int | None = None,
+    ebusd_schema: EbusdCsvSchema | None = None,
+    myvaillant_map: MyvaillantRegisterMap | None = None,
     observer: ScanObserver | None = None,
     console: Console | None = None,
 ) -> dict[str, Any]:
@@ -361,6 +365,18 @@ def scan_b524(
                 )
                 observer.phase_advance("register_scan", advance=1)
 
+            schema_entry = (
+                ebusd_schema.lookup(
+                    opcode=opcode,
+                    group=task.group,
+                    instance=task.instance,
+                    register=task.register,
+                )
+                if ebusd_schema is not None
+                else None
+            )
+            type_hint = schema_entry.type_spec if schema_entry is not None else None
+
             entry = read_register(
                 transport,
                 dst,
@@ -368,7 +384,18 @@ def scan_b524(
                 group=task.group,
                 instance=task.instance,
                 register=task.register,
+                type_hint=type_hint,
             )
+            if schema_entry is not None:
+                entry["ebusd_name"] = schema_entry.name
+            if myvaillant_map is not None:
+                mv = myvaillant_map.lookup(
+                    group=task.group,
+                    instance=task.instance,
+                    register=task.register,
+                )
+                if mv is not None:
+                    entry["myvaillant_name"] = mv.leaf
             done.add(task)
 
             group_key = _hex_u8(task.group)

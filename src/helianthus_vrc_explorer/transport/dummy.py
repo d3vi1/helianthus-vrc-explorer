@@ -85,8 +85,9 @@ class DummyTransport(TransportInterface):
             )
 
         # Empirically, register replies include a 4-byte header:
-        #   <STATUS> <GG> <RR_LO> <RR_HI>
-        header = bytes((0x00, group)) + payload[4:6]
+        #   <TT> <GG> <RR_LO> <RR_HI>
+        # Use TT=0x01 (live) for fixtures unless they explicitly model no-data via timeouts.
+        header = bytes((0x01, group)) + payload[4:6]
         return header + value
 
     @staticmethod

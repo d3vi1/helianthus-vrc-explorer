@@ -13,6 +13,8 @@ from .protocol.basv import parse_scan_identification, parse_vaillant_scan_id_chu
 from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
 from .scanner.register import is_instance_present
 from .scanner.scan import default_output_filename, scan_b524
+from .schema.ebusd_csv import EbusdCsvSchema
+from .schema.myvaillant_map import MyvaillantRegisterMap
 from .transport.base import TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 from .ui.live import make_scan_observer
@@ -79,6 +81,18 @@ def scan(
         "--output-dir",
         help="Directory to write the scan JSON artifact to.",
     ),
+    ebusd_csv_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--ebusd-csv-path",
+        envvar="HELIA_EBUSD_CSV_PATH",
+        help="Optional ebusd configuration CSV (e.g. 15.720.csv) used to annotate register names.",
+    ),
+    myvaillant_map_path: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--myvaillant-map-path",
+        envvar="HELIA_MYVAILLANT_MAP_PATH",
+        help="Optional myVaillant-equivalence mapping CSV used to annotate register leaf names.",
+    ),
     trace_file: Path | None = typer.Option(  # noqa: B008
         None,
         "--trace-file",
@@ -89,6 +103,24 @@ def scan(
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
     dst_u8 = _parse_u8_address(dst)
     console = Console(stderr=True)
+
+    ebusd_schema: EbusdCsvSchema | None = None
+    ebusd_schema_source: str | None = None
+    if ebusd_csv_path is not None:
+        try:
+            ebusd_schema = EbusdCsvSchema.from_path(ebusd_csv_path)
+            ebusd_schema_source = f"ebusd_csv:{ebusd_csv_path.name}"
+        except Exception as exc:
+            typer.echo(f"Warning: failed to load ebusd CSV schema: {exc}", err=True)
+
+    myvaillant_map: MyvaillantRegisterMap | None = None
+    myvaillant_map_source: str | None = None
+    if myvaillant_map_path is not None:
+        try:
+            myvaillant_map = MyvaillantRegisterMap.from_path(myvaillant_map_path)
+            myvaillant_map_source = f"myvaillant_map:{myvaillant_map_path.name}"
+        except Exception as exc:
+            typer.echo(f"Warning: failed to load myVaillant mapping: {exc}", err=True)
 
     if dry_run:
         fixture_path = Path(__file__).resolve().parents[2] / "fixtures" / "vrc720_full_scan.json"
@@ -109,9 +141,20 @@ def scan(
                 dst=dst_u8,
                 ebusd_host=host,
                 ebusd_port=port,
+                ebusd_schema=ebusd_schema,
+                myvaillant_map=myvaillant_map,
                 observer=observer,
                 console=console,
             )
+
+    meta_obj = artifact.get("meta")
+    if isinstance(meta_obj, dict):
+        sources_obj = meta_obj.get("schema_sources")
+        if isinstance(sources_obj, list):
+            if ebusd_schema_source:
+                sources_obj.append(ebusd_schema_source)
+            if myvaillant_map_source:
+                sources_obj.append(myvaillant_map_source)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / default_output_filename(

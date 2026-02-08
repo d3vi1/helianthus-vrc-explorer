@@ -51,7 +51,7 @@ def test_dummy_transport_register_read_returns_header_plus_value(tmp_path: Path)
     transport = DummyTransport(_write_min_fixture(tmp_path))
     payload = build_register_read_payload(0x02, group=0x02, instance=0x00, register=0x000F)
     response = transport.send(0x15, payload)
-    assert response == bytes.fromhex("00020f003412")
+    assert response == bytes.fromhex("01020f003412")
 
 
 def test_dummy_transport_missing_register_raises_timeout(tmp_path: Path) -> None:
