@@ -155,7 +155,25 @@ def _validate_u8(field_name: str, value: int) -> None:
 
 
 def _build_hex_command(config: EbusdTcpConfig, dst: int, payload: bytes) -> bytes:
+    return _build_hex_command_custom(
+        config,
+        dst,
+        _PRIMARY_VAILLANT,
+        _SECONDARY_EXTENDED_REGISTER,
+        payload,
+    )
+
+
+def _build_hex_command_custom(
+    config: EbusdTcpConfig,
+    dst: int,
+    primary: int,
+    secondary: int,
+    payload: bytes,
+) -> bytes:
     _validate_u8("dst", dst)
+    _validate_u8("primary", primary)
+    _validate_u8("secondary", secondary)
     if config.src is not None:
         _validate_u8("src", config.src)
     if not isinstance(payload, (bytes, bytearray, memoryview)):
@@ -167,10 +185,7 @@ def _build_hex_command(config: EbusdTcpConfig, dst: int, payload: bytes) -> byte
     # See `ebusd_rawscan.py` in the parent repo for the same framing.
     payload_len = len(payload)
     payload_hex = payload.hex().upper()
-    hex_text = (
-        f"{dst:02X}{_PRIMARY_VAILLANT:02X}{_SECONDARY_EXTENDED_REGISTER:02X}"
-        f"{payload_len:02X}{payload_hex}"
-    )
+    hex_text = f"{dst:02X}{primary:02X}{secondary:02X}{payload_len:02X}{payload_hex}"
     cmd = f"hex {hex_text}" if config.src is None else f"hex -s {config.src:02X} {hex_text}"
     return cmd.encode("ascii") + _EBUSD_COMMAND_TERMINATOR
 
@@ -314,7 +329,7 @@ class EbusdTcpTransport(TransportInterface):
         cmd = _build_info_command()
         cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
         self._trace(f"#{seq} INFO cmd={cmd_txt}")
-        lines = self._send_command_lines(cmd)
+        lines = self._send_command_lines(cmd, read_all=False)
         self._trace(f"#{seq} INFO_RECV lines={lines!r}")
         _parse_ebusd_info_lines(lines)
 
@@ -323,7 +338,7 @@ class EbusdTcpTransport(TransportInterface):
         cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
         self._trace(f"#{seq} SEND attempt_payload={_short_hex(payload)} cmd={cmd_txt}")
 
-        lines = self._send_command_lines(cmd)
+        lines = self._send_command_lines(cmd, read_all=False)
         self._trace(f"#{seq} RECV lines={lines!r}")
         parsed = _parse_ebusd_response_lines(lines)
         self._trace(f"#{seq} PARSED len={len(parsed)} hex={_short_hex(parsed)}")
@@ -380,22 +395,46 @@ class EbusdTcpTransport(TransportInterface):
 
         return lines
 
-    def _send_command_lines(self, cmd: bytes) -> list[str]:
+    @staticmethod
+    def _read_command_response_lines_all(
+        _sock: socket.socket,
+        sock_file: io.BufferedRWPair,
+    ) -> list[str]:
+        lines: list[str] = []
+        while True:
+            try:
+                raw = sock_file.readline()
+            except TimeoutError:
+                break
+            if not raw:
+                break
+            text = raw.decode("ascii", errors="replace").rstrip("\r\n")
+            if text == "":
+                break
+            if text.strip() == "":
+                continue
+            lines.append(text)
+        return lines
+
+    def _send_command_lines(self, cmd: bytes, *, read_all: bool) -> list[str]:
         addr = (self._config.host, self._config.port)
+        reader = (
+            self._read_command_response_lines_all if read_all else self._read_command_response_lines
+        )
 
         try:
             if self._session_depth > 0:
                 session = self._ensure_session()
                 session.sock_file.write(cmd)
                 session.sock_file.flush()
-                return self._read_command_response_lines(session.sock, session.sock_file)
+                return reader(session.sock, session.sock_file)
 
             with socket.create_connection(addr, timeout=self._config.timeout_s) as sock:
                 sock.settimeout(self._config.timeout_s)
                 with sock.makefile("rwb") as sock_file:
                     sock_file.write(cmd)
                     sock_file.flush()
-                    return self._read_command_response_lines(sock, sock_file)
+                    return reader(sock, sock_file)
         except TimeoutError as exc:
             # This catches socket read timeouts too: `socket.timeout` is an alias of
             # builtin `TimeoutError` on Python 3.12+ (including `sock.makefile().readline()`).
@@ -410,3 +449,51 @@ class EbusdTcpTransport(TransportInterface):
             raise TransportError(
                 f"Failed talking to ebusd at {self._config.host}:{self._config.port}: {exc}"
             ) from exc
+
+    def command_lines(self, command: str, *, read_all: bool = False) -> list[str]:
+        """Run an arbitrary ebusd command and return response lines."""
+
+        if not isinstance(command, str):
+            raise TypeError(f"command must be a str, got {type(command).__name__}")
+        cmd = command.encode("ascii", errors="strict") + _EBUSD_COMMAND_TERMINATOR
+        return self._send_command_lines(cmd, read_all=read_all)
+
+    def send_proto(
+        self,
+        dst: int,
+        primary: int,
+        secondary: int,
+        payload: bytes,
+        *,
+        expect_response: bool = True,
+    ) -> bytes:
+        """Send an ebusd `hex` telegram with arbitrary protocol bytes.
+
+        This supports BASV/broadcast flows (07FE/0704/B509) without changing the
+        `TransportInterface.send()` contract, which is B524-focused.
+        """
+
+        self._trace_seq += 1
+        seq = self._trace_seq
+        cmd = _build_hex_command_custom(self._config, dst, primary, secondary, payload)
+        cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
+        self._trace(
+            f"#{seq} SEND_PROTO primary=0x{primary:02X} secondary=0x{secondary:02X} "
+            f"payload={_short_hex(payload)} cmd={cmd_txt}"
+        )
+
+        lines = self._send_command_lines(cmd, read_all=False)
+        self._trace(f"#{seq} RECV_PROTO lines={lines!r}")
+
+        if not expect_response:
+            # For broadcast messages, ebusd typically replies with a textual status
+            # like "done broadcast". Treat it as success; callers may separately
+            # read bus activity via other mechanisms if needed.
+            return b""
+
+        parsed = _parse_ebusd_response_lines(lines)
+        self._trace(f"#{seq} PARSED_PROTO len={len(parsed)} hex={_short_hex(parsed)}")
+        stripped = _maybe_strip_length_prefix(parsed)
+        if stripped != parsed:
+            self._trace(f"#{seq} STRIP_PROTO in={_short_hex(parsed)} out={_short_hex(stripped)}")
+        return stripped

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -7,7 +8,12 @@ import typer
 from rich.console import Console
 
 from . import __version__
+from .ebusd import parse_ebusd_info_slave_addresses
+from .protocol.basv import parse_scan_identification, parse_vaillant_scan_id_chunks
+from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
+from .scanner.register import is_instance_present
 from .scanner.scan import default_output_filename, scan_b524
+from .transport.base import TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 from .ui.live import make_scan_observer
 from .ui.summary import render_summary
@@ -119,3 +125,134 @@ def scan(
     # Summary to stderr; keep stdout stable for scripting (artifact path only).
     render_summary(console, artifact, output_path=output_path)
     typer.echo(str(output_path))
+
+
+@app.command()
+def discover(
+    host: str = typer.Option(  # noqa: B008
+        "127.0.0.1",
+        "--host",
+        help="ebusd host (TCP).",
+    ),
+    port: int = typer.Option(  # noqa: B008
+        8888,
+        "--port",
+        help="ebusd port (TCP).",
+    ),
+    trace_file: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--trace-file",
+        envvar="HELIA_EBUSD_TRACE_PATH",
+        help="Write an ebusd request/response trace log to this file.",
+    ),
+) -> None:
+    """Discover eBUS devices via QueryExistence broadcast and per-address scan (0704)."""
+
+    transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
+    with transport.session():
+        # 1) QueryExistence (broadcast). This is best-effort: some ebusd setups will simply
+        # respond with a textual status (e.g. "done broadcast").
+        with contextlib.suppress(TransportError, TransportTimeout):
+            transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
+
+        info_lines = transport.command_lines("info", read_all=True)
+        addresses = parse_ebusd_info_slave_addresses(info_lines)
+        if not addresses:
+            typer.echo("No slave addresses found in ebusd info output.", err=True)
+            raise typer.Exit(2)
+
+        devices: dict[int, dict[str, object]] = {}
+        for addr in addresses:
+            try:
+                payload = transport.send_proto(addr, 0x07, 0x04, b"")
+            except (TransportError, TransportTimeout):
+                continue
+
+            try:
+                ident = parse_scan_identification(payload)
+            except Exception:
+                continue
+
+            entry: dict[str, object] = {
+                "manufacturer": ident.manufacturer,
+                "device_id": ident.device_id,
+                "sw": ident.sw,
+                "hw": ident.hw,
+            }
+
+            if ident.manufacturer == 0xB5:
+                try:
+                    chunks = [
+                        transport.send_proto(addr, 0xB5, 0x09, bytes((qq,)))
+                        for qq in (0x24, 0x25, 0x26, 0x27)
+                    ]
+                    scan_id = parse_vaillant_scan_id_chunks(chunks)
+                    entry["model_number"] = scan_id.model_number
+                    entry["serial_number"] = scan_id.serial_number
+                except Exception:
+                    pass
+
+            devices[addr] = entry
+
+        if not devices:
+            typer.echo("No devices responded to scan (0704).", err=True)
+            raise typer.Exit(2)
+
+        for addr in sorted(devices):
+            entry = devices[addr]
+            manufacturer_obj = entry.get("manufacturer")
+            manufacturer = (
+                manufacturer_obj
+                if isinstance(manufacturer_obj, int) and not isinstance(manufacturer_obj, bool)
+                else 0
+            )
+            device_id = str(entry.get("device_id") or "").strip()
+            sw = str(entry.get("sw") or "")
+            hw = str(entry.get("hw") or "")
+            model_number = entry.get("model_number")
+            serial_number = entry.get("serial_number")
+
+            line = (
+                f"addr=0x{addr:02X} mf=0x{manufacturer:02X} id={device_id or '?'} "
+                f"sw={sw or '????'} hw={hw or '????'}"
+            )
+            if isinstance(model_number, str) and isinstance(serial_number, str):
+                line += f" model={model_number} serial={serial_number}"
+            typer.echo(line)
+
+        # 4) If a Vaillant device is present at 0x15, run B524 group/instance discovery.
+        vrc = devices.get(0x15)
+        mf_obj = vrc.get("manufacturer") if isinstance(vrc, dict) else None
+        if isinstance(mf_obj, int) and not isinstance(mf_obj, bool) and mf_obj == 0xB5:
+            try:
+                groups = classify_groups(discover_groups(transport, dst=0x15))
+            except Exception as exc:
+                typer.echo(f"VRC@0x15 B524 discovery failed: {exc}", err=True)
+                raise typer.Exit(1) from exc
+
+            typer.echo("VRC@0x15 B524 instances per group:")
+            for group in groups:
+                config = GROUP_CONFIG.get(group.group)
+                if group.descriptor == 1.0 and config is not None:
+                    ii_max = int(config["ii_max"])
+                    present = 0
+                    for ii in range(0x00, ii_max + 1):
+                        try:
+                            if is_instance_present(
+                                transport,
+                                dst=0x15,
+                                group=group.group,
+                                instance=ii,
+                            ):
+                                present += 1
+                        except Exception:
+                            continue
+                    typer.echo(
+                        f"GG=0x{group.group:02X} name={group.name} desc={group.descriptor:g} "
+                        f"instances={present}/{ii_max + 1}"
+                    )
+                else:
+                    typer.echo(
+                        f"GG=0x{group.group:02X} name={group.name} desc={group.descriptor:g} "
+                        "instances=1"
+                    )
