@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import socket
 import string
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,15 @@ def _is_retryable_transport_error(exc: TransportError) -> bool:
 
 def _is_no_signal_error(exc: TransportError) -> bool:
     return "no signal" in str(exc).lower()
+
+
+def _is_connection_level_timeout(exc: TransportTimeout) -> bool:
+    return not str(exc).lower().startswith("err:")
+
+
+def _is_connection_level_error(exc: TransportError) -> bool:
+    lowered = str(exc).lower()
+    return lowered.startswith("failed talking to ebusd") or lowered == "empty ebusd response"
 
 
 def _utc_ts() -> str:
@@ -170,12 +180,20 @@ def _build_info_command() -> bytes:
     return b"info" + _EBUSD_COMMAND_TERMINATOR
 
 
+@dataclass(slots=True)
+class _EbusdTcpSession:
+    sock: socket.socket
+    sock_file: io.BufferedRWPair
+
+
 class EbusdTcpTransport(TransportInterface):
     """TCP transport against an ebusd daemon."""
 
     def __init__(self, config: EbusdTcpConfig) -> None:
         self._config = config
         self._trace_seq = 0
+        self._session_depth = 0
+        self._session: _EbusdTcpSession | None = None
 
     def _trace(self, message: str) -> None:
         trace_path = self._config.trace_path
@@ -186,6 +204,56 @@ class EbusdTcpTransport(TransportInterface):
             trace_path.parent.mkdir(parents=True, exist_ok=True)
             with trace_path.open("a", encoding="utf-8") as f:
                 f.write(f"{_utc_ts()} {message}\n")
+
+    def close(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        self._session = None
+        with contextlib.suppress(OSError):
+            session.sock_file.close()
+        with contextlib.suppress(OSError):
+            session.sock.close()
+
+    @contextlib.contextmanager
+    def session(self) -> Iterator[EbusdTcpTransport]:
+        """Enable a persistent TCP session for the duration of this context."""
+
+        self._session_depth += 1
+        if self._session_depth == 1:
+            self._open_session()
+        try:
+            yield self
+        finally:
+            self._session_depth -= 1
+            if self._session_depth <= 0:
+                self._session_depth = 0
+                self.close()
+
+    def _open_session(self) -> None:
+        addr = (self._config.host, self._config.port)
+        try:
+            sock = socket.create_connection(addr, timeout=self._config.timeout_s)
+            sock.settimeout(self._config.timeout_s)
+            sock_file = sock.makefile("rwb")
+            self._session = _EbusdTcpSession(sock=sock, sock_file=sock_file)
+        except TimeoutError as exc:
+            raise TransportTimeout(
+                f"Timed out talking to ebusd at {self._config.host}:{self._config.port}"
+            ) from exc
+        except OSError as exc:
+            raise TransportError(
+                f"Failed talking to ebusd at {self._config.host}:{self._config.port}: {exc}"
+            ) from exc
+
+    def _ensure_session(self) -> _EbusdTcpSession:
+        session = self._session
+        if session is not None:
+            return session
+        self._open_session()
+        session = self._session
+        assert session is not None
+        return session
 
     def send(self, dst: int, payload: bytes) -> bytes:
         self._trace_seq += 1
@@ -199,10 +267,18 @@ class EbusdTcpTransport(TransportInterface):
             except TransportTimeout as exc:
                 last_timeout = exc
                 if attempt == 0:
+                    if self._session_depth > 0 and _is_connection_level_timeout(exc):
+                        # Connection-level timeouts should reconnect in session mode.
+                        self.close()
                     time.sleep(_TIMEOUT_RETRY_DELAY_S)
                     continue
                 raise
             except TransportError as exc:
+                if attempt == 0 and self._session_depth > 0 and _is_connection_level_error(exc):
+                    # Connection-level failures should reconnect in session mode.
+                    self.close()
+                    time.sleep(_TIMEOUT_RETRY_DELAY_S)
+                    continue
                 if attempt == 0 and (not recovered_no_signal) and _is_no_signal_error(exc):
                     recovered_no_signal = True
                     self._trace(f"#{seq} RECOVER no_signal sleep_s={_NO_SIGNAL_RETRY_DELAY_S}")
@@ -256,64 +332,81 @@ class EbusdTcpTransport(TransportInterface):
             self._trace(f"#{seq} STRIP in={_short_hex(parsed)} out={_short_hex(stripped)}")
         return stripped
 
+    @staticmethod
+    def _read_command_response_lines(
+        sock: socket.socket,
+        sock_file: io.BufferedRWPair,
+    ) -> list[str]:
+        lines: list[str] = []
+        # ebusd typically terminates responses with a blank line. Some versions keep the socket
+        # open after sending a single payload/ERR line; do not block on waiting for the terminator
+        # after we've received a non-empty line.
+        while True:
+            raw = sock_file.readline()
+            if not raw:
+                break
+            text = raw.decode("ascii", errors="replace").rstrip("\r\n")
+            if text == "":
+                break
+            if text.strip() == "":
+                continue
+            lines.append(text)
+            break
+
+        if lines:
+            # Best-effort: drain any trailing lines (e.g. spurious ERR lines) using a short timeout.
+            # A drain timeout must not be treated as a request timeout.
+            prev_timeout = sock.gettimeout()
+            drain_timeout = _POST_RESPONSE_DRAIN_TIMEOUT_S
+            if prev_timeout is not None:
+                drain_timeout = min(prev_timeout, drain_timeout)
+            sock.settimeout(drain_timeout)
+            try:
+                while True:
+                    try:
+                        raw = sock_file.readline()
+                    except TimeoutError:
+                        break
+                    if not raw:
+                        break
+                    text = raw.decode("ascii", errors="replace").rstrip("\r\n")
+                    if text == "":
+                        break
+                    if text.strip() == "":
+                        continue
+                    lines.append(text)
+            finally:
+                sock.settimeout(prev_timeout)
+
+        return lines
+
     def _send_command_lines(self, cmd: bytes) -> list[str]:
         addr = (self._config.host, self._config.port)
 
         try:
+            if self._session_depth > 0:
+                session = self._ensure_session()
+                session.sock_file.write(cmd)
+                session.sock_file.flush()
+                return self._read_command_response_lines(session.sock, session.sock_file)
+
             with socket.create_connection(addr, timeout=self._config.timeout_s) as sock:
                 sock.settimeout(self._config.timeout_s)
                 with sock.makefile("rwb") as sock_file:
                     sock_file.write(cmd)
                     sock_file.flush()
-
-                    lines: list[str] = []
-                    # ebusd typically terminates responses with a blank line. Some versions keep
-                    # the socket open after sending a single payload/ERR line; do not block on
-                    # waiting for the terminator after we've received a non-empty line.
-                    while True:
-                        raw = sock_file.readline()
-                        if not raw:
-                            break
-                        text = raw.decode("ascii", errors="replace").rstrip("\r\n")
-                        if text == "":
-                            break
-                        if text.strip() == "":
-                            continue
-                        lines.append(text)
-                        break
-
-                    if lines:
-                        # Best-effort: drain any trailing lines (e.g. spurious ERR lines) using a
-                        # short timeout. A drain timeout must not be treated as a request timeout.
-                        prev_timeout = sock.gettimeout()
-                        drain_timeout = _POST_RESPONSE_DRAIN_TIMEOUT_S
-                        if prev_timeout is not None:
-                            drain_timeout = min(prev_timeout, drain_timeout)
-                        sock.settimeout(drain_timeout)
-                        try:
-                            while True:
-                                try:
-                                    raw = sock_file.readline()
-                                except TimeoutError:
-                                    break
-                                if not raw:
-                                    break
-                                text = raw.decode("ascii", errors="replace").rstrip("\r\n")
-                                if text == "":
-                                    break
-                                if text.strip() == "":
-                                    continue
-                                lines.append(text)
-                        finally:
-                            sock.settimeout(prev_timeout)
-            return lines
+                    return self._read_command_response_lines(sock, sock_file)
         except TimeoutError as exc:
             # This catches socket read timeouts too: `socket.timeout` is an alias of
             # builtin `TimeoutError` on Python 3.12+ (including `sock.makefile().readline()`).
+            if self._session_depth > 0:
+                self.close()
             raise TransportTimeout(
                 f"Timed out talking to ebusd at {self._config.host}:{self._config.port}"
             ) from exc
         except OSError as exc:
+            if self._session_depth > 0:
+                self.close()
             raise TransportError(
                 f"Failed talking to ebusd at {self._config.host}:{self._config.port}: {exc}"
             ) from exc

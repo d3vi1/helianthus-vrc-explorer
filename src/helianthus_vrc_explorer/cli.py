@@ -96,7 +96,7 @@ def scan(
     else:
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
         title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
-        with make_scan_observer(console=console, title=title) as observer:
+        with make_scan_observer(console=console, title=title) as observer, transport.session():
             artifact = scan_b524(
                 transport,
                 dst=dst_u8,
