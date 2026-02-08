@@ -27,6 +27,7 @@ _SECONDARY_EXTENDED_REGISTER: Final[int] = 0x24
 _EBUSD_COMMAND_TERMINATOR: Final[bytes] = b"\n"
 _HEX_CHARS: Final[set[str]] = set(string.hexdigits)
 _TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
+_NO_SIGNAL_RETRY_DELAY_S: Final[float] = 10.0
 _POST_RESPONSE_DRAIN_TIMEOUT_S: Final[float] = 0.01
 _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS: Final[tuple[str, ...]] = (
     "syn received",
@@ -36,6 +37,10 @@ _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS: Final[tuple[str, ...]] = (
 
 def _is_retryable_transport_error(exc: TransportError) -> bool:
     return any(token in str(exc).lower() for token in _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS)
+
+
+def _is_no_signal_error(exc: TransportError) -> bool:
+    return "no signal" in str(exc).lower()
 
 
 def _utc_ts() -> str:
@@ -112,6 +117,26 @@ def _parse_ebusd_response_lines(lines: Sequence[str]) -> bytes:
     raise TransportError("Empty ebusd response")
 
 
+def _parse_ebusd_info_lines(lines: Sequence[str]) -> None:
+    """Parse ebusd `info` response lines.
+
+    For health checks we only care whether ebusd returns an `ERR:` line. Any non-ERR
+    payload is treated as success.
+    """
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("err"):
+            lowered = line.lower()
+            if "timeout" in lowered or "timed out" in lowered or "no answer" in lowered:
+                raise TransportTimeout(line)
+            raise TransportError(line)
+        return
+    raise TransportError("Empty ebusd response")
+
+
 def _validate_u8(field_name: str, value: int) -> None:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"{field_name} must be an int, got {type(value).__name__}")
@@ -140,6 +165,11 @@ def _build_hex_command(config: EbusdTcpConfig, dst: int, payload: bytes) -> byte
     return cmd.encode("ascii") + _EBUSD_COMMAND_TERMINATOR
 
 
+def _build_info_command() -> bytes:
+    # `info` is a lightweight health/status command on the ebusd command port.
+    return b"info" + _EBUSD_COMMAND_TERMINATOR
+
+
 class EbusdTcpTransport(TransportInterface):
     """TCP transport against an ebusd daemon."""
 
@@ -162,6 +192,7 @@ class EbusdTcpTransport(TransportInterface):
         seq = self._trace_seq
         last_timeout: TransportTimeout | None = None
         last_retryable_error: TransportError | None = None
+        recovered_no_signal = False
         for attempt in range(2):
             try:
                 return self._send_once(seq, dst, payload)
@@ -172,6 +203,26 @@ class EbusdTcpTransport(TransportInterface):
                     continue
                 raise
             except TransportError as exc:
+                if attempt == 0 and (not recovered_no_signal) and _is_no_signal_error(exc):
+                    recovered_no_signal = True
+                    self._trace(f"#{seq} RECOVER no_signal sleep_s={_NO_SIGNAL_RETRY_DELAY_S}")
+                    time.sleep(_NO_SIGNAL_RETRY_DELAY_S)
+                    # Best-effort health check: if `info` still returns "no signal", surface
+                    # the problem instead of retrying forever.
+                    try:
+                        self._send_info_once(seq)
+                    except TransportError as info_exc:
+                        if _is_no_signal_error(info_exc):
+                            raise TransportError(
+                                "ERR: no signal (still missing after wait+info check)"
+                            ) from exc
+                        # Other transport errors from `info` are treated as non-fatal; continue to
+                        # retry the last payload once.
+                    except TransportTimeout:
+                        # `info` timing out is not a definitive signal status; retry last payload
+                        # once.
+                        pass
+                    continue
                 if attempt == 0 and _is_retryable_transport_error(exc):
                     last_retryable_error = exc
                     time.sleep(_TIMEOUT_RETRY_DELAY_S)
@@ -183,10 +234,29 @@ class EbusdTcpTransport(TransportInterface):
         assert last_retryable_error is not None
         raise last_retryable_error
 
+    def _send_info_once(self, seq: int) -> None:
+        cmd = _build_info_command()
+        cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
+        self._trace(f"#{seq} INFO cmd={cmd_txt}")
+        lines = self._send_command_lines(cmd)
+        self._trace(f"#{seq} INFO_RECV lines={lines!r}")
+        _parse_ebusd_info_lines(lines)
+
     def _send_once(self, seq: int, dst: int, payload: bytes) -> bytes:
         cmd = _build_hex_command(self._config, dst, payload)
         cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
         self._trace(f"#{seq} SEND attempt_payload={_short_hex(payload)} cmd={cmd_txt}")
+
+        lines = self._send_command_lines(cmd)
+        self._trace(f"#{seq} RECV lines={lines!r}")
+        parsed = _parse_ebusd_response_lines(lines)
+        self._trace(f"#{seq} PARSED len={len(parsed)} hex={_short_hex(parsed)}")
+        stripped = _maybe_strip_length_prefix(parsed)
+        if stripped != parsed:
+            self._trace(f"#{seq} STRIP in={_short_hex(parsed)} out={_short_hex(stripped)}")
+        return stripped
+
+    def _send_command_lines(self, cmd: bytes) -> list[str]:
         addr = (self._config.host, self._config.port)
 
         try:
@@ -236,6 +306,7 @@ class EbusdTcpTransport(TransportInterface):
                                 lines.append(text)
                         finally:
                             sock.settimeout(prev_timeout)
+            return lines
         except TimeoutError as exc:
             # This catches socket read timeouts too: `socket.timeout` is an alias of
             # builtin `TimeoutError` on Python 3.12+ (including `sock.makefile().readline()`).
@@ -246,11 +317,3 @@ class EbusdTcpTransport(TransportInterface):
             raise TransportError(
                 f"Failed talking to ebusd at {self._config.host}:{self._config.port}: {exc}"
             ) from exc
-
-        self._trace(f"#{seq} RECV lines={lines!r}")
-        parsed = _parse_ebusd_response_lines(lines)
-        self._trace(f"#{seq} PARSED len={len(parsed)} hex={_short_hex(parsed)}")
-        stripped = _maybe_strip_length_prefix(parsed)
-        if stripped != parsed:
-            self._trace(f"#{seq} STRIP in={_short_hex(parsed)} out={_short_hex(stripped)}")
-        return stripped

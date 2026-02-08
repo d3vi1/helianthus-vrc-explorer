@@ -9,7 +9,7 @@ from queue import Queue
 
 import pytest
 
-from helianthus_vrc_explorer.transport.base import TransportTimeout
+from helianthus_vrc_explorer.transport.base import TransportError, TransportTimeout
 from helianthus_vrc_explorer.transport.ebusd_tcp import (
     EbusdTcpConfig,
     EbusdTcpTransport,
@@ -192,6 +192,52 @@ def test_transport_send_retries_socket_timeout_once_then_succeeds(
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
     assert sleep_calls == [1.0]
+
+
+def test_transport_send_recovers_from_no_signal_then_retries_last_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _run_ebusd_test_server([["ERR: no signal"], ["signal: ok"], ["010203"]]) as (
+        host,
+        port,
+        commands,
+    ):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        payload = bytes.fromhex("020002000F00")
+        result = transport.send(0x15, payload)
+
+    assert result == bytes.fromhex("010203")
+    assert commands == ["hex 15B52406020002000F00", "info", "hex 15B52406020002000F00"]
+    assert sleep_calls == [10.0]
+
+
+def test_transport_send_no_signal_still_missing_after_info_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _run_ebusd_test_server([["ERR: no signal"], ["ERR: no signal"]]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        payload = bytes.fromhex("020002000F00")
+        with pytest.raises(TransportError, match=r"no signal"):
+            transport.send(0x15, payload)
+
+    assert commands == ["hex 15B52406020002000F00", "info"]
+    assert sleep_calls == [10.0]
 
 
 def test_transport_send_does_not_timeout_if_ebusd_keeps_socket_open_after_payload(
