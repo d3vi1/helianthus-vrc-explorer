@@ -176,7 +176,7 @@ def scan_b524(
                 )
                 if is_present:
                     present_count += 1
-                group_obj["instances"][_hex_u8(ii)] = {"present": is_present}
+                    group_obj["instances"][_hex_u8(ii)] = {"present": True}
                 if observer is not None:
                     observer.phase_advance("instance_discovery", advance=1)
 
