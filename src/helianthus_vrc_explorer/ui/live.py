@@ -10,6 +10,7 @@ from rich.progress import (
     MofNCompleteColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
 )
@@ -39,8 +40,9 @@ def _styled(level: str) -> str:
 
 @dataclass(slots=True)
 class _Task:
-    id: int
+    id: TaskID
     phase: str
+    total: int
 
 
 class NullScanObserver(AbstractContextManager["NullScanObserver"], ScanObserver):
@@ -111,9 +113,10 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
         if phase in self._tasks:
             task = self._tasks[phase]
             self._progress.update(task.id, description=label, completed=0, total=total, status="")
+            task.total = total
         else:
             task_id = self._progress.add_task(label, total=total, status="")
-            self._tasks[phase] = _Task(id=task_id, phase=phase)
+            self._tasks[phase] = _Task(id=task_id, phase=phase, total=total)
         self._current_phase = phase
 
         # Clear other phase status fields so only one "current operation" line shows.
@@ -133,14 +136,13 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
         if task is None:
             return
         self._progress.update(task.id, total=total)
+        task.total = total
 
     def phase_finish(self, phase: str) -> None:
         task = self._tasks.get(phase)
         if task is None:
             return
-        total = self._progress.tasks[task.id].total
-        if total is not None:
-            self._progress.update(task.id, completed=total)
+        self._progress.update(task.id, completed=task.total)
         self._progress.update(task.id, status="")
 
     def status(self, message: str) -> None:
