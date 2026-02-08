@@ -324,11 +324,9 @@ def scan_b524(
             task = work_queue.popleft()
             opcode = opcode_for_group(task.group)
             if observer is not None:
-                if task.register % 8 == 0:
-                    observer.status(
-                        f"Read GG=0x{task.group:02X} II=0x{task.instance:02X} "
-                        f"RR=0x{task.register:04X}"
-                    )
+                observer.status(
+                    f"Read GG=0x{task.group:02X} II=0x{task.instance:02X} RR=0x{task.register:04X}"
+                )
                 observer.phase_advance("register_scan", advance=1)
 
             entry = read_register(
