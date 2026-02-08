@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -70,6 +71,9 @@ class NullScanObserver(AbstractContextManager["NullScanObserver"], ScanObserver)
     def log(self, message: str, *, level: str = "info") -> None:  # noqa: ARG002
         return None
 
+    def suspend(self) -> AbstractContextManager[None]:
+        return nullcontext()
+
 
 class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver):
     """Rich-based observer used for interactive scans (TTY)."""
@@ -77,6 +81,8 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
     def __init__(self, *, console: Console, title: str) -> None:
         self._console = console
         self._title = title
+        self._started = False
+        self._suspend_depth = 0
         self._progress = Progress(
             SpinnerColumn(style="cyan"),
             TextColumn("{task.description}"),
@@ -94,6 +100,7 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
 
     def __enter__(self) -> RichScanObserver:
         self._progress.start()
+        self._started = True
         header = Group(
             Rule(self._title, style="dim"),
             Text(
@@ -105,7 +112,10 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
         return self
 
     def __exit__(self, *_exc: object) -> None:
-        self._progress.stop()
+        if self._started:
+            self._progress.stop()
+        self._started = False
+        self._suspend_depth = 0
         return None
 
     def phase_start(self, phase: str, *, total: int) -> None:
@@ -157,6 +167,25 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
         ts = _now_ts()
         style = _styled(level)
         self._progress.console.print(f"[dim]{ts}[/dim] [{style}]{message}[/{style}]")
+
+    def suspend(self) -> AbstractContextManager[None]:
+        @contextmanager
+        def _cm() -> Iterator[None]:
+            if not self._started:
+                yield None
+                return
+
+            self._suspend_depth += 1
+            if self._suspend_depth == 1:
+                self._progress.stop()
+            try:
+                yield None
+            finally:
+                self._suspend_depth -= 1
+                if self._started and self._suspend_depth == 0:
+                    self._progress.start()
+
+        return _cm()
 
 
 def make_scan_observer(*, console: Console, title: str) -> AbstractContextManager[ScanObserver]:

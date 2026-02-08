@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from typing import Protocol
 
 
@@ -27,3 +28,9 @@ class ScanObserver(Protocol):
 
     def log(self, message: str, *, level: str = "info") -> None:
         """Emit a scrollable log line (info/warn/error)."""
+
+    def suspend(self) -> AbstractContextManager[None]:
+        """Temporarily suspend live UI rendering (to allow user prompts).
+
+        Implementations must return a context manager that is safe to nest and must not raise.
+        """
