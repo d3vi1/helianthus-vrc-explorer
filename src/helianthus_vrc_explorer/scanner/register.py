@@ -128,42 +128,48 @@ def _parse_inferred_value(value_bytes: bytes) -> tuple[str | None, object | None
         (type_spec, value, error)
     """
 
+    n = len(value_bytes)
+    if n == 0:
+        return None, None, None
+
+    def _hex_fallback() -> tuple[str, object, None]:
+        spec = f"HEX:{n}"
+        return spec, parse_typed_value(spec, value_bytes), None
+
     if len(value_bytes) == 4:
         try:
             return "EXP", parse_typed_value("EXP", value_bytes), None
-        except ValueParseError as exc:
-            return "EXP", None, f"parse_error: {exc}"
+        except ValueParseError:
+            # Don't drop bytes on the floor: keep a stable representation.
+            return _hex_fallback()
 
     if len(value_bytes) == 2:
         try:
             return "UIN", parse_typed_value("UIN", value_bytes), None
-        except ValueParseError as exc:
-            return "UIN", None, f"parse_error: {exc}"
+        except ValueParseError:
+            return _hex_fallback()
 
     if len(value_bytes) == 1:
         try:
             return "UCH", parse_typed_value("UCH", value_bytes), None
-        except ValueParseError as exc:
-            return "UCH", None, f"parse_error: {exc}"
+        except ValueParseError:
+            return _hex_fallback()
 
     if len(value_bytes) == 3:
-        try:
-            return "HDA:3", parse_typed_value("HDA:3", value_bytes), None
-        except ValueParseError:
-            pass
-        try:
-            return "HTI", parse_typed_value("HTI", value_bytes), None
-        except ValueParseError as exc:
-            # Fallback to raw_hex only for unparseable u24 values.
-            return None, None, f"parse_error: {exc}"
+        for spec in ("HDA:3", "HTI"):
+            try:
+                return spec, parse_typed_value(spec, value_bytes), None
+            except ValueParseError:
+                continue
+        return _hex_fallback()
 
     if _looks_like_nul_terminated_latin1(value_bytes):
         try:
             return "STR:*", parse_typed_value("STR:*", value_bytes), None
-        except ValueParseError as exc:
-            return "STR:*", None, f"parse_error: {exc}"
+        except ValueParseError:
+            return _hex_fallback()
 
-    return None, None, f"unknown_value_length: {len(value_bytes)}"
+    return _hex_fallback()
 
 
 def read_register(
