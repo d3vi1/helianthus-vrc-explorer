@@ -88,6 +88,67 @@ def _run_ebusd_test_server(
         thread.join(timeout=1)
 
 
+@contextmanager
+def _run_ebusd_test_server_multi_command(
+    responses: list[list[str] | None | _EbusdTestServerResponse],
+) -> Iterator[tuple[str, int, list[str], list[int]]]:
+    """Run a local TCP server that supports multiple commands per connection."""
+
+    commands: list[str] = []
+    connections: list[int] = []
+    queue: Queue[list[str] | None | _EbusdTestServerResponse] = Queue()
+    for response in responses:
+        queue.put(response)
+
+    stop_event = threading.Event()
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self) -> None:  # noqa: D401 - socketserver signature
+            connections.append(1)
+            while True:
+                raw_cmd = self.rfile.readline()
+                if not raw_cmd:
+                    return
+                cmd = raw_cmd.decode("ascii", errors="replace").rstrip("\r\n")
+                if cmd == "":
+                    continue
+                commands.append(cmd)
+
+                response = queue.get_nowait()
+                if response is None:
+                    # Keep connection open without responding so the client hits its socket timeout.
+                    stop_event.wait(timeout=5)
+                    return
+
+                send_terminator = True
+                lines = response
+                if isinstance(response, _EbusdTestServerResponse):
+                    send_terminator = response.send_terminator
+                    lines = response.lines
+
+                for line in lines:
+                    self.wfile.write(line.encode("ascii") + b"\n")
+                if send_terminator:
+                    self.wfile.write(b"\n")
+                self.wfile.flush()
+
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        assert isinstance(host, str)
+        assert isinstance(port, int)
+        yield host, port, commands, connections
+    finally:
+        stop_event.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+
 def test_parse_ebusd_response_lines_returns_first_hex_payload_line() -> None:
     lines = [
         "010203",
@@ -280,3 +341,48 @@ def test_transport_send_strips_length_prefix_from_short_hex_response() -> None:
 
     assert result == bytes.fromhex("00")
     assert commands == ["hex 15B52403000000"]
+
+
+def test_transport_session_reuses_single_connection_for_multiple_sends() -> None:
+    with _run_ebusd_test_server_multi_command([["010203"], ["040506"]]) as (
+        host,
+        port,
+        commands,
+        connections,
+    ):
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        payload_1 = bytes.fromhex("020002000F00")
+        payload_2 = bytes.fromhex("020002001000")
+        with transport.session():
+            result_1 = transport.send(0x15, payload_1)
+            result_2 = transport.send(0x15, payload_2)
+
+    assert result_1 == bytes.fromhex("010203")
+    assert result_2 == bytes.fromhex("040506")
+    assert len(connections) == 1
+    assert commands == [
+        "hex 15B52406020002000F00",
+        "hex 15B52406020002001000",
+    ]
+
+
+def test_transport_session_reconnects_on_socket_timeout_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _run_ebusd_test_server([None, ["010203"]]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.05))
+        payload = bytes.fromhex("020002000F00")
+        with transport.session():
+            result = transport.send(0x15, payload)
+
+    assert result == bytes.fromhex("010203")
+    assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
+    assert sleep_calls == [1.0]
