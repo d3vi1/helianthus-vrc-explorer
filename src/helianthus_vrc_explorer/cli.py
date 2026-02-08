@@ -9,7 +9,12 @@ from . import __version__
 from .scanner.scan import default_output_filename, scan_b524
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 
-app = typer.Typer(add_completion=False, invoke_without_command=True, no_args_is_help=True)
+app = typer.Typer(
+    add_completion=False,
+    invoke_without_command=True,
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 
 def _parse_u8_address(value: str) -> int:
