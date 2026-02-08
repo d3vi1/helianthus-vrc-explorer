@@ -12,6 +12,7 @@ from ..scanner.plan import (
     GroupScanPlan,
     estimate_eta_seconds,
     estimate_register_requests,
+    format_int_set,
     parse_int_set,
     parse_int_token,
 )
@@ -54,6 +55,7 @@ def prompt_scan_plan(
     groups: list[PlannerGroup],
     *,
     request_rate_rps: float | None,
+    default_plan: dict[int, GroupScanPlan] | None = None,
 ) -> dict[int, GroupScanPlan]:
     """Prompt for a scan plan in interactive TTY mode.
 
@@ -64,12 +66,19 @@ def prompt_scan_plan(
     if not eligible:
         return {}
 
-    default_plan: dict[int, GroupScanPlan] = {}
-    for g in eligible.values():
-        default_instances = (0x00,) if g.ii_max is None else g.present_instances
-        default_plan[g.group] = GroupScanPlan(
-            group=g.group, rr_max=g.rr_max, instances=default_instances
-        )
+    default_selected_plan: dict[int, GroupScanPlan] = {}
+    if default_plan is not None:
+        for gg, group_plan in default_plan.items():
+            if gg in eligible:
+                default_selected_plan[gg] = group_plan
+    else:
+        for g in eligible.values():
+            default_instances = (0x00,) if g.ii_max is None else g.present_instances
+            default_selected_plan[g.group] = GroupScanPlan(
+                group=g.group,
+                rr_max=g.rr_max,
+                instances=default_instances,
+            )
 
     console.print(Rule("Scan Planner", style="dim"))
     console.print(
@@ -97,7 +106,7 @@ def prompt_scan_plan(
         )
     console.print(table)
 
-    default_requests = estimate_register_requests(default_plan)
+    default_requests = estimate_register_requests(default_selected_plan)
     default_eta_s = estimate_eta_seconds(
         requests=default_requests,
         request_rate_rps=request_rate_rps,
@@ -112,13 +121,19 @@ def prompt_scan_plan(
     if not Confirm.ask("Customize scan plan?", default=False, console=console):
         if not Confirm.ask("Proceed with register scan?", default=True, console=console):
             raise KeyboardInterrupt
-        return default_plan
+        return default_selected_plan
 
     # Step 1: select groups.
+    default_groups = sorted(default_selected_plan.keys())
+    default_groups_spec = (
+        "all"
+        if sorted(eligible.keys()) == default_groups
+        else format_int_set(default_groups) or "none"
+    )
     while True:
         raw = Prompt.ask(
             "Groups to scan (e.g. 'all' or '0x02,0x03')",
-            default="all",
+            default=default_groups_spec,
             show_default=True,
             console=console,
         ).strip()
@@ -147,11 +162,29 @@ def prompt_scan_plan(
     # Step 2: per-group instance selection + rr_max override.
     for gg in selected_groups:
         g = eligible[gg]
+        default_group_plan = default_selected_plan.get(gg)
+        default_instances_for_group: tuple[int, ...] = ()
+        default_rr_max_for_group = g.rr_max
+        if default_group_plan is not None:
+            default_instances_for_group = default_group_plan.instances
+            default_rr_max_for_group = default_group_plan.rr_max
+        else:
+            default_instances_for_group = (0x00,) if g.ii_max is None else g.present_instances
+
         selected_instances: tuple[int, ...]
         if g.ii_max is None:
             selected_instances = (0x00,)
         else:
-            default_instances_mode = "present" if g.present_instances else "none"
+            full_range = tuple(range(0x00, g.ii_max + 1))
+            if default_instances_for_group == g.present_instances:
+                default_instances_mode = "present"
+            elif default_instances_for_group == full_range:
+                default_instances_mode = "all"
+            elif not default_instances_for_group:
+                default_instances_mode = "none"
+            else:
+                default_instances_mode = format_int_set(list(default_instances_for_group))
+
             while True:
                 raw_instances = Prompt.ask(
                     f"{_hex_u8(gg)} instances to scan ('present', 'all', 'none', or '0-10')",
@@ -184,7 +217,7 @@ def prompt_scan_plan(
         while True:
             raw_rr_max = Prompt.ask(
                 f"{_hex_u8(gg)} RR_max override (hex/dec)",
-                default=_hex_u16(g.rr_max),
+                default=_hex_u16(default_rr_max_for_group),
                 show_default=True,
                 console=console,
             ).strip()

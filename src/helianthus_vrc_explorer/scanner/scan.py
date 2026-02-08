@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,12 +13,39 @@ from ..transport.instrumented import CountingTransport
 from ..ui.planner import PlannerGroup, prompt_scan_plan
 from .director import GROUP_CONFIG, classify_groups, discover_groups
 from .observer import ScanObserver
-from .plan import GroupScanPlan, estimate_register_requests
-from .register import is_instance_present, scan_registers_for_instance
+from .plan import GroupScanPlan, RegisterTask, build_work_queue, estimate_register_requests
+from .register import is_instance_present, opcode_for_group, read_register
 
 
 def _hex_u8(value: int) -> str:
     return f"0x{value:02x}"
+
+
+def _hex_u16(value: int) -> str:
+    return f"0x{value:04x}"
+
+
+def _poll_planner_hotkey() -> bool:
+    """Best-effort interactive hotkey: type 'p' + Enter to open the planner."""
+
+    if not sys.stdin.isatty():
+        return False
+    if sys.platform == "win32":
+        return False
+
+    try:
+        import select  # noqa: PLC0415
+
+        ready, _w, _x = select.select([sys.stdin], [], [], 0.0)
+    except (OSError, ValueError):
+        return False
+
+    if not ready:
+        return False
+
+    raw = sys.stdin.readline()
+    cmd = raw.strip().lower()
+    return cmd in {"p", "plan", ":p", ":plan"}
 
 
 def scan_b524(
@@ -194,8 +222,8 @@ def scan_b524(
             and sys.stdin.isatty()
             and observer is not None
         )
+        planner_groups: list[PlannerGroup] = []
         if interactive and console is not None and observer is not None:
-            planner_groups: list[PlannerGroup] = []
             for group in classified:
                 config = GROUP_CONFIG.get(group.group)
                 if config is None:
@@ -230,7 +258,12 @@ def scan_b524(
                         )
                     )
             with observer.suspend():
-                plan = prompt_scan_plan(console, planner_groups, request_rate_rps=request_rate_rps)
+                plan = prompt_scan_plan(
+                    console,
+                    planner_groups,
+                    request_rate_rps=request_rate_rps,
+                    default_plan=plan,
+                )
 
         artifact["meta"]["scan_plan"] = {
             "groups": {_hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())},
@@ -238,76 +271,87 @@ def scan_b524(
             "measured_request_rate_rps": round(request_rate_rps, 4) if request_rate_rps else None,
         }
 
-        # Phase D: register scan for all present instances.
-        register_total = estimate_register_requests(plan)
-
+        # Phase D: register scan (supports interactive replanning).
+        done: set[RegisterTask] = set()
+        work_queue = deque(build_work_queue(plan, done=done))
         if observer is not None:
-            observer.phase_start("register_scan", total=register_total or 1)
+            observer.phase_start("register_scan", total=len(work_queue) or 1)
 
-        for group in classified:
-            group_plan = plan.get(group.group)
-            if group_plan is None:
-                continue
-            rr_max = group_plan.rr_max
-            group_key = _hex_u8(group.group)
-            group_obj = artifact["groups"][group_key]
-            scanned_registers = 0
-            scanned_errors = 0
-            scanned_instances = 0
+        active_start = time.perf_counter()
+        active_elapsed = 0.0
 
-            if group.descriptor == 1.0:
-                for ii in group_plan.instances:
-                    instance_key = _hex_u8(ii)
-                    instance_obj = group_obj["instances"].get(instance_key)
-                    if not isinstance(instance_obj, dict):
-                        continue
-                    registers = scan_registers_for_instance(
-                        transport,
-                        dst=dst,
-                        group=group.group,
-                        instance=ii,
-                        rr_max=rr_max,
-                        observer=observer,
+        while work_queue:
+            if (
+                interactive
+                and console is not None
+                and observer is not None
+                and _poll_planner_hotkey()
+            ):
+                # Pause progress rendering and allow replanning without rewriting scanned data.
+                active_elapsed += time.perf_counter() - active_start
+                with observer.suspend():
+                    plan = prompt_scan_plan(
+                        console,
+                        planner_groups,
+                        request_rate_rps=request_rate_rps,
+                        default_plan=plan,
                     )
-                    instance_obj["registers"] = registers
-                    scanned_instances += 1
-                    scanned_registers += len(registers)
-                    scanned_errors += sum(
-                        1 for entry in registers.values() if entry.get("error") is not None
-                    )
-                if observer is not None and scanned_instances > 0:
+                artifact["meta"]["scan_plan"]["groups"] = {
+                    _hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())
+                }
+                artifact["meta"]["scan_plan"]["estimated_register_requests"] = (
+                    estimate_register_requests(plan)
+                )
+                work_queue = deque(build_work_queue(plan, done=done))
+                observer.phase_set_total("register_scan", total=(len(done) + len(work_queue)) or 1)
+                remaining = len(work_queue)
+                task_rate_rps = (len(done) / active_elapsed) if active_elapsed > 0 else None
+                if task_rate_rps is None:
                     observer.log(
-                        f"GG=0x{group.group:02X} {group.name}: scanned {scanned_registers} "
-                        f"registers across {scanned_instances} instance(s) "
-                        f"(errors={scanned_errors})",
+                        f"Updated scan plan: remaining {remaining} register reads",
                         level="info",
                     )
+                else:
+                    eta_s = remaining / task_rate_rps if remaining > 0 else 0.0
+                    observer.log(
+                        f"Updated scan plan: remaining {remaining} register reads "
+                        f"(ETA {eta_s:.1f}s @ {task_rate_rps:.2f} rr/s)",
+                        level="info",
+                    )
+                active_start = time.perf_counter()
                 continue
 
-            # Singleton / Type 6 groups: scan II=0x00.
-            instance_key = _hex_u8(0x00)
-            instance_obj = group_obj["instances"][instance_key]
+            task = work_queue.popleft()
+            opcode = opcode_for_group(task.group)
+            if observer is not None:
+                if task.register % 8 == 0:
+                    observer.status(
+                        f"Read GG=0x{task.group:02X} II=0x{task.instance:02X} "
+                        f"RR=0x{task.register:04X}"
+                    )
+                observer.phase_advance("register_scan", advance=1)
+
+            entry = read_register(
+                transport,
+                dst,
+                opcode,
+                group=task.group,
+                instance=task.instance,
+                register=task.register,
+            )
+            done.add(task)
+
+            group_key = _hex_u8(task.group)
+            group_obj = artifact["groups"].setdefault(
+                group_key,
+                {"name": "Unknown", "descriptor_type": None, "instances": {}},
+            )
+            instances_obj = group_obj.setdefault("instances", {})
+            instance_key = _hex_u8(task.instance)
+            instance_obj = instances_obj.setdefault(instance_key, {"present": False})
             if isinstance(instance_obj, dict):
-                registers = scan_registers_for_instance(
-                    transport,
-                    dst=dst,
-                    group=group.group,
-                    instance=0x00,
-                    rr_max=rr_max,
-                    observer=observer,
-                )
-                instance_obj["registers"] = registers
-                scanned_instances = 1
-                scanned_registers = len(registers)
-                scanned_errors = sum(
-                    1 for entry in registers.values() if entry.get("error") is not None
-                )
-                if observer is not None:
-                    observer.log(
-                        f"GG=0x{group.group:02X} {group.name}: scanned {scanned_registers} "
-                        f"registers (errors={scanned_errors})",
-                        level="info",
-                    )
+                registers = instance_obj.setdefault("registers", {})
+                registers[_hex_u16(task.register)] = entry
 
         if observer is not None:
             observer.phase_finish("register_scan")
