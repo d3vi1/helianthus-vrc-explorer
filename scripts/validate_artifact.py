@@ -69,9 +69,7 @@ def validate_scan_artifact(artifact: dict[str, Any]) -> list[str]:
             if len(reply) == 1:
                 # Status-only reply: should not have a value tail.
                 if raw_hex not in (None, ""):
-                    errors.append(
-                        f"{loc}: status-only reply but raw_hex is present"
-                    )
+                    errors.append(f"{loc}: status-only reply but raw_hex is present")
             elif len(reply) >= 4 and isinstance(raw_hex, str):
                 try:
                     raw = bytes.fromhex(raw_hex)
@@ -82,15 +80,11 @@ def validate_scan_artifact(artifact: dict[str, Any]) -> list[str]:
                 if raw and reply[4:] != raw:
                     errors.append(f"{loc}: reply_hex tail mismatch raw_hex")
                 if reply and reply[1] != (gg & 0xFF):
-                    errors.append(
-                        f"{loc}: reply_hex GG mismatch ({reply[1]:02x})"
-                    )
+                    errors.append(f"{loc}: reply_hex GG mismatch ({reply[1]:02x})")
                 if reply and rr is not None:
                     rr_le = rr.to_bytes(2, byteorder="little", signed=False)
                     if reply[2:4] != rr_le:
-                        errors.append(
-                            f"{loc}: reply_hex RR mismatch ({reply[2:4].hex()})"
-                        )
+                        errors.append(f"{loc}: reply_hex RR mismatch ({reply[2:4].hex()})")
 
         if error is not None:
             # Transport/decode/parse errors: no strict value validation.
@@ -111,18 +105,12 @@ def validate_scan_artifact(artifact: dict[str, Any]) -> list[str]:
             # JSON round-tripping: floats are approximate, everything else should match exactly.
             if parsed is None:
                 if value is not None:
-                    errors.append(
-                        f"{loc}: expected null value, got {value!r}"
-                    )
+                    errors.append(f"{loc}: expected null value, got {value!r}")
             elif isinstance(parsed, float):
                 if not isinstance(value, (int, float)) or isinstance(value, bool):
-                    errors.append(
-                        f"{loc}: expected numeric float, got {type(value).__name__}"
-                    )
+                    errors.append(f"{loc}: expected numeric float, got {type(value).__name__}")
                 elif not math.isclose(float(value), float(parsed), rel_tol=1e-6, abs_tol=1e-6):
-                    errors.append(
-                        f"{loc}: float mismatch expected={parsed} got={value}"
-                    )
+                    errors.append(f"{loc}: float mismatch expected={parsed} got={value}")
             elif value != parsed:
                 errors.append(
                     f"{loc}: value mismatch type={type_spec} expected={parsed!r} got={value!r}"
