@@ -68,12 +68,11 @@ def discover_groups(
 ) -> list[DiscoveredGroup]:
     """Phase A: Probe GG=0x00..0xFF via directory probe (opcode 0x00).
 
-    Terminator logic: stop after 2 consecutive NaN descriptors.
+    Terminator logic: stop on the first NaN descriptor.
     Holes (descriptor==0.0) are skipped.
     """
 
     discovered: list[DiscoveredGroup] = []
-    nan_streak = 0
     probes = 0
 
     for gg in range(0x00, 0x100):
@@ -109,22 +108,15 @@ def discover_groups(
             continue
 
         if descriptor == 0.0:
-            # Hole: skip without resetting the NaN streak.
+            # Hole: skip without changing terminator logic.
             continue
 
         if math.isnan(descriptor):
-            nan_streak += 1
-            if nan_streak >= 2:
-                logger.info("Directory terminator after GG=0x%02X (NaN streak=%d)", gg, nan_streak)
-                if observer is not None:
-                    observer.log(
-                        f"Directory terminator after GG=0x{gg:02X} (NaN streak={nan_streak})",
-                        level="info",
-                    )
-                break
-            continue
+            logger.info("Directory terminator at GG=0x%02X (NaN)", gg)
+            if observer is not None:
+                observer.log(f"Directory terminator at GG=0x{gg:02X} (NaN)", level="info")
+            break
 
-        nan_streak = 0
         discovered.append(DiscoveredGroup(group=gg, descriptor=descriptor))
         if observer is not None:
             observer.log(f"Discovered group GG=0x{gg:02X} desc={descriptor}", level="info")

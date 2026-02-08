@@ -44,7 +44,7 @@ def _write_directory_fixture(tmp_path: Path) -> Path:
     return fixture_path
 
 
-def test_discover_groups_stops_after_second_nan_and_skips_holes(tmp_path: Path) -> None:
+def test_discover_groups_stops_after_first_nan_and_skips_holes(tmp_path: Path) -> None:
     transport = RecordingTransport(DummyTransport(_write_directory_fixture(tmp_path)))
 
     discovered = discover_groups(transport, dst=0x15)
@@ -52,8 +52,8 @@ def test_discover_groups_stops_after_second_nan_and_skips_holes(tmp_path: Path) 
     # Holes (descriptor==0.0) should not be recorded as discovered groups.
     assert [group.group for group in discovered] == [0x00, 0x03]
 
-    # Terminator is triggered by the *second* NaN (GG=0x06), so probing stops there.
-    assert transport.probed_groups == [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]
+    # Terminator is triggered by the first NaN (GG=0x05), so probing stops there.
+    assert transport.probed_groups == [0x00, 0x01, 0x02, 0x03, 0x04, 0x05]
 
 
 class FlakyDirectoryTransport(TransportInterface):
@@ -83,7 +83,7 @@ class FlakyDirectoryTransport(TransportInterface):
 
 
 def test_discover_groups_does_not_terminate_on_transient_transport_failures(tmp_path: Path) -> None:
-    # Terminator (NaN) starts at GG=0x08 -> second NaN at GG=0x09.
+    # Terminator (NaN) starts at GG=0x08.
     fixture_path = _write_directory_fixture(tmp_path)
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     fixture["meta"]["dummy_transport"]["directory_terminator_group"] = "0x08"
@@ -96,8 +96,8 @@ def test_discover_groups_does_not_terminate_on_transient_transport_failures(tmp_
     discovered = discover_groups(transport, dst=0x15)
 
     assert [group.group for group in discovered] == [0x00, 0x03]
-    # Failures at 0x04/0x05/0x06 must not count toward the NaN terminator streak.
-    assert transport.probed_groups == [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]
+    # Failures at 0x04/0x05/0x06 must not terminate discovery early.
+    assert transport.probed_groups == [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
 
 
 def test_classify_groups_warns_on_descriptor_mismatch(

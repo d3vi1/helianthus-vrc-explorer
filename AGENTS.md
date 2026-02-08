@@ -1002,14 +1002,11 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
             continue
 
         if math.isnan(descriptor):
-            nan_streak += 1
-            if nan_streak >= 2:
-                print(f"Terminator at GG={hex(GG)}")
-                break
-        else:
-            nan_streak = 0
-            record_group(GG, descriptor)
-            print(f"Found GG={hex(GG)}, Type={descriptor}")
+            print(f"Terminator at GG={hex(GG)}")
+            break
+
+        record_group(GG, descriptor)
+        print(f"Found GG={hex(GG)}, Type={descriptor}")
 
 **Output:**
 
@@ -1267,7 +1264,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 4. **ebusd responses are multiline** - parse correctly (first hex line = payload, ignore ERR after)
 5. **Retry timeouts once** - then skip register and continue
 6. **Scan ALL instances 0x00..ii_max** - do not stop at gaps
-7. **NaN terminator requires 2 consecutive** - not just one
+7. **NaN terminator stops discovery on the first NaN** - do not keep probing
 8. **Live UI updates only last line** - do not spam scrollback
 9. **Non-TTY mode outputs JSON lines** - detect via sys.stdout.isatty()
 10. **Partial scans are valid** - save with incomplete: true on Ctrl+C
