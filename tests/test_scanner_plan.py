@@ -4,7 +4,10 @@ import pytest
 
 from helianthus_vrc_explorer.scanner.plan import (
     GroupScanPlan,
+    RegisterTask,
+    build_work_queue,
     estimate_register_requests,
+    format_int_set,
     parse_int_set,
     parse_int_token,
 )
@@ -43,3 +46,21 @@ def test_estimate_register_requests() -> None:
     # GG=0x02: 2 instances * (3+1) regs = 8
     # GG=0x01: 1 instance * (1+1) regs = 2
     assert estimate_register_requests(plan) == 10
+
+
+def test_format_int_set_compacts_ranges() -> None:
+    assert format_int_set([]) == ""
+    assert format_int_set([0]) == "0"
+    assert format_int_set([0, 1, 2, 4, 5]) == "0-2,4-5"
+
+
+def test_build_work_queue_skips_done_tasks() -> None:
+    plan = {
+        0x02: GroupScanPlan(group=0x02, rr_max=0x0002, instances=(0x00,)),
+    }
+    done = {RegisterTask(group=0x02, instance=0x00, register=0x0001)}
+    tasks = build_work_queue(plan, done=done)
+    assert tasks == [
+        RegisterTask(group=0x02, instance=0x00, register=0x0000),
+        RegisterTask(group=0x02, instance=0x00, register=0x0002),
+    ]

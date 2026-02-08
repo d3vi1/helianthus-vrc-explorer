@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import string
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 _HEX_DIGITS = set(string.hexdigits)
@@ -72,6 +73,37 @@ def parse_int_set(spec: str, *, min_value: int, max_value: int) -> list[int]:
     return sorted(result)
 
 
+def format_int_set(values: Sequence[int]) -> str:
+    """Format an increasing list of ints into a compact range string.
+
+    Example:
+        [0, 1, 2, 4, 5] -> "0-2,4-5"
+    """
+
+    if not values:
+        return ""
+
+    parts: list[str] = []
+    start = values[0]
+    prev = values[0]
+    for v in values[1:]:
+        if v == prev + 1:
+            prev = v
+            continue
+        if start == prev:
+            parts.append(str(start))
+        else:
+            parts.append(f"{start}-{prev}")
+        start = prev = v
+
+    if start == prev:
+        parts.append(str(start))
+    else:
+        parts.append(f"{start}-{prev}")
+
+    return ",".join(parts)
+
+
 def _hex_u8(value: int) -> str:
     return f"0x{value:02x}"
 
@@ -91,6 +123,32 @@ class GroupScanPlan:
             "rr_max": _hex_u16(self.rr_max),
             "instances": [_hex_u8(ii) for ii in self.instances],
         }
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class RegisterTask:
+    group: int
+    instance: int
+    register: int
+
+
+def build_work_queue(
+    plan: dict[int, GroupScanPlan],
+    *,
+    done: set[RegisterTask],
+) -> list[RegisterTask]:
+    """Build the remaining register-scan task list in deterministic order."""
+
+    tasks: list[RegisterTask] = []
+    for gg in sorted(plan.keys()):
+        group_plan = plan[gg]
+        for ii in group_plan.instances:
+            for rr in range(0x0000, group_plan.rr_max + 1):
+                task = RegisterTask(group=gg, instance=ii, register=rr)
+                if task in done:
+                    continue
+                tasks.append(task)
+    return tasks
 
 
 def estimate_register_requests(plan: dict[int, GroupScanPlan]) -> int:

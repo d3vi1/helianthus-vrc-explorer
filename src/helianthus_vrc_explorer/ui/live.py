@@ -107,6 +107,10 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
                 "Tip: set `--trace-file` to capture ebusd request/response exchanges.",
                 style="dim",
             ),
+            Text(
+                "Tip: type `p` + Enter during Register Scan to open the scan planner.",
+                style="dim",
+            ),
         )
         self._progress.console.print(header)
         return self
