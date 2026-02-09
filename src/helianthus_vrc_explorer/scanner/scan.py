@@ -422,7 +422,11 @@ def scan_b524(
 
                 # Prefer a meaningful value over status-only / no_data replies; otherwise prefer
                 # a clean reply (no error) over transport/decode failures.
-                quality = 2 if _entry_has_valid_value(candidate) else (1 if candidate["error"] is None else 0)
+                quality = (
+                    2
+                    if _entry_has_valid_value(candidate)
+                    else (1 if candidate["error"] is None else 0)
+                )
                 if quality > best_quality:
                     best_entry = candidate
                     best_quality = quality
