@@ -116,10 +116,15 @@ def scan(
 
     myvaillant_map: MyvaillantRegisterMap | None = None
     myvaillant_map_source: str | None = None
-    if myvaillant_map_path is not None:
+    resolved_myvaillant_map_path = myvaillant_map_path
+    if resolved_myvaillant_map_path is None:
+        default_map_path = Path(__file__).resolve().parents[2] / "data" / "myvaillant_register_map.csv"
+        if default_map_path.exists():
+            resolved_myvaillant_map_path = default_map_path
+    if resolved_myvaillant_map_path is not None:
         try:
-            myvaillant_map = MyvaillantRegisterMap.from_path(myvaillant_map_path)
-            myvaillant_map_source = f"myvaillant_map:{myvaillant_map_path.name}"
+            myvaillant_map = MyvaillantRegisterMap.from_path(resolved_myvaillant_map_path)
+            myvaillant_map_source = f"myvaillant_map:{resolved_myvaillant_map_path.name}"
         except Exception as exc:
             typer.echo(f"Warning: failed to load myVaillant mapping: {exc}", err=True)
 

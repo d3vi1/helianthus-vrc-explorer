@@ -41,6 +41,11 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
     assert "groups" in artifact
     assert isinstance(artifact["groups"], dict)
 
+    # Default myVaillant mapping (if present in repo `data/`) is loaded even in --dry-run mode.
+    schema_sources = artifact.get("meta", {}).get("schema_sources")
+    assert isinstance(schema_sources, list)
+    assert "myvaillant_map:myvaillant_register_map.csv" in schema_sources
+
     raw_hex_values: list[str] = []
     for group in artifact["groups"].values():
         if not isinstance(group, dict):
