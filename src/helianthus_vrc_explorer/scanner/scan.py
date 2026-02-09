@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 import time
 from collections import deque
@@ -8,6 +9,7 @@ from typing import Any
 
 from rich.console import Console
 
+from ..protocol.b524 import RegisterOpcode
 from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
 from ..transport.base import TransportInterface, emit_trace_label
@@ -16,7 +18,7 @@ from ..ui.planner import PlannerGroup, prompt_scan_plan
 from .director import GROUP_CONFIG, classify_groups, discover_groups
 from .observer import ScanObserver
 from .plan import GroupScanPlan, RegisterTask, build_work_queue, estimate_register_requests
-from .register import is_instance_present, opcode_for_group, read_register
+from .register import RegisterEntry, is_instance_present, opcode_for_group, read_register
 
 
 def _hex_u8(value: int) -> str:
@@ -25,6 +27,29 @@ def _hex_u8(value: int) -> str:
 
 def _hex_u16(value: int) -> str:
     return f"0x{value:04x}"
+
+
+_LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
+_REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
+
+
+def _entry_has_valid_value(entry: RegisterEntry) -> bool:
+    """Return True when a register read produced a meaningful value.
+
+    Used for opcode selection (0x02 vs 0x06) in ambiguous cases.
+    """
+
+    if entry.get("error") is not None:
+        return False
+    if entry.get("tt_kind") == "no_data":
+        return False
+    raw_hex = entry.get("raw_hex")
+    if raw_hex in (None, ""):
+        return False
+    value = entry.get("value")
+    if value is None:
+        return False
+    return not (isinstance(value, float) and math.isnan(value))
 
 
 def _poll_planner_hotkey() -> bool:
@@ -358,36 +383,63 @@ def scan_b524(
                 continue
 
             task = work_queue.popleft()
-            opcode = opcode_for_group(task.group)
             if observer is not None:
                 observer.status(
                     f"Read GG=0x{task.group:02X} II=0x{task.instance:02X} RR=0x{task.register:04X}"
                 )
                 observer.phase_advance("register_scan", advance=1)
 
-            schema_entry = (
-                ebusd_schema.lookup(
-                    opcode=opcode,
+            # Some groups are ambiguous and may respond to either opcode family (0x02 vs 0x06).
+            # When in doubt (unknown group), probe both but keep only the best/most-meaningful
+            # reply in the artifact.
+            opcodes_to_try: tuple[RegisterOpcode, ...]
+            if task.group in GROUP_CONFIG:
+                opcodes_to_try = (opcode_for_group(task.group),)
+            else:
+                opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
+
+            best_entry: RegisterEntry | None = None
+            best_quality = -1
+            for opcode in opcodes_to_try:
+                schema_entry = (
+                    ebusd_schema.lookup(
+                        opcode=opcode,
+                        group=task.group,
+                        instance=task.instance,
+                        register=task.register,
+                    )
+                    if ebusd_schema is not None
+                    else None
+                )
+                type_hint = schema_entry.type_spec if schema_entry is not None else None
+
+                candidate = read_register(
+                    transport,
+                    dst,
+                    opcode,
                     group=task.group,
                     instance=task.instance,
                     register=task.register,
+                    type_hint=type_hint,
                 )
-                if ebusd_schema is not None
-                else None
-            )
-            type_hint = schema_entry.type_spec if schema_entry is not None else None
+                if schema_entry is not None:
+                    candidate["ebusd_name"] = schema_entry.name
 
-            entry = read_register(
-                transport,
-                dst,
-                opcode,
-                group=task.group,
-                instance=task.instance,
-                register=task.register,
-                type_hint=type_hint,
-            )
-            if schema_entry is not None:
-                entry["ebusd_name"] = schema_entry.name
+                # Prefer a meaningful value over status-only / no_data replies; otherwise prefer
+                # a clean reply (no error) over transport/decode failures.
+                quality = (
+                    2
+                    if _entry_has_valid_value(candidate)
+                    else (1 if candidate["error"] is None else 0)
+                )
+                if quality > best_quality:
+                    best_entry = candidate
+                    best_quality = quality
+                if quality == 2:
+                    break
+
+            assert best_entry is not None
+            entry = best_entry
             if myvaillant_map is not None:
                 mv = myvaillant_map.lookup(
                     group=task.group,
