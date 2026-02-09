@@ -499,10 +499,13 @@ __ARTIFACT_JSON__
 
       function buildTabs(groupKeys) {
         tabsEl.innerHTML = "";
+        const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
         for (const key of groupKeys) {
           const btn = document.createElement("div");
           btn.className = "tab";
-          btn.textContent = key;
+          const groupObj = getGroupObject(groupsRoot[key]);
+          const groupName = typeof groupObj.name === "string" && groupObj.name ? groupObj.name : "Unknown";
+          btn.textContent = groupName !== "Unknown" ? `${key} (${groupName})` : key;
           btn.addEventListener("click", () => {
             state.activeGroup = key;
             renderActiveGroup();

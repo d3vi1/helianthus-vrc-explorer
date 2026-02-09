@@ -18,6 +18,8 @@ _TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
 
 
 class RegisterEntry(TypedDict):
+    # B524 register read opcode family used for this entry: 0x02 (local) or 0x06 (remote).
+    read_opcode: str
     # Full raw reply payload (after ebusd length-prefix stripping), if available.
     # For register reads this is typically: <TT> <GG> <RR_LO> <RR_HI> <VALUE_BYTES...>
     reply_hex: str | None
@@ -184,6 +186,7 @@ def read_register(
 ) -> RegisterEntry:
     """Read a B524 register and parse it into an artifact-ready entry."""
 
+    read_opcode = f"0x{opcode:02x}"
     emit_trace_label(
         transport,
         f"Reading dst=0x{dst:02X} GG=0x{group:02X} II=0x{instance:02X} RR=0x{register:04X}",
@@ -199,6 +202,7 @@ def read_register(
                 time.sleep(_TIMEOUT_RETRY_DELAY_S)
                 continue
             return {
+                "read_opcode": read_opcode,
                 "reply_hex": None,
                 "tt": None,
                 "tt_kind": None,
@@ -211,6 +215,7 @@ def read_register(
             }
         except TransportError as exc:
             return {
+                "read_opcode": read_opcode,
                 "reply_hex": None,
                 "tt": None,
                 "tt_kind": None,
@@ -230,6 +235,7 @@ def read_register(
     # We treat this as a valid "no data" reply rather than a decoder bug.
     if len(response) == 1:
         return {
+            "read_opcode": read_opcode,
             "reply_hex": reply_hex,
             "tt": tt,
             "tt_kind": tt_kind,
@@ -245,6 +251,7 @@ def read_register(
         value_bytes = _strip_echo_header(payload, response)
     except ValueError as exc:
         return {
+            "read_opcode": read_opcode,
             "reply_hex": reply_hex,
             "tt": tt,
             "tt_kind": tt_kind,
@@ -261,6 +268,7 @@ def read_register(
         try:
             value = parse_typed_value(type_hint, value_bytes)
             return {
+                "read_opcode": read_opcode,
                 "reply_hex": reply_hex,
                 "tt": tt,
                 "tt_kind": tt_kind,
@@ -273,6 +281,7 @@ def read_register(
             }
         except ValueParseError as exc:
             return {
+                "read_opcode": read_opcode,
                 "reply_hex": reply_hex,
                 "tt": tt,
                 "tt_kind": tt_kind,
@@ -286,6 +295,7 @@ def read_register(
 
     inferred_type, inferred_value, inferred_error = _parse_inferred_value(value_bytes)
     return {
+        "read_opcode": read_opcode,
         "reply_hex": reply_hex,
         "tt": tt,
         "tt_kind": tt_kind,

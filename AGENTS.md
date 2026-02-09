@@ -417,34 +417,36 @@ def parse_b524_id(id_hex: str) -> dict:
 **Known groups (hardcoded reference, validated against CSV):**
 
     GROUP_CONFIG = {
-        0x00: {"desc": 3.0, "name": "Discovery", "ii_max": 0x00, "rr_max": 0xFF},
-        0x01: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x8F},
+        0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x01FF},
+        0x01: {"desc": 3.0, "name": "Hot Water Circuit", "ii_max": 0x00, "rr_max": 0x1F},
         0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x21},
         0x03: {"desc": 1.0, "name": "Zones", "ii_max": 0x0A, "rr_max": 0x2F},
-        0x04: {"desc": 6.0, "name": "Solar Circuit", "ii_max": 0x0A, "rr_max": 0x40},
-        0x09: {"desc": 1.0, "name": "RoomState", "ii_max": 0x2F, "rr_max": 0x1F},
-        0x0A: {"desc": 1.0, "name": "RoomSensors", "ii_max": 0x2F, "rr_max": 0x4F},
-        0x0C: {"desc": 1.0, "name": "Unrecognized", "ii_max": 0x2F, "rr_max": 0x4F},
+        0x04: {"desc": 6.0, "name": "Solar Circuit", "ii_max": 0x00, "rr_max": 0x0F},
+        0x05: {"desc": 1.0, "name": "Hot Water Cylinder", "ii_max": 0x0A, "rr_max": 0x0F},
+        0x09: {"desc": 1.0, "name": "RoomSensors", "ii_max": 0x0A, "rr_max": 0x2F},
+        0x0A: {"desc": 1.0, "name": "RoomState", "ii_max": 0x0A, "rr_max": 0x3F},
+        0x0C: {"desc": 1.0, "name": "Unrecognized", "ii_max": 0x0A, "rr_max": 0x3F},
     }
 
 **Register families by group:**
 
     Group  | Opcode Family | Notes
     -------|---------------|-----------------------------------------------
-    0x00   | 0x02 (local)  | Discovery/system registers
+    0x00   | 0x02 (local)  | Regulator parameters (singleton; extended RR space)
     0x01   | 0x02 (local)  | Singleton (no instances)
     0x02   | 0x02 (local)  | Heating circuits (instanced)
     0x03   | 0x02 (local)  | Zones (instanced)
     0x04   | 0x02 (local)  | Solar circuit (special Type 6 format)
-    0x09   | 0x06 (remote) | Room state sensors (typically VRC720 internal)
-    0x0A   | 0x06 (remote) | Room sensors (VR92 external units)
+    0x05   | 0x02 (local)  | Hot water cylinder (instanced)
+    0x09   | 0x06 (remote) | Room sensors
+    0x0A   | 0x06 (remote) | Room state
     0x0C   | 0x06 (remote) | Unrecognized remote devices
 
 **Instance presence detection (per-group heuristics):**
 
 - **GG=0x02 (Heating Circuits):** Probe RR=0x0002 (CircuitType u16). Absent if response is 0x0000, 0xFFFF, or NaN.
 - **GG=0x03 (Zones):** Probe RR=0x001C (zone index u8). Absent if response is 0xFF.
-- **GG=0x09 / 0x0A (Sensors):** Present if RR=0x0007 or RR=0x000F returns non-NaN.
+- **GG=0x09 / 0x0A (RoomSensors/RoomState):** Present if RR=0x0007 or RR=0x000F returns non-NaN.
 - **GG=0x0C (Unknown):** Present if any of RR in {0x0002, 0x0007, 0x000F, 0x0016} responds.
 
 **Scan all instances from 0x00 to ii_max** (do not stop at gaps, they are legitimate holes).
