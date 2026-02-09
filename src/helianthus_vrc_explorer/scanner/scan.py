@@ -9,6 +9,7 @@ from typing import Any
 
 from rich.console import Console
 
+from ..protocol.b524 import RegisterOpcode
 from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
 from ..transport.base import TransportInterface, emit_trace_label
@@ -17,7 +18,7 @@ from ..ui.planner import PlannerGroup, prompt_scan_plan
 from .director import GROUP_CONFIG, classify_groups, discover_groups
 from .observer import ScanObserver
 from .plan import GroupScanPlan, RegisterTask, build_work_queue, estimate_register_requests
-from .register import is_instance_present, opcode_for_group, read_register
+from .register import RegisterEntry, is_instance_present, opcode_for_group, read_register
 
 
 def _hex_u8(value: int) -> str:
@@ -28,7 +29,11 @@ def _hex_u16(value: int) -> str:
     return f"0x{value:04x}"
 
 
-def _entry_has_valid_value(entry: dict[str, Any]) -> bool:
+_LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
+_REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
+
+
+def _entry_has_valid_value(entry: RegisterEntry) -> bool:
     """Return True when a register read produced a meaningful value.
 
     Used for opcode selection (0x02 vs 0x06) in ambiguous cases.
@@ -387,13 +392,13 @@ def scan_b524(
             # Some groups are ambiguous and may respond to either opcode family (0x02 vs 0x06).
             # When in doubt (unknown group), probe both but keep only the best/most-meaningful
             # reply in the artifact.
-            opcodes_to_try: tuple[int, ...]
+            opcodes_to_try: tuple[RegisterOpcode, ...]
             if task.group in GROUP_CONFIG:
                 opcodes_to_try = (opcode_for_group(task.group),)
             else:
-                opcodes_to_try = (0x02, 0x06)
+                opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
 
-            best_entry: dict[str, Any] | None = None
+            best_entry: RegisterEntry | None = None
             best_quality = -1
             for opcode in opcodes_to_try:
                 schema_entry = (
