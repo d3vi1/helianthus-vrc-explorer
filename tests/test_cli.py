@@ -27,8 +27,24 @@ def test_discover_command_is_present() -> None:
 
 
 def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
+    map_path = tmp_path / "myvaillant_register_map.csv"
+    map_path.write_text(
+        "group,instance,register,leaf\n0x03,0x00,0x000F,current_room_temperature\n",
+        encoding="utf-8",
+    )
+
     runner = CliRunner()
-    result = runner.invoke(app, ["scan", "--dry-run", "--output-dir", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dry-run",
+            "--output-dir",
+            str(tmp_path),
+            "--myvaillant-map-path",
+            str(map_path),
+        ],
+    )
     assert result.exit_code == 0
 
     output_path = Path(result.stdout.strip())
@@ -40,6 +56,11 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
     assert "meta" in artifact
     assert "groups" in artifact
     assert isinstance(artifact["groups"], dict)
+
+    # myVaillant mapping is loaded when a CSV path is provided (even in --dry-run mode).
+    schema_sources = artifact.get("meta", {}).get("schema_sources")
+    assert isinstance(schema_sources, list)
+    assert "myvaillant_map:myvaillant_register_map.csv" in schema_sources
 
     raw_hex_values: list[str] = []
     for group in artifact["groups"].values():
