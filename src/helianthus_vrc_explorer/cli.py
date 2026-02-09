@@ -118,7 +118,11 @@ def scan(
     myvaillant_map_source: str | None = None
     resolved_myvaillant_map_path = myvaillant_map_path
     if resolved_myvaillant_map_path is None:
-        default_map_path = Path(__file__).resolve().parents[2] / "data" / "myvaillant_register_map.csv"
+        default_map_path = (
+            Path(__file__).resolve().parents[2]
+            / "data"
+            / "myvaillant_register_map.csv"
+        )
         if default_map_path.exists():
             resolved_myvaillant_map_path = default_map_path
     if resolved_myvaillant_map_path is not None:
