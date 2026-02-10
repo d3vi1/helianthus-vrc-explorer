@@ -189,6 +189,14 @@ _TEMPLATE = """<!doctype html>
         word-break: break-word;
       }
 
+      .offset-name-secondary {
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--muted);
+        opacity: 0.95;
+        word-break: break-word;
+      }
+
       .offset-meta {
         margin-top: 4px;
         display: flex;
@@ -564,7 +572,8 @@ __ARTIFACT_JSON__
 
         for (const rrKey of rrKeys) {
           // Pick a row label/name from any instance that has an entry.
-          let rowName = "";
+          let rowMyvaillantName = "";
+          let rowEbusdNames = new Set();
           let rowTypeDefault = null;
           let rowLen = null;
           for (const iiKey of instanceKeys) {
@@ -572,8 +581,11 @@ __ARTIFACT_JSON__
             const regs = inst.registers || {};
             const entry = regs && typeof regs === "object" ? regs[rrKey] : null;
             if (!entry || typeof entry !== "object") continue;
-            if (!rowName) {
-              rowName = entry.myvaillant_name || entry.ebusd_name || "";
+            if (!rowMyvaillantName && typeof entry.myvaillant_name === "string" && entry.myvaillant_name) {
+              rowMyvaillantName = entry.myvaillant_name;
+            }
+            if (typeof entry.ebusd_name === "string" && entry.ebusd_name) {
+              rowEbusdNames.add(entry.ebusd_name);
             }
             if (!rowTypeDefault && typeof entry.type === "string" && entry.type) rowTypeDefault = entry.type;
             if (rowLen === null && typeof entry.raw_hex === "string" && entry.raw_hex) {
@@ -581,6 +593,9 @@ __ARTIFACT_JSON__
               if (b) rowLen = b.length;
             }
           }
+
+          const ebusdNameList = Array.from(rowEbusdNames);
+          ebusdNameList.sort();
 
           const override = getRowOverride(groupKey, rrKey);
           const rowType = override || rowTypeDefault;
@@ -595,11 +610,30 @@ __ARTIFACT_JSON__
           label.className = "offset-label";
           label.textContent = rrKey;
           td0.appendChild(label);
-          if (rowName) {
-            const nameEl = document.createElement("div");
-            nameEl.className = "offset-name";
-            nameEl.textContent = rowName;
-            td0.appendChild(nameEl);
+
+          const hasNames = rowMyvaillantName || ebusdNameList.length;
+          if (hasNames) {
+            if (rowMyvaillantName) {
+              const nameEl = document.createElement("div");
+              nameEl.className = "offset-name";
+              nameEl.textContent = rowMyvaillantName;
+              td0.appendChild(nameEl);
+            }
+
+            if (ebusdNameList.length) {
+              const ebusdEl = document.createElement("div");
+              ebusdEl.className = rowMyvaillantName ? "offset-name-secondary" : "offset-name";
+
+              let txt = ebusdNameList[0];
+              if (ebusdNameList.length > 1) {
+                const head = ebusdNameList.slice(0, 3).join(", ");
+                txt = head + (ebusdNameList.length > 3 ? ", …" : "");
+                ebusdEl.title = ebusdNameList.join(", ");
+              }
+              if (rowMyvaillantName) txt = "ebusd: " + txt;
+              ebusdEl.textContent = txt;
+              td0.appendChild(ebusdEl);
+            }
           }
 
           if (candidates.length) {
