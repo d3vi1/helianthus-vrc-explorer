@@ -23,7 +23,7 @@ class GroupConfig(TypedDict):
 # Known groups (hardcoded reference, validated against CSV).
 # Source of truth: `AGENTS.md` (keep in sync).
 GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
-    0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x01FF},
+    0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x00FF},
     0x01: {"desc": 3.0, "name": "Hot Water Circuit", "ii_max": 0x00, "rr_max": 0x1F},
     0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x21},
     0x03: {"desc": 1.0, "name": "Zones", "ii_max": 0x0A, "rr_max": 0x2F},

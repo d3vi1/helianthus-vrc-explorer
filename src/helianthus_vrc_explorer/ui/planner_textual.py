@@ -91,6 +91,7 @@ def run_textual_scan_plan(
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Vertical
+    from textual.events import Key
     from textual.screen import ModalScreen
     from textual.widgets import DataTable, Footer, Header, Input, Label, Static
 
@@ -98,6 +99,8 @@ def run_textual_scan_plan(
         BINDINGS = [
             Binding("escape", "cancel", "Cancel"),
             Binding("enter", "submit", "Save"),
+            Binding("ctrl+j", "submit", show=False),
+            Binding("ctrl+m", "submit", show=False),
         ]
         CSS = """
         _InputDialog {
@@ -142,7 +145,6 @@ def run_textual_scan_plan(
         BINDINGS = [
             Binding("space", "toggle_enabled", "Toggle"),
             Binding("tab", "focus_next", "Next"),
-            Binding("enter", "edit_rr_max", "Edit RR", priority=True),
             Binding("i", "edit_instances", "Edit II"),
             Binding("1", "preset_conservative", "Preset 1"),
             Binding("2", "preset_recommended", "Preset 2"),
@@ -322,6 +324,16 @@ def run_textual_scan_plan(
             next_row = (table.cursor_row + 1) % len(self._row_groups)
             table.move_cursor(row=next_row)
 
+        def on_key(self, event: Key) -> None:
+            # Accept Enter/Return variants for row edit while avoiding modal interference.
+            if event.key not in {"enter", "ctrl+j", "ctrl+m"}:
+                return
+            if len(self.screen_stack) > 1:
+                return
+            if isinstance(self.focused, DataTable) and self.focused.id == "planner-table":
+                event.stop()
+                self.action_edit_rr_max()
+
         def action_toggle_enabled(self) -> None:
             gg = self._focused_group()
             if gg is None:
@@ -330,6 +342,8 @@ def run_textual_scan_plan(
             self._refresh_table()
 
         def action_edit_rr_max(self) -> None:
+            if len(self.screen_stack) > 1:
+                return
             gg = self._focused_group()
             if gg is None:
                 return
@@ -349,6 +363,8 @@ def run_textual_scan_plan(
             self.action_edit_rr_max()
 
         def action_edit_instances(self) -> None:
+            if len(self.screen_stack) > 1:
+                return
             gg = self._focused_group()
             if gg is None:
                 return
