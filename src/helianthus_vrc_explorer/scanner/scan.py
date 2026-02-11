@@ -432,15 +432,27 @@ def scan_b524(
                         )
                         planner_mode = "classic"
                     else:
-                        selected = run_textual_scan_plan(
-                            planner_groups,
-                            request_rate_rps=request_rate_rps,
-                            default_plan=planner_default_plan,
-                            default_preset=planner_preset,
-                        )
-                        if selected is None:
-                            raise KeyboardInterrupt
-                        plan = selected
+                        try:
+                            selected = run_textual_scan_plan(
+                                planner_groups,
+                                request_rate_rps=request_rate_rps,
+                                default_plan=planner_default_plan,
+                                default_preset=planner_preset,
+                            )
+                        except Exception as exc:
+                            if planner_ui == "textual":
+                                raise RuntimeError(
+                                    "Textual planner requested but failed to start."
+                                ) from exc
+                            observer.log(
+                                "Textual planner failed to start; falling back to classic planner.",
+                                level="warn",
+                            )
+                            planner_mode = "classic"
+                        else:
+                            if selected is None:
+                                raise KeyboardInterrupt
+                            plan = selected
                 if planner_mode == "classic":
                     plan = prompt_scan_plan(
                         console,
@@ -478,17 +490,41 @@ def scan_b524(
                     active_elapsed += time.perf_counter() - active_start
                     with hotkeys.suspend(), observer.suspend():
                         if planner_mode == "textual":
-                            from ..ui.planner_textual import run_textual_scan_plan
-
-                            selected = run_textual_scan_plan(
-                                planner_groups,
-                                request_rate_rps=request_rate_rps,
-                                default_plan=plan,
-                                default_preset=planner_preset,
-                            )
-                            if selected is None:
-                                raise KeyboardInterrupt
-                            plan = selected
+                            try:
+                                from ..ui.planner_textual import run_textual_scan_plan
+                            except Exception as exc:
+                                if planner_ui == "textual":
+                                    raise RuntimeError(
+                                        "Textual planner requested but unavailable."
+                                    ) from exc
+                                observer.log(
+                                    "Textual planner unavailable; falling back to classic planner.",
+                                    level="warn",
+                                )
+                                planner_mode = "classic"
+                            else:
+                                try:
+                                    selected = run_textual_scan_plan(
+                                        planner_groups,
+                                        request_rate_rps=request_rate_rps,
+                                        default_plan=plan,
+                                        default_preset=planner_preset,
+                                    )
+                                except Exception as exc:
+                                    if planner_ui == "textual":
+                                        raise RuntimeError(
+                                            "Textual planner requested but failed to start."
+                                        ) from exc
+                                    observer.log(
+                                        "Textual planner failed to start; "
+                                        "falling back to classic planner.",
+                                        level="warn",
+                                    )
+                                    planner_mode = "classic"
+                                else:
+                                    if selected is None:
+                                        raise KeyboardInterrupt
+                                    plan = selected
                         else:
                             plan = prompt_scan_plan(
                                 console,
@@ -510,7 +546,7 @@ def scan_b524(
                     )
                     remaining = len(work_queue)
                     task_rate_rps = (len(done) / active_elapsed) if active_elapsed > 0 else None
-                    if task_rate_rps is None:
+                    if task_rate_rps is None or task_rate_rps <= 0:
                         observer.log(
                             f"Updated scan plan: remaining {remaining} register reads",
                             level="info",

@@ -18,6 +18,7 @@ from helianthus_vrc_explorer.transport.base import (
 from helianthus_vrc_explorer.transport.ebusd_tcp import (
     EbusdTcpConfig,
     EbusdTcpTransport,
+    _parse_ebusd_info_lines,
     _parse_ebusd_response_lines,
 )
 from helianthus_vrc_explorer.transport.instrumented import CountingTransport
@@ -323,6 +324,27 @@ def test_transport_send_no_signal_still_missing_after_info_raises(
 
     assert commands == ["hex 15B52406020002000F00", "info"]
     assert sleep_calls == [10.0]
+
+
+def test_parse_ebusd_info_lines_scans_all_lines_for_errors() -> None:
+    with pytest.raises(TransportError, match=r"ERR: no signal"):
+        _parse_ebusd_info_lines(["signal: acquired", "ERR: no signal"])
+
+
+def test_transport_session_depth_is_restored_when_open_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = EbusdTcpTransport(EbusdTcpConfig(host="127.0.0.1", port=9, timeout_s=0.01))
+
+    def _fail_open() -> None:
+        raise TransportError("forced open failure")
+
+    monkeypatch.setattr(transport, "_open_session", _fail_open)
+
+    with pytest.raises(TransportError, match="forced open failure"), transport.session():
+        pass
+
+    assert transport._session_depth == 0
 
 
 def test_transport_send_does_not_timeout_if_ebusd_keeps_socket_open_after_payload(

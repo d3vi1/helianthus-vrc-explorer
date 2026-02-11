@@ -89,3 +89,23 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
 
     assert raw_hex_values
     bytes.fromhex(raw_hex_values[0])
+
+
+def test_scan_dry_run_loads_default_myvaillant_mapping(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dry-run",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    output_path = Path(result.stdout.strip())
+    artifact = json.loads(output_path.read_text(encoding="utf-8"))
+    schema_sources = artifact.get("meta", {}).get("schema_sources")
+    assert isinstance(schema_sources, list)
+    assert "myvaillant_map:myvaillant_register_map.csv" in schema_sources

@@ -460,7 +460,12 @@ def run_results_viewer(console: Console, artifact: dict[str, Any]) -> bool:
         True if the artifact was modified (type overrides applied), else False.
     """
 
-    interactive = console.is_terminal and sys.stdin.isatty() and sys.platform != "win32"
+    interactive = (
+        console.is_terminal
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and sys.platform != "win32"
+    )
     if not interactive:
         return False
 

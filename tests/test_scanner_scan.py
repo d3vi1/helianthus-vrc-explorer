@@ -286,6 +286,125 @@ def test_scan_b524_applies_preset_in_non_interactive_mode(tmp_path: Path) -> Non
     assert "0x0030" in scanned_absent_instance["registers"]
 
 
+def test_scan_b524_textual_failure_falls_back_to_classic_in_auto_mode(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    transport = DummyTransport(_write_fixture_unknown_group_69(tmp_path))
+    classic_called = {"count": 0}
+
+    def fake_run_textual_scan_plan(*_args, **_kwargs):
+        raise RuntimeError("textual init failed")
+
+    def fake_prompt_scan_plan(*_args, **kwargs):
+        classic_called["count"] += 1
+        default_plan = kwargs.get("default_plan")
+        assert isinstance(default_plan, dict)
+        return default_plan
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="auto",
+        planner_preset="recommended",
+    )
+
+    assert artifact["meta"]["incomplete"] is False
+    assert classic_called["count"] >= 1
+
+
+def test_scan_b524_textual_failure_raises_in_forced_textual_mode(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    transport = DummyTransport(_write_fixture_unknown_group_69(tmp_path))
+
+    def fake_run_textual_scan_plan(*_args, **_kwargs):
+        raise RuntimeError("textual init failed")
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    with pytest.raises(RuntimeError, match="Textual planner requested but failed to start"):
+        scan_b524(
+            transport,
+            dst=0x15,
+            observer=_NoopObserver(),
+            console=Console(force_terminal=True),
+            planner_ui="textual",
+        )
+
+
+def test_scan_b524_replan_before_first_completed_task_does_not_divide_by_zero(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+    from contextlib import contextmanager
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    class _FakeHotkeys:
+        def __init__(self, *, enabled: bool) -> None:
+            self._enabled = enabled
+            self._seen = False
+
+        def __enter__(self) -> _FakeHotkeys:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def poll(self) -> bool:
+            if not self._enabled or self._seen:
+                return False
+            self._seen = True
+            return True
+
+        @contextmanager
+        def suspend(self):
+            yield None
+
+    transport = DummyTransport(_write_fixture_group_02(tmp_path))
+
+    def fake_prompt_scan_plan(*_args, **kwargs):
+        default_plan = kwargs.get("default_plan")
+        assert isinstance(default_plan, dict)
+        return default_plan
+
+    monkeypatch.setattr(scan_mod, "_PlannerHotkeyReader", _FakeHotkeys)
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    assert artifact["meta"]["incomplete"] is False
+
+
 def test_scan_b524_marks_incomplete_on_keyboard_interrupt(tmp_path: Path) -> None:
     inner = DummyTransport(_write_fixture_group_02(tmp_path))
     transport = InterruptingTransport(inner, interrupt_after=10)
