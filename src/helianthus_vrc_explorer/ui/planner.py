@@ -51,6 +51,27 @@ def _format_seconds(seconds: float) -> str:
     return f"{hours}h {minutes}m"
 
 
+def _print_estimate(
+    console: Console,
+    *,
+    plan: dict[int, GroupScanPlan],
+    request_rate_rps: float | None,
+    prefix: str = "Estimated register requests",
+) -> None:
+    requests = estimate_register_requests(plan)
+    eta_s = estimate_eta_seconds(
+        requests=requests,
+        request_rate_rps=request_rate_rps,
+    )
+    eta_txt = _format_seconds(eta_s) if eta_s is not None else "n/a"
+    rps_txt = f"{request_rate_rps:.2f}" if request_rate_rps is not None else "n/a"
+    console.print(
+        f"[dim]{prefix}:[/dim] {requests}  "
+        f"[dim]ETA:[/dim] {eta_txt}  "
+        f"[dim]rate:[/dim] {rps_txt} req/s"
+    )
+
+
 def prompt_scan_plan(
     console: Console,
     groups: list[PlannerGroup],
@@ -255,14 +276,17 @@ def prompt_scan_plan(
             )
             break
 
-    requests = estimate_register_requests(selected_plan)
-    eta_s = estimate_eta_seconds(requests=requests, request_rate_rps=request_rate_rps)
-    eta_txt = _format_seconds(eta_s) if eta_s is not None else "n/a"
-    rps_txt = f"{request_rate_rps:.2f}" if request_rate_rps is not None else "n/a"
-    console.print(
-        f"[dim]Estimated register requests:[/dim] {requests}  "
-        f"[dim]ETA:[/dim] {eta_txt}  "
-        f"[dim]rate:[/dim] {rps_txt} req/s"
+        _print_estimate(
+            console,
+            plan=selected_plan,
+            request_rate_rps=request_rate_rps,
+            prefix=f"Current plan after {_hex_u8(gg)}",
+        )
+
+    _print_estimate(
+        console,
+        plan=selected_plan,
+        request_rate_rps=request_rate_rps,
     )
 
     if not Confirm.ask("Proceed with register scan?", default=True, console=console):

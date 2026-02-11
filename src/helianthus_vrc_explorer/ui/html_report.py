@@ -189,6 +189,14 @@ _TEMPLATE = """<!doctype html>
         word-break: break-word;
       }
 
+      .offset-name-secondary {
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--muted);
+        opacity: 0.95;
+        word-break: break-word;
+      }
+
       .offset-meta {
         margin-top: 4px;
         display: flex;
@@ -242,6 +250,33 @@ _TEMPLATE = """<!doctype html>
         gap: 10px;
         flex-wrap: wrap;
         align-items: center;
+      }
+
+      .filters {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+
+      .filter-chip {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .filter-input {
+        min-width: 260px;
+        background: #0c111a;
+        color: var(--ink);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+        font-size: 12px;
+        padding: 6px 8px;
+        font-family: var(--sans);
       }
 
       @media (max-width: 860px) {
@@ -479,8 +514,14 @@ __ARTIFACT_JSON__
       }
 
       const state = {
-        activeGroup: null,
+        activeTab: null,
         overrides: (meta && typeof meta === "object" && meta.type_overrides) || {},
+        b509Filters: {
+          search: "",
+          hideTimeout: false,
+          hideEmpty: false,
+          hideDecodeErrors: false,
+        },
       };
 
       const tabsEl = document.getElementById("tabs");
@@ -497,31 +538,229 @@ __ARTIFACT_JSON__
         state.overrides[groupKey][rrKey] = typeSpec;
       }
 
-      function buildTabs(groupKeys) {
+      function _isB509Tab(tabId) {
+        return tabId === "b509";
+      }
+
+      function _isB524Tab(tabId) {
+        return typeof tabId === "string" && tabId.startsWith("b524:");
+      }
+
+      function _groupKeyFromTab(tabId) {
+        if (!_isB524Tab(tabId)) return null;
+        return tabId.slice("b524:".length);
+      }
+
+      function _syncActiveTabClasses() {
+        for (const el of tabsEl.querySelectorAll(".tab")) {
+          if (el.dataset && el.dataset.tabId === state.activeTab) el.classList.add("active");
+          else el.classList.remove("active");
+        }
+      }
+
+      function buildTabs(groupKeys, hasB509) {
         tabsEl.innerHTML = "";
         const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+        const orderedTabIds = [];
+
+        if (hasB509) {
+          const btn = document.createElement("div");
+          btn.className = "tab";
+          btn.textContent = "B509 Dump";
+          btn.dataset.tabId = "b509";
+          btn.addEventListener("click", () => {
+            state.activeTab = "b509";
+            _syncActiveTabClasses();
+            renderActiveTab();
+          });
+          tabsEl.appendChild(btn);
+          orderedTabIds.push("b509");
+        }
+
         for (const key of groupKeys) {
           const btn = document.createElement("div");
           btn.className = "tab";
           const groupObj = getGroupObject(groupsRoot[key]);
           const groupName = typeof groupObj.name === "string" && groupObj.name ? groupObj.name : "Unknown";
           btn.textContent = groupName !== "Unknown" ? `${key} (${groupName})` : key;
+          const tabId = `b524:${key}`;
+          btn.dataset.tabId = tabId;
           btn.addEventListener("click", () => {
-            state.activeGroup = key;
-            renderActiveGroup();
-            for (const el of tabsEl.querySelectorAll(".tab")) el.classList.remove("active");
-            btn.classList.add("active");
+            state.activeTab = tabId;
+            _syncActiveTabClasses();
+            renderActiveTab();
           });
           tabsEl.appendChild(btn);
+          orderedTabIds.push(tabId);
         }
-        const first = groupKeys[0] || null;
-        state.activeGroup = state.activeGroup || first;
-        if (tabsEl.firstChild) tabsEl.firstChild.classList.add("active");
+
+        if (!state.activeTab || !orderedTabIds.includes(state.activeTab)) {
+          state.activeTab = orderedTabIds[0] || null;
+        }
+        _syncActiveTabClasses();
       }
 
-      function renderActiveGroup() {
+      function renderB509Tab() {
+        const b509 = artifact && typeof artifact === "object" ? artifact.b509_dump : null;
+        if (!b509 || typeof b509 !== "object") {
+          sheetArea.innerHTML = "<div class='subtitle'>No B509 dump in artifact.</div>";
+          return;
+        }
+        const devices = b509.devices && typeof b509.devices === "object" ? b509.devices : {};
+        const rows = [];
+        for (const dstKey of sortedHexKeys(Object.keys(devices))) {
+          const dev = devices[dstKey];
+          if (!dev || typeof dev !== "object") continue;
+          const regs = dev.registers && typeof dev.registers === "object" ? dev.registers : {};
+          for (const addrKey of sortedHexKeys(Object.keys(regs))) {
+            const entry = regs[addrKey];
+            if (!entry || typeof entry !== "object") continue;
+            rows.push({ dstKey, addrKey, entry });
+          }
+        }
+
+        const card = document.createElement("div");
+
+        const filters = document.createElement("div");
+        filters.className = "filters";
+
+        const search = document.createElement("input");
+        search.className = "filter-input";
+        search.type = "text";
+        search.placeholder = "Search by register or name...";
+        search.value = state.b509Filters.search || "";
+        search.addEventListener("input", () => {
+          state.b509Filters.search = search.value || "";
+          renderB509Tab();
+        });
+        filters.appendChild(search);
+
+        function mkCheck(labelText, key) {
+          const label = document.createElement("label");
+          label.className = "filter-chip";
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = !!state.b509Filters[key];
+          cb.addEventListener("change", () => {
+            state.b509Filters[key] = !!cb.checked;
+            renderB509Tab();
+          });
+          label.appendChild(cb);
+          label.appendChild(document.createTextNode(labelText));
+          filters.appendChild(label);
+        }
+        mkCheck("Hide timeouts", "hideTimeout");
+        mkCheck("Hide empty", "hideEmpty");
+        mkCheck("Hide decode errors", "hideDecodeErrors");
+        card.appendChild(filters);
+
+        const filtered = rows.filter((row) => {
+          const entry = row.entry;
+          const errTxt = typeof entry.error === "string" ? entry.error : "";
+          const rawHex = typeof entry.raw_hex === "string" ? entry.raw_hex : "";
+          const replyHex = typeof entry.reply_hex === "string" ? entry.reply_hex : "";
+          const ebusdName = typeof entry.ebusd_name === "string" ? entry.ebusd_name : "";
+          const myName = typeof entry.myvaillant_name === "string" ? entry.myvaillant_name : "";
+          const addrText = String(row.addrKey || "");
+          const haystack = `${row.dstKey} ${addrText} ${ebusdName} ${myName}`.toLowerCase();
+          const q = String(state.b509Filters.search || "").trim().toLowerCase();
+          if (q && !haystack.includes(q)) return false;
+          if (state.b509Filters.hideTimeout && errTxt.toLowerCase().includes("timeout")) return false;
+          if (state.b509Filters.hideEmpty && !rawHex && !replyHex) return false;
+          if (
+            state.b509Filters.hideDecodeErrors &&
+            (errTxt.toLowerCase().startsWith("parse_error:") || errTxt.toLowerCase().startsWith("decode_error:"))
+          ) {
+            return false;
+          }
+          return true;
+        });
+
+        if (!filtered.length) {
+          const msg = document.createElement("div");
+          msg.className = "subtitle";
+          msg.textContent = "No B509 rows match current filters.";
+          card.appendChild(msg);
+          sheetArea.innerHTML = "";
+          sheetArea.appendChild(card);
+          return;
+        }
+
+        const wrap = document.createElement("div");
+        wrap.className = "table-wrap";
+
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const trHead = document.createElement("tr");
+        for (const col of ["Dst", "Register", "Name", "Type", "Value", "Raw", "Error"]) {
+          const th = document.createElement("th");
+          th.textContent = col;
+          trHead.appendChild(th);
+        }
+        thead.appendChild(trHead);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        for (const row of filtered) {
+          const tr = document.createElement("tr");
+          const entry = row.entry;
+          const errTxt = typeof entry.error === "string" ? entry.error : "";
+          const rawHex = typeof entry.raw_hex === "string" ? entry.raw_hex : "";
+          const replyHex = typeof entry.reply_hex === "string" ? entry.reply_hex : "";
+
+          function appendText(value, klass) {
+            const td = document.createElement("td");
+            if (klass) td.className = klass;
+            td.textContent = value;
+            tr.appendChild(td);
+            return td;
+          }
+
+          appendText(row.dstKey, "offset-label");
+          appendText(row.addrKey, "offset-label");
+
+          const nameTd = document.createElement("td");
+          const myName = typeof entry.myvaillant_name === "string" ? entry.myvaillant_name : "";
+          const ebusdName = typeof entry.ebusd_name === "string" ? entry.ebusd_name : "";
+          if (myName) {
+            const top = document.createElement("div");
+            top.className = "offset-name";
+            top.textContent = myName;
+            nameTd.appendChild(top);
+          }
+          if (ebusdName) {
+            const sub = document.createElement("div");
+            sub.className = myName ? "offset-name-secondary" : "offset-name";
+            sub.textContent = myName ? `ebusd: ${ebusdName}` : ebusdName;
+            nameTd.appendChild(sub);
+          }
+          if (!myName && !ebusdName) {
+            nameTd.innerHTML = "<div class='cell-missing'>—</div>";
+          }
+          tr.appendChild(nameTd);
+
+          appendText(typeof entry.type === "string" ? entry.type : "—");
+          appendText(formatValue(entry.value));
+          appendText(rawHex || replyHex || "—", "cell-raw");
+
+          const errTd = appendText(errTxt || "—", errTxt ? "cell-error" : "");
+          if (errTxt) errTd.parentElement.classList.add("cell-bad");
+          if (replyHex && rawHex && replyHex !== rawHex) {
+            tr.title = `reply_hex=${replyHex}\\nraw_hex=${rawHex}`;
+          }
+          tbody.appendChild(tr);
+        }
+
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        card.appendChild(wrap);
+
+        sheetArea.innerHTML = "";
+        sheetArea.appendChild(card);
+      }
+
+      function renderActiveGroup(groupKey) {
         const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
-        const groupKey = state.activeGroup;
         if (!groupKey || !groupsRoot[groupKey]) {
           sheetArea.innerHTML = "<div class='subtitle'>No groups.</div>";
           return;
@@ -564,7 +803,8 @@ __ARTIFACT_JSON__
 
         for (const rrKey of rrKeys) {
           // Pick a row label/name from any instance that has an entry.
-          let rowName = "";
+          let rowMyvaillantName = "";
+          let rowEbusdNames = new Set();
           let rowTypeDefault = null;
           let rowLen = null;
           for (const iiKey of instanceKeys) {
@@ -572,8 +812,11 @@ __ARTIFACT_JSON__
             const regs = inst.registers || {};
             const entry = regs && typeof regs === "object" ? regs[rrKey] : null;
             if (!entry || typeof entry !== "object") continue;
-            if (!rowName) {
-              rowName = entry.myvaillant_name || entry.ebusd_name || "";
+            if (!rowMyvaillantName && typeof entry.myvaillant_name === "string" && entry.myvaillant_name) {
+              rowMyvaillantName = entry.myvaillant_name;
+            }
+            if (typeof entry.ebusd_name === "string" && entry.ebusd_name) {
+              rowEbusdNames.add(entry.ebusd_name);
             }
             if (!rowTypeDefault && typeof entry.type === "string" && entry.type) rowTypeDefault = entry.type;
             if (rowLen === null && typeof entry.raw_hex === "string" && entry.raw_hex) {
@@ -581,6 +824,9 @@ __ARTIFACT_JSON__
               if (b) rowLen = b.length;
             }
           }
+
+          const ebusdNameList = Array.from(rowEbusdNames);
+          ebusdNameList.sort();
 
           const override = getRowOverride(groupKey, rrKey);
           const rowType = override || rowTypeDefault;
@@ -595,11 +841,30 @@ __ARTIFACT_JSON__
           label.className = "offset-label";
           label.textContent = rrKey;
           td0.appendChild(label);
-          if (rowName) {
-            const nameEl = document.createElement("div");
-            nameEl.className = "offset-name";
-            nameEl.textContent = rowName;
-            td0.appendChild(nameEl);
+
+          const hasNames = rowMyvaillantName || ebusdNameList.length;
+          if (hasNames) {
+            if (rowMyvaillantName) {
+              const nameEl = document.createElement("div");
+              nameEl.className = "offset-name";
+              nameEl.textContent = rowMyvaillantName;
+              td0.appendChild(nameEl);
+            }
+
+            if (ebusdNameList.length) {
+              const ebusdEl = document.createElement("div");
+              ebusdEl.className = rowMyvaillantName ? "offset-name-secondary" : "offset-name";
+
+              let txt = ebusdNameList[0];
+              if (ebusdNameList.length > 1) {
+                const head = ebusdNameList.slice(0, 3).join(", ");
+                txt = head + (ebusdNameList.length > 3 ? ", …" : "");
+                ebusdEl.title = ebusdNameList.join(", ");
+              }
+              if (rowMyvaillantName) txt = "ebusd: " + txt;
+              ebusdEl.textContent = txt;
+              td0.appendChild(ebusdEl);
+            }
           }
 
           if (candidates.length) {
@@ -680,10 +945,20 @@ __ARTIFACT_JSON__
         sheetArea.appendChild(wrap);
       }
 
+      function renderActiveTab() {
+        if (_isB509Tab(state.activeTab)) {
+          renderB509Tab();
+          return;
+        }
+        const groupKey = _groupKeyFromTab(state.activeTab);
+        renderActiveGroup(groupKey);
+      }
+
       const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
       const groupKeys = sortedHexKeys(Object.keys(groupsRoot));
-      buildTabs(groupKeys);
-      renderActiveGroup();
+      const hasB509 = !!(artifact && typeof artifact === "object" && artifact.b509_dump && typeof artifact.b509_dump === "object");
+      buildTabs(groupKeys, hasB509);
+      renderActiveTab();
     </script>
   </body>
 </html>

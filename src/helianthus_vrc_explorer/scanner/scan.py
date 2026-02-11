@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import math
+import os
 import sys
 import time
 from collections import deque
@@ -15,6 +17,7 @@ from ..schema.myvaillant_map import MyvaillantRegisterMap
 from ..transport.base import TransportInterface, emit_trace_label
 from ..transport.instrumented import CountingTransport
 from ..ui.planner import PlannerGroup, prompt_scan_plan
+from .b509 import scan_b509
 from .director import GROUP_CONFIG, classify_groups, discover_groups
 from .observer import ScanObserver
 from .plan import GroupScanPlan, RegisterTask, build_work_queue, estimate_register_requests
@@ -52,27 +55,81 @@ def _entry_has_valid_value(entry: RegisterEntry) -> bool:
     return not (isinstance(value, float) and math.isnan(value))
 
 
-def _poll_planner_hotkey() -> bool:
-    """Best-effort interactive hotkey: type 'p' + Enter to open the planner."""
+class _PlannerHotkeyReader(contextlib.AbstractContextManager["_PlannerHotkeyReader"]):
+    """Best-effort single-key planner hotkey reader (`p`) for POSIX terminals."""
 
-    if not sys.stdin.isatty():
-        return False
-    if sys.platform == "win32":
-        return False
+    def __init__(self, *, enabled: bool) -> None:
+        self._enabled = enabled
+        self._active = False
+        self._fd: int | None = None
+        self._old_termios: Any = None
 
-    try:
-        import select  # noqa: PLC0415
+    def __enter__(self) -> _PlannerHotkeyReader:
+        self._activate()
+        return self
 
-        ready, _w, _x = select.select([sys.stdin], [], [], 0.0)
-    except (OSError, ValueError):
-        return False
+    def _activate(self) -> None:
+        if not self._enabled or sys.platform == "win32" or not sys.stdin.isatty():
+            return
+        if self._active:
+            return
+        try:
+            import termios  # noqa: PLC0415
+            import tty  # noqa: PLC0415
 
-    if not ready:
-        return False
+            fd = sys.stdin.fileno()
+            self._old_termios = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            self._fd = fd
+            self._active = True
+        except Exception:
+            self._active = False
 
-    raw = sys.stdin.readline()
-    cmd = raw.strip().lower()
-    return cmd in {"p", "plan", ":p", ":plan"}
+    def _deactivate(self) -> None:
+        if not self._active or self._fd is None:
+            return
+        fd = self._fd
+        self._fd = None
+        self._active = False
+        try:
+            import termios  # noqa: PLC0415
+
+            if self._old_termios is not None:
+                termios.tcsetattr(fd, termios.TCSADRAIN, self._old_termios)
+        except Exception:
+            pass
+
+    def __exit__(self, *_exc: object) -> None:
+        self._deactivate()
+        return None
+
+    def poll(self) -> bool:
+        if not self._active or self._fd is None:
+            return False
+        try:
+            import select  # noqa: PLC0415
+
+            ready, _w, _x = select.select([sys.stdin], [], [], 0.0)
+            if not ready:
+                return False
+            raw = os.read(self._fd, 1)
+        except (OSError, ValueError):
+            return False
+        if not raw:
+            return False
+        ch = raw.decode("utf-8", errors="ignore").lower()
+        return ch == "p"
+
+    @contextlib.contextmanager
+    def suspend(self) -> Any:
+        was_active = self._active
+        if was_active:
+            self._deactivate()
+        try:
+            yield None
+        finally:
+            if was_active:
+                self._activate()
 
 
 def scan_b524(
@@ -318,11 +375,24 @@ def scan_b524(
                         )
                     )
             with observer.suspend():
+                planner_default_plan = dict(plan)
+                # Interactive planner default: for instanced groups, preselect all slots.
+                for planner_group in planner_groups:
+                    group_plan = planner_default_plan.get(planner_group.group)
+                    if group_plan is None:
+                        continue
+                    if planner_group.ii_max is None:
+                        continue
+                    planner_default_plan[planner_group.group] = GroupScanPlan(
+                        group=group_plan.group,
+                        rr_max=group_plan.rr_max,
+                        instances=tuple(range(0x00, planner_group.ii_max + 1)),
+                    )
                 plan = prompt_scan_plan(
                     console,
                     planner_groups,
                     request_rate_rps=request_rate_rps,
-                    default_plan=plan,
+                    default_plan=planner_default_plan,
                 )
 
         artifact["meta"]["scan_plan"] = {
@@ -341,126 +411,128 @@ def scan_b524(
         active_start = time.perf_counter()
         active_elapsed = 0.0
 
-        while work_queue:
-            if (
-                interactive
-                and console is not None
-                and observer is not None
-                and _poll_planner_hotkey()
-            ):
-                # Pause progress rendering and allow replanning without rewriting scanned data.
-                active_elapsed += time.perf_counter() - active_start
-                with observer.suspend():
-                    plan = prompt_scan_plan(
-                        console,
-                        planner_groups,
-                        request_rate_rps=request_rate_rps,
-                        default_plan=plan,
+        with _PlannerHotkeyReader(enabled=interactive) as hotkeys:
+            while work_queue:
+                if interactive and console is not None and observer is not None and hotkeys.poll():
+                    # Pause progress rendering and allow replanning without rewriting scanned data.
+                    active_elapsed += time.perf_counter() - active_start
+                    with hotkeys.suspend(), observer.suspend():
+                        plan = prompt_scan_plan(
+                            console,
+                            planner_groups,
+                            request_rate_rps=request_rate_rps,
+                            default_plan=plan,
+                        )
+                    artifact["meta"]["scan_plan"]["groups"] = {
+                        _hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())
+                    }
+                    artifact["meta"]["scan_plan"]["estimated_register_requests"] = (
+                        estimate_register_requests(plan)
                     )
-                artifact["meta"]["scan_plan"]["groups"] = {
-                    _hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())
-                }
-                artifact["meta"]["scan_plan"]["estimated_register_requests"] = (
-                    estimate_register_requests(plan)
-                )
-                work_queue = deque(build_work_queue(plan, done=done))
-                observer.phase_set_total("register_scan", total=(len(done) + len(work_queue)) or 1)
-                remaining = len(work_queue)
-                task_rate_rps = (len(done) / active_elapsed) if active_elapsed > 0 else None
-                if task_rate_rps is None:
-                    observer.log(
-                        f"Updated scan plan: remaining {remaining} register reads",
-                        level="info",
+                    work_queue = deque(build_work_queue(plan, done=done))
+                    observer.phase_set_total(
+                        "register_scan",
+                        total=(len(done) + len(work_queue)) or 1,
                     )
+                    remaining = len(work_queue)
+                    task_rate_rps = (len(done) / active_elapsed) if active_elapsed > 0 else None
+                    if task_rate_rps is None:
+                        observer.log(
+                            f"Updated scan plan: remaining {remaining} register reads",
+                            level="info",
+                        )
+                    else:
+                        eta_s = remaining / task_rate_rps if remaining > 0 else 0.0
+                        observer.log(
+                            f"Updated scan plan: remaining {remaining} register reads "
+                            f"(ETA {eta_s:.1f}s @ {task_rate_rps:.2f} rr/s)",
+                            level="info",
+                        )
+                    active_start = time.perf_counter()
+                    continue
+
+                task = work_queue.popleft()
+                if observer is not None:
+                    observer.status(
+                        "Read "
+                        f"GG=0x{task.group:02X} "
+                        f"II=0x{task.instance:02X} "
+                        f"RR=0x{task.register:04X}"
+                    )
+                    observer.phase_advance("register_scan", advance=1)
+
+                # Some groups are ambiguous and may respond to either opcode family (0x02 vs 0x06).
+                # When in doubt (unknown group), probe both but keep only the best/most-meaningful
+                # reply in the artifact.
+                opcodes_to_try: tuple[RegisterOpcode, ...]
+                if task.group in GROUP_CONFIG:
+                    opcodes_to_try = (opcode_for_group(task.group),)
                 else:
-                    eta_s = remaining / task_rate_rps if remaining > 0 else 0.0
-                    observer.log(
-                        f"Updated scan plan: remaining {remaining} register reads "
-                        f"(ETA {eta_s:.1f}s @ {task_rate_rps:.2f} rr/s)",
-                        level="info",
+                    opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
+
+                best_entry: RegisterEntry | None = None
+                best_quality = -1
+                for opcode in opcodes_to_try:
+                    schema_entry = (
+                        ebusd_schema.lookup(
+                            opcode=opcode,
+                            group=task.group,
+                            instance=task.instance,
+                            register=task.register,
+                        )
+                        if ebusd_schema is not None
+                        else None
                     )
-                active_start = time.perf_counter()
-                continue
+                    type_hint = schema_entry.type_spec if schema_entry is not None else None
 
-            task = work_queue.popleft()
-            if observer is not None:
-                observer.status(
-                    f"Read GG=0x{task.group:02X} II=0x{task.instance:02X} RR=0x{task.register:04X}"
-                )
-                observer.phase_advance("register_scan", advance=1)
+                    candidate = read_register(
+                        transport,
+                        dst,
+                        opcode,
+                        group=task.group,
+                        instance=task.instance,
+                        register=task.register,
+                        type_hint=type_hint,
+                    )
+                    if schema_entry is not None:
+                        candidate["ebusd_name"] = schema_entry.name
 
-            # Some groups are ambiguous and may respond to either opcode family (0x02 vs 0x06).
-            # When in doubt (unknown group), probe both but keep only the best/most-meaningful
-            # reply in the artifact.
-            opcodes_to_try: tuple[RegisterOpcode, ...]
-            if task.group in GROUP_CONFIG:
-                opcodes_to_try = (opcode_for_group(task.group),)
-            else:
-                opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
+                    # Prefer a meaningful value over status-only / no_data replies; otherwise prefer
+                    # a clean reply (no error) over transport/decode failures.
+                    quality = (
+                        2
+                        if _entry_has_valid_value(candidate)
+                        else (1 if candidate["error"] is None else 0)
+                    )
+                    if quality > best_quality:
+                        best_entry = candidate
+                        best_quality = quality
+                    if quality == 2:
+                        break
 
-            best_entry: RegisterEntry | None = None
-            best_quality = -1
-            for opcode in opcodes_to_try:
-                schema_entry = (
-                    ebusd_schema.lookup(
-                        opcode=opcode,
+                assert best_entry is not None
+                entry = best_entry
+                if myvaillant_map is not None:
+                    mv = myvaillant_map.lookup(
                         group=task.group,
                         instance=task.instance,
                         register=task.register,
                     )
-                    if ebusd_schema is not None
-                    else None
-                )
-                type_hint = schema_entry.type_spec if schema_entry is not None else None
+                    if mv is not None:
+                        entry["myvaillant_name"] = mv.leaf
+                done.add(task)
 
-                candidate = read_register(
-                    transport,
-                    dst,
-                    opcode,
-                    group=task.group,
-                    instance=task.instance,
-                    register=task.register,
-                    type_hint=type_hint,
+                group_key = _hex_u8(task.group)
+                group_obj = artifact["groups"].setdefault(
+                    group_key,
+                    {"name": "Unknown", "descriptor_type": None, "instances": {}},
                 )
-                if schema_entry is not None:
-                    candidate["ebusd_name"] = schema_entry.name
-
-                # Prefer a meaningful value over status-only / no_data replies; otherwise prefer
-                # a clean reply (no error) over transport/decode failures.
-                quality = (
-                    2
-                    if _entry_has_valid_value(candidate)
-                    else (1 if candidate["error"] is None else 0)
-                )
-                if quality > best_quality:
-                    best_entry = candidate
-                    best_quality = quality
-                if quality == 2:
-                    break
-
-            assert best_entry is not None
-            entry = best_entry
-            if myvaillant_map is not None:
-                mv = myvaillant_map.lookup(
-                    group=task.group,
-                    instance=task.instance,
-                    register=task.register,
-                )
-                if mv is not None:
-                    entry["myvaillant_name"] = mv.leaf
-            done.add(task)
-
-            group_key = _hex_u8(task.group)
-            group_obj = artifact["groups"].setdefault(
-                group_key,
-                {"name": "Unknown", "descriptor_type": None, "instances": {}},
-            )
-            instances_obj = group_obj.setdefault("instances", {})
-            instance_key = _hex_u8(task.instance)
-            instance_obj = instances_obj.setdefault(instance_key, {"present": False})
-            if isinstance(instance_obj, dict):
-                registers = instance_obj.setdefault("registers", {})
-                registers[_hex_u16(task.register)] = entry
+                instances_obj = group_obj.setdefault("instances", {})
+                instance_key = _hex_u8(task.instance)
+                instance_obj = instances_obj.setdefault(instance_key, {"present": False})
+                if isinstance(instance_obj, dict):
+                    registers = instance_obj.setdefault("registers", {})
+                    registers[_hex_u16(task.register)] = entry
 
         if observer is not None:
             observer.phase_finish("register_scan")
@@ -472,6 +544,58 @@ def scan_b524(
     artifact["meta"]["scan_duration_seconds"] = round(time.perf_counter() - start_perf, 4)
     if incomplete_reason is not None:
         artifact["meta"]["incomplete_reason"] = incomplete_reason
+
+    return artifact
+
+
+def scan_vrc(
+    transport: TransportInterface,
+    *,
+    dst: int,
+    b509_ranges: list[tuple[int, int]],
+    ebusd_host: str | None = None,
+    ebusd_port: int | None = None,
+    ebusd_schema: EbusdCsvSchema | None = None,
+    myvaillant_map: MyvaillantRegisterMap | None = None,
+    observer: ScanObserver | None = None,
+    console: Console | None = None,
+) -> dict[str, Any]:
+    """Run the full VRC scan flow: B524 primary scan, then B509 register dump."""
+
+    artifact = scan_b524(
+        transport,
+        dst=dst,
+        ebusd_host=ebusd_host,
+        ebusd_port=ebusd_port,
+        ebusd_schema=ebusd_schema,
+        myvaillant_map=myvaillant_map,
+        observer=observer,
+        console=console,
+    )
+    meta = artifact.get("meta")
+    if isinstance(meta, dict) and bool(meta.get("incomplete", False)):
+        return artifact
+
+    scan_fn = getattr(transport, "send_proto", None)
+    if not callable(scan_fn):
+        return artifact
+
+    b509_dump = scan_b509(
+        transport,  # type: ignore[arg-type]
+        dst=dst,
+        ranges=b509_ranges,
+        ebusd_schema=ebusd_schema,
+        observer=observer,
+    )
+    artifact["b509_dump"] = b509_dump
+
+    b509_meta = b509_dump.get("meta", {})
+    if isinstance(b509_meta, dict) and bool(b509_meta.get("incomplete")) and isinstance(meta, dict):
+        meta["incomplete"] = True
+        if "incomplete_reason" not in meta:
+            reason = b509_meta.get("incomplete_reason")
+            if isinstance(reason, str):
+                meta["incomplete_reason"] = f"b509_{reason}"
 
     return artifact
 

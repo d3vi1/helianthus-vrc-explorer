@@ -125,6 +125,22 @@ def render_summary(console: Console, artifact: dict[str, Any], *, output_path: P
         f"groups={len(group_stats)} registers={total_regs} errors={total_errs}", style="dim"
     )
 
+    b509_dump = artifact.get("b509_dump")
+    if isinstance(b509_dump, dict):
+        b509_meta = b509_dump.get("meta")
+        if isinstance(b509_meta, dict):
+            b509_reads = b509_meta.get("read_count")
+            b509_errors = b509_meta.get("error_count")
+            b509_incomplete = bool(b509_meta.get("incomplete", False))
+            b509_txt = "b509"
+            if isinstance(b509_reads, int):
+                b509_txt += f" reads={b509_reads}"
+            if isinstance(b509_errors, int):
+                b509_txt += f" errors={b509_errors}"
+            if b509_incomplete:
+                b509_txt += " incomplete=true"
+            console.print(b509_txt, style="dim")
+
     table = Table(show_header=True, header_style="bold", box=None)
     table.add_column("Group", style="cyan", no_wrap=True)
     table.add_column("Name", style="white")
