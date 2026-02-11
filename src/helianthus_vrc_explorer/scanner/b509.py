@@ -7,7 +7,7 @@ from typing import Any, Protocol, TypedDict
 from ..protocol.b509 import build_b509_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
 from ..schema.ebusd_csv import EbusdCsvSchema
-from ..transport.base import TransportError, TransportTimeout, emit_trace_label
+from ..transport.base import TransportError, TransportTimeout
 from .observer import ScanObserver
 from .plan import parse_int_token
 
@@ -38,6 +38,12 @@ class B509RegisterEntry(TypedDict):
 
 def _hex_u16(value: int) -> str:
     return f"0x{value:04x}"
+
+
+def _emit_trace_label(transport: _B509Transport, label: str) -> None:
+    trace_fn = getattr(transport, "trace_label", None)
+    if callable(trace_fn):
+        trace_fn(label)
 
 
 def _parse_b509_value(type_hint: str, response: bytes) -> tuple[object | None, str | None]:
@@ -130,13 +136,10 @@ def scan_b509(
     try:
         if observer is not None:
             observer.phase_start("b509_dump", total=total_reads or 1)
-        emit_trace_label(transport, "B509 Register Dump")
+        _emit_trace_label(transport, "B509 Register Dump")
 
         for start, end in merged_ranges:
-            emit_trace_label(
-                transport,
-                f"B509 range {_hex_u16(start)}..{_hex_u16(end)}",
-            )
+            _emit_trace_label(transport, f"B509 range {_hex_u16(start)}..{_hex_u16(end)}")
             for register in range(start, end + 1):
                 if observer is not None:
                     observer.status(f"B509 read RR={_hex_u16(register)}")
