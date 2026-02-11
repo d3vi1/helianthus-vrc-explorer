@@ -133,11 +133,16 @@ def run_textual_scan_plan(
         def action_submit(self) -> None:
             self.dismiss(self.query_one(Input).value.strip())
 
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            # Enter is handled by the Input widget first; submit explicitly so
+            # users can confirm edits without relying on screen-level bindings.
+            self.dismiss(event.value.strip())
+
     class _PlannerApp(App[dict[int, GroupScanPlan] | None]):
         BINDINGS = [
             Binding("space", "toggle_enabled", "Toggle"),
             Binding("tab", "focus_next", "Next"),
-            Binding("enter", "edit_rr_max", "Edit RR"),
+            Binding("enter", "edit_rr_max", "Edit RR", priority=True),
             Binding("i", "edit_instances", "Edit II"),
             Binding("1", "preset_conservative", "Preset 1"),
             Binding("2", "preset_recommended", "Preset 2"),
@@ -247,6 +252,9 @@ def run_textual_scan_plan(
                 table.move_cursor(row=min(current, len(self._row_groups) - 1))
             self._set_status()
 
+        def _focus_table(self) -> None:
+            self.query_one(DataTable).focus()
+
         def _apply_preset(self, preset: PlannerPreset) -> None:
             preset_plan = build_plan_from_preset(self._groups, preset=preset)
             for group in self._groups:
@@ -264,35 +272,48 @@ def run_textual_scan_plan(
         def _edit_rr_max(self, value: str | None) -> None:
             if value is None or self._editing_group is None:
                 self._set_help("RR_max edit cancelled")
+                self._editing_group = None
+                self._focus_table()
                 return
             try:
                 rr_max = parse_int_token(value)
             except ValueError as exc:
                 self._set_help(f"Invalid RR_max: {exc}")
+                self._focus_table()
                 return
             if not (0x0000 <= rr_max <= 0xFFFF):
                 self._set_help("RR_max must be in 0x0000..0xFFFF")
+                self._focus_table()
                 return
             self._states[self._editing_group].rr_max = rr_max
             self._refresh_table()
             self._set_help(f"Updated RR_max for 0x{self._editing_group:02X}")
+            self._editing_group = None
+            self._focus_table()
 
         def _edit_instances(self, value: str | None) -> None:
             if value is None or self._editing_group is None:
                 self._set_help("Instance edit cancelled")
+                self._editing_group = None
+                self._focus_table()
                 return
             group = self._states[self._editing_group].group
             if group.ii_max is None:
                 self._set_help("Group is singleton; instances are fixed")
+                self._editing_group = None
+                self._focus_table()
                 return
             try:
                 instances = _parse_instances_spec(value, group=group)
             except ValueError as exc:
                 self._set_help(f"Invalid instances: {exc}")
+                self._focus_table()
                 return
             self._states[self._editing_group].instances = instances
             self._refresh_table()
             self._set_help(f"Updated instances for 0x{self._editing_group:02X}")
+            self._editing_group = None
+            self._focus_table()
 
         def action_focus_next(self) -> None:
             table = self.query_one(DataTable)
@@ -322,6 +343,10 @@ def run_textual_scan_plan(
                 ),
                 self._edit_rr_max,
             )
+
+        def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
+            # Keep Enter behavior stable even if DataTable handles Enter locally.
+            self.action_edit_rr_max()
 
         def action_edit_instances(self) -> None:
             gg = self._focused_group()
