@@ -45,8 +45,14 @@ Regenerate preview assets from first 5 minutes of autorun, sped up 10x (300s -> 
 
 Optional:
 - `--output-seconds 45` to override final animation duration
+- `--cols 132 --rows 40` to tune terminal geometry
+- `--poster-percent 40` to choose which moment becomes `preview.png`
 - `--command "python -m helianthus_vrc_explorer scan ..."` to capture a different run
 - `--font-path "/path/to/Anonymous Pro.ttf"` to force font selection
+
+Dependencies for preview generation:
+- `asciinema`
+- `agg`
 
 ## Development
 Requirements: Python 3.12+

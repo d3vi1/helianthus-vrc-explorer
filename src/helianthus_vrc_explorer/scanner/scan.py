@@ -352,72 +352,72 @@ def scan_b524(
             observer=observer,
         )
         planner_groups: list[PlannerGroup] = []
-        if planner_mode != "disabled" and console is not None and observer is not None:
-            for group in classified:
-                config = GROUP_CONFIG.get(group.group)
-                if config is None:
-                    rr_max_default = 0x30
-                    ii_max_default: int | None
-                    present_instances_default: tuple[int, ...]
-                    if group.descriptor == 1.0:
-                        ii_max_default = 0x0A
-                        present_instances_default = tuple(range(0x00, 0x0A + 1))
-                    else:
-                        ii_max_default = None
-                        present_instances_default = (0x00,)
-                    planner_groups.append(
-                        PlannerGroup(
-                            group=group.group,
-                            name=group.name,
-                            descriptor=group.descriptor,
-                            known=False,
-                            ii_max=ii_max_default,
-                            rr_max=rr_max_default,
-                            present_instances=present_instances_default,
-                        )
-                    )
-                    continue
-
-                group_obj = artifact["groups"][_hex_u8(group.group)]
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            if config is None:
+                rr_max_default = 0x30
+                ii_max_default: int | None
+                present_instances_default: tuple[int, ...]
                 if group.descriptor == 1.0:
-                    ii_max = int(config["ii_max"])
-                    present_instances_for_planner: list[int] = [
-                        int(ii_key, 0)
-                        for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
-                        if isinstance(ii_obj, dict) and ii_obj.get("present") is True
-                    ]
-                    planner_groups.append(
-                        PlannerGroup(
-                            group=group.group,
-                            name=group.name,
-                            descriptor=group.descriptor,
-                            known=True,
-                            ii_max=ii_max,
-                            rr_max=int(config["rr_max"]),
-                            present_instances=tuple(sorted(present_instances_for_planner)),
-                        )
-                    )
+                    ii_max_default = 0x0A
+                    present_instances_default = tuple(range(0x00, 0x0A + 1))
                 else:
-                    planner_groups.append(
-                        PlannerGroup(
-                            group=group.group,
-                            name=group.name,
-                            descriptor=group.descriptor,
-                            known=True,
-                            ii_max=None,
-                            rr_max=int(config["rr_max"]),
-                            present_instances=(0x00,),
-                        )
+                    ii_max_default = None
+                    present_instances_default = (0x00,)
+                planner_groups.append(
+                    PlannerGroup(
+                        group=group.group,
+                        name=group.name,
+                        descriptor=group.descriptor,
+                        known=False,
+                        ii_max=ii_max_default,
+                        rr_max=rr_max_default,
+                        present_instances=present_instances_default,
                     )
+                )
+                continue
+
+            group_obj = artifact["groups"][_hex_u8(group.group)]
+            if group.descriptor == 1.0:
+                ii_max = int(config["ii_max"])
+                present_instances_for_planner: list[int] = [
+                    int(ii_key, 0)
+                    for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
+                    if isinstance(ii_obj, dict) and ii_obj.get("present") is True
+                ]
+                planner_groups.append(
+                    PlannerGroup(
+                        group=group.group,
+                        name=group.name,
+                        descriptor=group.descriptor,
+                        known=True,
+                        ii_max=ii_max,
+                        rr_max=int(config["rr_max"]),
+                        present_instances=tuple(sorted(present_instances_for_planner)),
+                    )
+                )
+            else:
+                planner_groups.append(
+                    PlannerGroup(
+                        group=group.group,
+                        name=group.name,
+                        descriptor=group.descriptor,
+                        known=True,
+                        ii_max=None,
+                        rr_max=int(config["rr_max"]),
+                        present_instances=(0x00,),
+                    )
+                )
+
+        if planner_preset != "custom":
+            plan = build_plan_from_preset(
+                planner_groups,
+                preset=planner_preset,
+            )
+
+        if planner_mode != "disabled" and console is not None and observer is not None:
             with observer.suspend():
-                planner_default_plan: dict[int, GroupScanPlan]
-                if planner_preset == "custom":
-                    planner_default_plan = dict(plan)
-                else:
-                    planner_default_plan = build_plan_from_preset(
-                        planner_groups,
-                        preset=planner_preset,
-                    )
+                planner_default_plan = dict(plan)
                 if planner_mode == "textual":
                     try:
                         from ..ui.planner_textual import run_textual_scan_plan
