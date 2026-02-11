@@ -10,9 +10,10 @@ from rich.console import Console
 from . import __version__
 from .ebusd import parse_ebusd_info_slave_addresses
 from .protocol.basv import parse_scan_identification, parse_vaillant_scan_id_chunks
+from .scanner.b509 import parse_b509_range
 from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
 from .scanner.register import is_instance_present
-from .scanner.scan import default_output_filename, scan_b524
+from .scanner.scan import default_output_filename, scan_vrc
 from .schema.ebusd_csv import EbusdCsvSchema
 from .schema.myvaillant_map import MyvaillantRegisterMap
 from .transport.base import TransportError, TransportTimeout
@@ -100,6 +101,14 @@ def scan(
         envvar="HELIA_EBUSD_TRACE_PATH",
         help="Write an ebusd request/response trace log to this file.",
     ),
+    b509_range: list[str] | None = typer.Option(  # noqa: B008
+        None,
+        "--b509-range",
+        help=(
+            "B509 register range to dump (repeatable), format: 0x2700..0x27FF. "
+            "If omitted, defaults to 0x2700..0x27FF."
+        ),
+    ),
 ) -> None:
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
     dst_u8 = _parse_u8_address(dst)
@@ -141,12 +150,24 @@ def scan(
             typer.echo(f"Invalid JSON fixture: {fixture_path} ({exc})", err=True)
             raise typer.Exit(2) from exc
     else:
+        b509_ranges: list[tuple[int, int]] = []
+        if b509_range:
+            for spec in b509_range:
+                try:
+                    b509_ranges.append(parse_b509_range(spec))
+                except ValueError as exc:
+                    typer.echo(f"Invalid --b509-range {spec!r}: {exc}", err=True)
+                    raise typer.Exit(2) from exc
+        else:
+            b509_ranges = [(0x2700, 0x27FF)]
+
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
         title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
         with make_scan_observer(console=console, title=title) as observer, transport.session():
-            artifact = scan_b524(
+            artifact = scan_vrc(
                 transport,
                 dst=dst_u8,
+                b509_ranges=b509_ranges,
                 ebusd_host=host,
                 ebusd_port=port,
                 ebusd_schema=ebusd_schema,

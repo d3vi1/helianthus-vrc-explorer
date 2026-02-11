@@ -24,6 +24,7 @@ _PHASE_LABELS: dict[str, str] = {
     "group_discovery": "Group Discovery",
     "instance_discovery": "Instance Discovery",
     "register_scan": "Register Scan",
+    "b509_dump": "B509 Dump",
 }
 
 
@@ -108,7 +109,7 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
                 style="dim",
             ),
             Text(
-                "Tip: type `p` + Enter during Register Scan to open the scan planner.",
+                "Tip: press `p` during Register Scan to open the scan planner.",
                 style="dim",
             ),
         )
