@@ -413,12 +413,7 @@ def scan_b524(
 
         with _PlannerHotkeyReader(enabled=interactive) as hotkeys:
             while work_queue:
-                if (
-                    interactive
-                    and console is not None
-                    and observer is not None
-                    and hotkeys.poll()
-                ):
+                if interactive and console is not None and observer is not None and hotkeys.poll():
                     # Pause progress rendering and allow replanning without rewriting scanned data.
                     active_elapsed += time.perf_counter() - active_start
                     with hotkeys.suspend(), observer.suspend():
