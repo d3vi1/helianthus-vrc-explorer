@@ -21,6 +21,7 @@ from .schema.ebusd_csv import EbusdCsvSchema
 from .schema.myvaillant_map import MyvaillantRegisterMap
 from .transport.base import TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
+from .ui.browse_textual import run_browse_from_artifact
 from .ui.html_report import render_html_report
 from .ui.live import ScanSessionPreface, make_scan_observer
 from .ui.planner import PlannerPreset
@@ -518,3 +519,58 @@ def discover(
                         f"GG=0x{group.group:02X} name={group.name} desc={group.descriptor:g} "
                         "instances=1"
                     )
+
+
+@app.command()
+def browse(
+    file: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--file",
+        help="Path to an existing scan JSON artifact (default browse mode).",
+    ),
+    live: bool = typer.Option(  # noqa: B008
+        False,
+        "--live",
+        help="Live mode (planned). In P0, only --file mode is implemented.",
+    ),
+    device: str | None = typer.Option(  # noqa: B008
+        None,
+        "--device",
+        help="Device identifier for --live mode (planned).",
+    ),
+    allow_write: bool = typer.Option(  # noqa: B008
+        False,
+        "--allow-write",
+        help="Enable write/edit actions in browse UI (P2, planned).",
+    ),
+) -> None:
+    """Browse scan results in fullscreen Textual UI (P0: file mode)."""
+
+    _ = device
+    if live:
+        typer.echo("Live browse mode is not implemented yet; use --file <artifact.json>.", err=True)
+        raise typer.Exit(2)
+
+    if file is None:
+        typer.echo("Missing required option: --file <artifact.json>.", err=True)
+        raise typer.Exit(2)
+    if not file.exists():
+        typer.echo(f"Artifact not found: {file}", err=True)
+        raise typer.Exit(2)
+
+    try:
+        artifact = json.loads(file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        typer.echo(f"Invalid JSON artifact: {file} ({exc})", err=True)
+        raise typer.Exit(2) from exc
+    if not isinstance(artifact, dict):
+        typer.echo(f"Invalid artifact root object: {file}", err=True)
+        raise typer.Exit(2)
+
+    if not Console().is_terminal:
+        console = Console(stderr=True)
+        render_summary(console, artifact, output_path=file)
+        typer.echo("Browse UI requires a TTY terminal.", err=True)
+        raise typer.Exit(0)
+
+    run_browse_from_artifact(artifact, allow_write=allow_write)

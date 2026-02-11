@@ -37,6 +37,44 @@ def test_discover_command_is_present() -> None:
     assert result.exit_code == 0
 
 
+def test_browse_command_is_present() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["browse", "--help"])
+    assert result.exit_code == 0
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", result.stdout)
+    assert "--file" in plain
+    assert "--live" in plain
+    assert "--allow-write" in plain
+
+
+def test_browse_requires_file_when_not_live() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["browse"])
+    assert result.exit_code == 2
+    assert "Missing required option: --file <artifact.json>." in result.stderr
+
+
+def test_browse_non_tty_falls_back_to_summary(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "artifact.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "meta": {
+                    "scan_timestamp": "2026-02-11T12:00:00Z",
+                    "destination_address": "0x15",
+                    "incomplete": False,
+                },
+                "groups": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["browse", "--file", str(artifact_path)])
+    assert result.exit_code == 0
+    assert "Browse UI requires a TTY terminal." in result.stderr
+
+
 def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
     map_path = tmp_path / "myvaillant_register_map.csv"
     map_path.write_text(
