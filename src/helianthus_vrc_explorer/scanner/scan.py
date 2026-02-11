@@ -525,7 +525,7 @@ def scan_b524(
                                     if selected is None:
                                         raise KeyboardInterrupt
                                     plan = selected
-                        else:
+                        if planner_mode == "classic":
                             plan = prompt_scan_plan(
                                 console,
                                 planner_groups,
