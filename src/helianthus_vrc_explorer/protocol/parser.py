@@ -97,10 +97,10 @@ def parse_hex(type_spec: str, data: bytes, expected_len: int) -> str:
 def parse_str_cstring(data: bytes) -> str:
     """Parse a `STR:*` value (cstring).
 
-    This uses latin1 decoding after stripping trailing NUL bytes.
+    CString semantics stop at the first NUL byte.
     """
 
-    return data.rstrip(b"\x00").decode("latin1")
+    return data.split(b"\x00", 1)[0].decode("latin1")
 
 
 def parse_hda3_date(data: bytes) -> str:

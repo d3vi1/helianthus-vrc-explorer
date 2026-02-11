@@ -33,6 +33,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "helianthus_vrc_explorer.data" = ["*.csv"]
+"helianthus_vrc_explorer.fixtures" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
