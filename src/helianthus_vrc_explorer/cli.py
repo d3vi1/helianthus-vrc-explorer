@@ -22,7 +22,7 @@ from .schema.myvaillant_map import MyvaillantRegisterMap
 from .transport.base import TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 from .ui.html_report import render_html_report
-from .ui.live import make_scan_observer
+from .ui.live import ScanSessionPreface, make_scan_observer
 from .ui.planner import PlannerPreset
 from .ui.summary import render_summary
 from .ui.viewer import run_results_viewer
@@ -77,6 +77,82 @@ def _load_default_dry_run_fixture_text() -> tuple[str | None, str | None]:
             except Exception:
                 return (None, None)
         return (None, None)
+
+
+def _na(value: str | None) -> str:
+    text = (value or "").strip()
+    return text if text else "n/a"
+
+
+def _format_fw(sw: str | None, hw: str | None) -> str:
+    sw_hex = (sw or "").strip().upper()
+    hw_hex = (hw or "").strip().upper()
+    if not sw_hex and not hw_hex:
+        return "n/a"
+    return f"SW {sw_hex or 'n/a'} / HW {hw_hex or 'n/a'}"
+
+
+def _probe_scan_identity(
+    transport: EbusdTcpTransport,
+    *,
+    dst: int,
+) -> dict[str, str]:
+    identity = {
+        "device": "n/a",
+        "model": "n/a",
+        "serial": "n/a",
+        "firmware": "n/a",
+    }
+    try:
+        payload = transport.send_proto(dst, 0x07, 0x04, b"")
+        ident = parse_scan_identification(payload)
+    except Exception:
+        return identity
+
+    identity["device"] = _na(ident.device_id)
+    identity["firmware"] = _format_fw(ident.sw, ident.hw)
+    if ident.manufacturer != 0xB5:
+        return identity
+
+    try:
+        chunks = [
+            transport.send_proto(dst, 0xB5, 0x09, bytes((qq,))) for qq in (0x24, 0x25, 0x26, 0x27)
+        ]
+        scan_id = parse_vaillant_scan_id_chunks(chunks)
+    except Exception:
+        return identity
+
+    identity["model"] = _na(scan_id.model_number)
+    identity["serial"] = _na(scan_id.serial_number)
+    return identity
+
+
+def _build_scan_session_preface(
+    *,
+    dst: int,
+    endpoint: str,
+    identity: dict[str, str] | None = None,
+) -> ScanSessionPreface:
+    data = identity or {}
+    return ScanSessionPreface(
+        app_line=f"helianthus-vrc-explorer v{__version__}",
+        scan_line=f"Scanning VRC Regulator (B524) at address 0x{dst:02X}",
+        rows=(
+            ("Device", _na(data.get("device"))),
+            ("Model", _na(data.get("model"))),
+            ("Serial", _na(data.get("serial"))),
+            ("Firmware", _na(data.get("firmware"))),
+            ("ebusd", endpoint),
+            ("Started", datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")),
+        ),
+    )
+
+
+def _emit_non_tty_session_preface(preface: ScanSessionPreface) -> None:
+    typer.echo(preface.app_line, err=True)
+    typer.echo(preface.scan_line, err=True)
+    for label, value in preface.rows:
+        typer.echo(f"{label}: {value}", err=True)
 
 
 def _parse_u8_address(value: str) -> int:
@@ -223,6 +299,12 @@ def scan(
             origin = fixture_source or "vrc720_full_scan.json"
             typer.echo(f"Invalid JSON fixture: {origin} ({exc})", err=True)
             raise typer.Exit(2) from exc
+        preface = _build_scan_session_preface(
+            dst=dst_u8,
+            endpoint="n/a (dry-run fixture)",
+            identity=None,
+        )
+        _emit_non_tty_session_preface(preface)
     else:
         b509_ranges: list[tuple[int, int]] = []
         if b509_range:
@@ -237,33 +319,36 @@ def scan(
 
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
         title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
-        subtitle_lines = [
-            f"Started: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')}",
-            f"ebusd: {host}:{port}",
-            f"Planner: {planner_ui_value} (preset={preset_value})",
-        ]
-        with (
-            make_scan_observer(
+        subtitle_lines = [f"Planner: {planner_ui_value} (preset={preset_value})"]
+        with transport.session():
+            identity = _probe_scan_identity(transport, dst=dst_u8)
+            preface = _build_scan_session_preface(
+                dst=dst_u8,
+                endpoint=f"{host}:{port}",
+                identity=identity,
+            )
+            if not console.is_terminal:
+                _emit_non_tty_session_preface(preface)
+            with make_scan_observer(
                 console=console,
                 title=title,
                 subtitle_lines=subtitle_lines,
                 show_tips=not no_tips,
-            ) as observer,
-            transport.session(),
-        ):
-            artifact = scan_vrc(
-                transport,
-                dst=dst_u8,
-                b509_ranges=b509_ranges,
-                ebusd_host=host,
-                ebusd_port=port,
-                ebusd_schema=ebusd_schema,
-                myvaillant_map=myvaillant_map,
-                observer=observer,
-                console=console,
-                planner_ui=cast(PlannerUiMode, planner_ui_value),
-                planner_preset=cast(PlannerPreset, preset_value),
-            )
+                session_preface=preface,
+            ) as observer:
+                artifact = scan_vrc(
+                    transport,
+                    dst=dst_u8,
+                    b509_ranges=b509_ranges,
+                    ebusd_host=host,
+                    ebusd_port=port,
+                    ebusd_schema=ebusd_schema,
+                    myvaillant_map=myvaillant_map,
+                    observer=observer,
+                    console=console,
+                    planner_ui=cast(PlannerUiMode, planner_ui_value),
+                    planner_preset=cast(PlannerPreset, preset_value),
+                )
 
     meta_obj = artifact.get("meta")
     if isinstance(meta_obj, dict):
