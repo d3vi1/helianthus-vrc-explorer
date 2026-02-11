@@ -5,7 +5,13 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from helianthus_vrc_explorer import __version__
-from helianthus_vrc_explorer.cli import _load_default_dry_run_fixture_text, app
+from helianthus_vrc_explorer.cli import (
+    _build_scan_session_preface,
+    _format_fw,
+    _load_default_dry_run_fixture_text,
+    _probe_scan_identity,
+    app,
+)
 
 
 def test_version_prints_version() -> None:
@@ -115,3 +121,52 @@ def test_default_dry_run_fixture_is_bundled() -> None:
     fixture_text, fixture_source = _load_default_dry_run_fixture_text()
     assert fixture_text is not None
     assert fixture_source == "packaged:vrc720_full_scan.json"
+
+
+def test_format_fw() -> None:
+    assert _format_fw("0507", "1704") == "SW 0507 / HW 1704"
+    assert _format_fw("", "") == "n/a"
+    assert _format_fw("0507", "") == "SW 0507 / HW n/a"
+
+
+def test_build_scan_session_preface() -> None:
+    preface = _build_scan_session_preface(
+        dst=0x15,
+        endpoint="127.0.0.1:8888",
+        identity={
+            "device": "VRC 720f/2 (BASV2)",
+            "model": "0020262148",
+            "serial": "21213400202621480082014267N7",
+            "firmware": "SW 0507 / HW 1704",
+        },
+    )
+    assert preface.app_line == f"helianthus-vrc-explorer v{__version__}"
+    assert preface.scan_line == "Scanning VRC Regulator (B524) at address 0x15"
+    assert ("Device", "VRC 720f/2 (BASV2)") in preface.rows
+    assert ("ebusd", "127.0.0.1:8888") in preface.rows
+
+
+class _FakeTransport:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int, bytes]] = []
+
+    def send_proto(self, dst: int, primary: int, secondary: int, payload: bytes) -> bytes:
+        self.calls.append((primary, secondary, payload))
+        if (primary, secondary) == (0x07, 0x04):
+            return bytes.fromhex("b556524320373230662f3205071704")
+        qq = payload[0] if payload else 0
+        chunks = {
+            0x24: b"\x0021213400",
+            0x25: b"\x0020262148",
+            0x26: b"\x0000820142",
+            0x27: b"\x0067N7    ",
+        }
+        return chunks[qq]
+
+
+def test_probe_scan_identity() -> None:
+    identity = _probe_scan_identity(_FakeTransport(), dst=0x15)  # type: ignore[arg-type]
+    assert identity["device"] == "VRC 720f/2"
+    assert identity["model"] == "0020262148"
+    assert identity["serial"] != "n/a"
+    assert identity["firmware"] == "SW 0507 / HW 1704"

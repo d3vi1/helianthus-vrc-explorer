@@ -4,7 +4,9 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 
-from rich.console import Console, Group
+from rich import box
+from rich.console import Console, Group, RenderableType
+from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -14,6 +16,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 
 from ..scanner.observer import ScanObserver
@@ -42,6 +45,29 @@ class _Task:
     id: TaskID
     phase: str
     total: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScanSessionPreface:
+    app_line: str
+    scan_line: str
+    rows: tuple[tuple[str, str], ...]
+
+
+def _render_session_preface(preface: ScanSessionPreface) -> Panel:
+    rows = Table.grid(expand=True)
+    rows.add_column(style="bold")
+    rows.add_column()
+    for label, value in preface.rows:
+        rows.add_row(f"{label}:", value)
+
+    body = Group(
+        Text(preface.app_line, style="bold"),
+        Text(preface.scan_line),
+        Rule(style="dim"),
+        rows,
+    )
+    return Panel(body, box=box.ROUNDED)
 
 
 class NullScanObserver(AbstractContextManager["NullScanObserver"], ScanObserver):
@@ -83,11 +109,13 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
         title: str,
         subtitle_lines: list[str] | None = None,
         show_tips: bool = True,
+        session_preface: ScanSessionPreface | None = None,
     ) -> None:
         self._console = console
         self._title = title
         self._subtitle_lines = subtitle_lines or []
         self._show_tips = show_tips
+        self._session_preface = session_preface
         self._started = False
         self._suspend_depth = 0
         self._progress = Progress(
@@ -107,7 +135,11 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
     def __enter__(self) -> RichScanObserver:
         self._progress.start()
         self._started = True
-        header_parts: list[Text | Rule] = [Rule(self._title, style="dim")]
+        header_parts: list[RenderableType] = []
+        if self._session_preface is None:
+            header_parts.append(Rule(self._title, style="dim"))
+        else:
+            header_parts.append(_render_session_preface(self._session_preface))
         for line in self._subtitle_lines:
             header_parts.append(Text(line, style="dim"))
         if self._show_tips:
@@ -211,6 +243,7 @@ def make_scan_observer(
     title: str,
     subtitle_lines: list[str] | None = None,
     show_tips: bool = True,
+    session_preface: ScanSessionPreface | None = None,
 ) -> AbstractContextManager[ScanObserver]:
     if console.is_terminal:
         return RichScanObserver(
@@ -218,5 +251,6 @@ def make_scan_observer(
             title=title,
             subtitle_lines=subtitle_lines,
             show_tips=show_tips,
+            session_preface=session_preface,
         )
     return NullScanObserver()
