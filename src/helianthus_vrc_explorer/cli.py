@@ -116,8 +116,7 @@ def _probe_scan_identity(
 
     try:
         chunks = [
-            transport.send_proto(dst, 0xB5, 0x09, bytes((qq,)))
-            for qq in (0x24, 0x25, 0x26, 0x27)
+            transport.send_proto(dst, 0xB5, 0x09, bytes((qq,))) for qq in (0x24, 0x25, 0x26, 0x27)
         ]
         scan_id = parse_vaillant_scan_id_chunks(chunks)
     except Exception:
