@@ -11,6 +11,7 @@ from helianthus_vrc_explorer.scanner.plan import (
     parse_int_set,
     parse_int_token,
 )
+from helianthus_vrc_explorer.ui.planner import _format_seconds
 
 
 def test_parse_int_token_accepts_decimal_and_hex() -> None:
@@ -64,3 +65,8 @@ def test_build_work_queue_skips_done_tasks() -> None:
         RegisterTask(group=0x02, instance=0x00, register=0x0000),
         RegisterTask(group=0x02, instance=0x00, register=0x0002),
     ]
+
+
+def test_format_seconds_normalizes_boundaries() -> None:
+    assert _format_seconds(480.0) == "8m"
+    assert _format_seconds(481.0) == "8m 1s"

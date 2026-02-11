@@ -7,7 +7,7 @@ import sys
 import time
 from collections import deque
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from rich.console import Console
 
@@ -16,7 +16,7 @@ from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
 from ..transport.base import TransportInterface, emit_trace_label
 from ..transport.instrumented import CountingTransport
-from ..ui.planner import PlannerGroup, prompt_scan_plan
+from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, prompt_scan_plan
 from .b509 import scan_b509
 from .director import GROUP_CONFIG, classify_groups, discover_groups
 from .observer import ScanObserver
@@ -34,6 +34,8 @@ def _hex_u16(value: int) -> str:
 
 _LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
 _REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
+
+PlannerUiMode = Literal["auto", "textual", "classic"]
 
 
 def _entry_has_valid_value(entry: RegisterEntry) -> bool:
@@ -53,6 +55,27 @@ def _entry_has_valid_value(entry: RegisterEntry) -> bool:
     if value is None:
         return False
     return not (isinstance(value, float) and math.isnan(value))
+
+
+def _resolve_planner_mode(
+    *,
+    interactive: bool,
+    planner_ui: PlannerUiMode,
+    observer: ScanObserver | None,
+) -> Literal["disabled", "textual", "classic"]:
+    if not interactive:
+        return "disabled"
+    if planner_ui == "classic":
+        return "classic"
+    if planner_ui == "textual":
+        return "textual"
+    try:
+        import textual  # noqa: F401, PLC0415
+    except Exception:
+        if observer is not None:
+            observer.log("Textual UI unavailable; falling back to classic planner.", level="warn")
+        return "classic"
+    return "textual"
 
 
 class _PlannerHotkeyReader(contextlib.AbstractContextManager["_PlannerHotkeyReader"]):
@@ -142,6 +165,8 @@ def scan_b524(
     myvaillant_map: MyvaillantRegisterMap | None = None,
     observer: ScanObserver | None = None,
     console: Console | None = None,
+    planner_ui: PlannerUiMode = "auto",
+    planner_preset: PlannerPreset = "recommended",
 ) -> dict[str, Any]:
     """Scan a VRC regulator using B524 and return a JSON-serializable artifact.
 
@@ -198,6 +223,16 @@ def scan_b524(
             counting_transport.counters.send_calls - group_discovery_start_calls
         )
         classified = classify_groups(discovered, observer=observer)
+        unknown_groups = sorted(
+            group.group for group in classified if group.group not in GROUP_CONFIG
+        )
+        if unknown_groups and observer is not None:
+            unknown_text = ", ".join(f"0x{gg:02X}" for gg in unknown_groups)
+            observer.log(
+                f"Found {len(unknown_groups)} unknown groups ({unknown_text}); "
+                "skipped by default (enable in planner).",
+                level="warn",
+            )
         if observer is not None:
             observer.phase_finish("group_discovery")
             observer.log(f"Discovered {len(classified)} groups", level="info")
@@ -231,12 +266,6 @@ def scan_b524(
 
             config = GROUP_CONFIG.get(group.group)
             if config is None:
-                if observer is not None:
-                    observer.log(
-                        f"Unknown group GG=0x{group.group:02X} (disabled by default; "
-                        "enable via planner to scan)",
-                        level="info",
-                    )
                 continue
 
             if group.descriptor != 1.0:
@@ -264,8 +293,9 @@ def scan_b524(
 
             if observer is not None:
                 observer.log(
-                    f"GG=0x{group.group:02X} {group.name}: present {present_count}/{ii_max + 1} "
-                    f"rr_max=0x{rr_max:04X} ({rr_max + 1} regs/instance)",
+                    f"GG=0x{group.group:02X} {group.name}: "
+                    f"{present_count}/{ii_max + 1} present, "
+                    f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
                     level="info",
                 )
 
@@ -316,84 +346,109 @@ def scan_b524(
             and sys.stdin.isatty()
             and observer is not None
         )
+        planner_mode = _resolve_planner_mode(
+            interactive=interactive,
+            planner_ui=planner_ui,
+            observer=observer,
+        )
         planner_groups: list[PlannerGroup] = []
-        if interactive and console is not None and observer is not None:
-            for group in classified:
-                config = GROUP_CONFIG.get(group.group)
-                if config is None:
-                    rr_max_default = 0x30
-                    ii_max_default: int | None
-                    present_instances_default: tuple[int, ...]
-                    if group.descriptor == 1.0:
-                        ii_max_default = 0x0A
-                        present_instances_default = tuple(range(0x00, 0x0A + 1))
-                    else:
-                        ii_max_default = None
-                        present_instances_default = (0x00,)
-                    planner_groups.append(
-                        PlannerGroup(
-                            group=group.group,
-                            name=group.name,
-                            descriptor=group.descriptor,
-                            known=False,
-                            ii_max=ii_max_default,
-                            rr_max=rr_max_default,
-                            present_instances=present_instances_default,
-                        )
-                    )
-                    continue
-
-                group_obj = artifact["groups"][_hex_u8(group.group)]
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            if config is None:
+                rr_max_default = 0x30
+                ii_max_default: int | None
+                present_instances_default: tuple[int, ...]
                 if group.descriptor == 1.0:
-                    ii_max = int(config["ii_max"])
-                    present_instances_for_planner: list[int] = [
-                        int(ii_key, 0)
-                        for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
-                        if isinstance(ii_obj, dict) and ii_obj.get("present") is True
-                    ]
-                    planner_groups.append(
-                        PlannerGroup(
-                            group=group.group,
-                            name=group.name,
-                            descriptor=group.descriptor,
-                            known=True,
-                            ii_max=ii_max,
-                            rr_max=int(config["rr_max"]),
-                            present_instances=tuple(sorted(present_instances_for_planner)),
-                        )
-                    )
+                    ii_max_default = 0x0A
+                    present_instances_default = tuple(range(0x00, 0x0A + 1))
                 else:
-                    planner_groups.append(
-                        PlannerGroup(
-                            group=group.group,
-                            name=group.name,
-                            descriptor=group.descriptor,
-                            known=True,
-                            ii_max=None,
-                            rr_max=int(config["rr_max"]),
-                            present_instances=(0x00,),
-                        )
+                    ii_max_default = None
+                    present_instances_default = (0x00,)
+                planner_groups.append(
+                    PlannerGroup(
+                        group=group.group,
+                        name=group.name,
+                        descriptor=group.descriptor,
+                        known=False,
+                        ii_max=ii_max_default,
+                        rr_max=rr_max_default,
+                        present_instances=present_instances_default,
                     )
+                )
+                continue
+
+            group_obj = artifact["groups"][_hex_u8(group.group)]
+            if group.descriptor == 1.0:
+                ii_max = int(config["ii_max"])
+                present_instances_for_planner: list[int] = [
+                    int(ii_key, 0)
+                    for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
+                    if isinstance(ii_obj, dict) and ii_obj.get("present") is True
+                ]
+                planner_groups.append(
+                    PlannerGroup(
+                        group=group.group,
+                        name=group.name,
+                        descriptor=group.descriptor,
+                        known=True,
+                        ii_max=ii_max,
+                        rr_max=int(config["rr_max"]),
+                        present_instances=tuple(sorted(present_instances_for_planner)),
+                    )
+                )
+            else:
+                planner_groups.append(
+                    PlannerGroup(
+                        group=group.group,
+                        name=group.name,
+                        descriptor=group.descriptor,
+                        known=True,
+                        ii_max=None,
+                        rr_max=int(config["rr_max"]),
+                        present_instances=(0x00,),
+                    )
+                )
+
+        if planner_preset != "custom":
+            plan = build_plan_from_preset(
+                planner_groups,
+                preset=planner_preset,
+            )
+
+        if planner_mode != "disabled" and console is not None and observer is not None:
             with observer.suspend():
                 planner_default_plan = dict(plan)
-                # Interactive planner default: for instanced groups, preselect all slots.
-                for planner_group in planner_groups:
-                    group_plan = planner_default_plan.get(planner_group.group)
-                    if group_plan is None:
-                        continue
-                    if planner_group.ii_max is None:
-                        continue
-                    planner_default_plan[planner_group.group] = GroupScanPlan(
-                        group=group_plan.group,
-                        rr_max=group_plan.rr_max,
-                        instances=tuple(range(0x00, planner_group.ii_max + 1)),
+                if planner_mode == "textual":
+                    try:
+                        from ..ui.planner_textual import run_textual_scan_plan
+                    except Exception as exc:
+                        if planner_ui == "textual":
+                            raise RuntimeError(
+                                "Textual planner requested but unavailable."
+                            ) from exc
+                        observer.log(
+                            "Textual planner unavailable; falling back to classic planner.",
+                            level="warn",
+                        )
+                        planner_mode = "classic"
+                    else:
+                        selected = run_textual_scan_plan(
+                            planner_groups,
+                            request_rate_rps=request_rate_rps,
+                            default_plan=planner_default_plan,
+                            default_preset=planner_preset,
+                        )
+                        if selected is None:
+                            raise KeyboardInterrupt
+                        plan = selected
+                if planner_mode == "classic":
+                    plan = prompt_scan_plan(
+                        console,
+                        planner_groups,
+                        request_rate_rps=request_rate_rps,
+                        default_plan=planner_default_plan,
+                        default_preset=planner_preset,
                     )
-                plan = prompt_scan_plan(
-                    console,
-                    planner_groups,
-                    request_rate_rps=request_rate_rps,
-                    default_plan=planner_default_plan,
-                )
 
         artifact["meta"]["scan_plan"] = {
             "groups": {_hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())},
@@ -411,18 +466,37 @@ def scan_b524(
         active_start = time.perf_counter()
         active_elapsed = 0.0
 
-        with _PlannerHotkeyReader(enabled=interactive) as hotkeys:
+        with _PlannerHotkeyReader(enabled=(planner_mode != "disabled")) as hotkeys:
             while work_queue:
-                if interactive and console is not None and observer is not None and hotkeys.poll():
+                if (
+                    planner_mode != "disabled"
+                    and console is not None
+                    and observer is not None
+                    and hotkeys.poll()
+                ):
                     # Pause progress rendering and allow replanning without rewriting scanned data.
                     active_elapsed += time.perf_counter() - active_start
                     with hotkeys.suspend(), observer.suspend():
-                        plan = prompt_scan_plan(
-                            console,
-                            planner_groups,
-                            request_rate_rps=request_rate_rps,
-                            default_plan=plan,
-                        )
+                        if planner_mode == "textual":
+                            from ..ui.planner_textual import run_textual_scan_plan
+
+                            selected = run_textual_scan_plan(
+                                planner_groups,
+                                request_rate_rps=request_rate_rps,
+                                default_plan=plan,
+                                default_preset=planner_preset,
+                            )
+                            if selected is None:
+                                raise KeyboardInterrupt
+                            plan = selected
+                        else:
+                            plan = prompt_scan_plan(
+                                console,
+                                planner_groups,
+                                request_rate_rps=request_rate_rps,
+                                default_plan=plan,
+                                default_preset=planner_preset,
+                            )
                     artifact["meta"]["scan_plan"]["groups"] = {
                         _hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())
                     }
@@ -559,6 +633,8 @@ def scan_vrc(
     myvaillant_map: MyvaillantRegisterMap | None = None,
     observer: ScanObserver | None = None,
     console: Console | None = None,
+    planner_ui: PlannerUiMode = "auto",
+    planner_preset: PlannerPreset = "recommended",
 ) -> dict[str, Any]:
     """Run the full VRC scan flow: B524 primary scan, then B509 register dump."""
 
@@ -571,6 +647,8 @@ def scan_vrc(
         myvaillant_map=myvaillant_map,
         observer=observer,
         console=console,
+        planner_ui=planner_ui,
+        planner_preset=planner_preset,
     )
     meta = artifact.get("meta")
     if isinstance(meta, dict) and bool(meta.get("incomplete", False)):

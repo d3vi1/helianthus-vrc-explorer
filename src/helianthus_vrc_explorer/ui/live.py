@@ -3,14 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from rich.console import Console, Group
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
     Progress,
-    SpinnerColumn,
     TaskID,
     TextColumn,
     TimeElapsedColumn,
@@ -28,16 +26,15 @@ _PHASE_LABELS: dict[str, str] = {
 }
 
 
-def _now_ts() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _styled(level: str) -> str:
+def _styled(level: str) -> tuple[str, str]:
+    icon = "•"
     if level == "warn":
-        return "yellow"
+        return ("⚠", "yellow")
     if level == "error":
-        return "red"
-    return "white"
+        return ("✗", "red")
+    if level == "info":
+        return ("✓", "green")
+    return (icon, "white")
 
 
 @dataclass(slots=True)
@@ -79,13 +76,21 @@ class NullScanObserver(AbstractContextManager["NullScanObserver"], ScanObserver)
 class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver):
     """Rich-based observer used for interactive scans (TTY)."""
 
-    def __init__(self, *, console: Console, title: str) -> None:
+    def __init__(
+        self,
+        *,
+        console: Console,
+        title: str,
+        subtitle_lines: list[str] | None = None,
+        show_tips: bool = True,
+    ) -> None:
         self._console = console
         self._title = title
+        self._subtitle_lines = subtitle_lines or []
+        self._show_tips = show_tips
         self._started = False
         self._suspend_depth = 0
         self._progress = Progress(
-            SpinnerColumn(style="cyan"),
             TextColumn("{task.description}"),
             BarColumn(bar_width=None),
             MofNCompleteColumn(),
@@ -102,16 +107,24 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
     def __enter__(self) -> RichScanObserver:
         self._progress.start()
         self._started = True
+        header_parts: list[Text | Rule] = [Rule(self._title, style="dim")]
+        for line in self._subtitle_lines:
+            header_parts.append(Text(line, style="dim"))
+        if self._show_tips:
+            header_parts.extend(
+                [
+                    Text(
+                        "Tip: set `--trace-file` to capture ebusd request/response exchanges.",
+                        style="dim",
+                    ),
+                    Text(
+                        "Tip: press `p` during Register Scan to open the scan planner.",
+                        style="dim",
+                    ),
+                ]
+            )
         header = Group(
-            Rule(self._title, style="dim"),
-            Text(
-                "Tip: set `--trace-file` to capture ebusd request/response exchanges.",
-                style="dim",
-            ),
-            Text(
-                "Tip: press `p` during Register Scan to open the scan planner.",
-                style="dim",
-            ),
+            *header_parts,
         )
         self._progress.console.print(header)
         return self
@@ -169,9 +182,8 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
         self._progress.update(task.id, status=message)
 
     def log(self, message: str, *, level: str = "info") -> None:
-        ts = _now_ts()
-        style = _styled(level)
-        self._progress.console.print(f"[dim]{ts}[/dim] [{style}]{message}[/{style}]")
+        icon, style = _styled(level)
+        self._progress.console.print(f"[{style}]{icon} {message}[/{style}]")
 
     def suspend(self) -> AbstractContextManager[None]:
         @contextmanager
@@ -193,7 +205,18 @@ class RichScanObserver(AbstractContextManager["RichScanObserver"], ScanObserver)
         return _cm()
 
 
-def make_scan_observer(*, console: Console, title: str) -> AbstractContextManager[ScanObserver]:
+def make_scan_observer(
+    *,
+    console: Console,
+    title: str,
+    subtitle_lines: list[str] | None = None,
+    show_tips: bool = True,
+) -> AbstractContextManager[ScanObserver]:
     if console.is_terminal:
-        return RichScanObserver(console=console, title=title)
+        return RichScanObserver(
+            console=console,
+            title=title,
+            subtitle_lines=subtitle_lines,
+            show_tips=show_tips,
+        )
     return NullScanObserver()

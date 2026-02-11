@@ -168,6 +168,7 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
         dst=0x15,
         observer=_NoopObserver(),
         console=Console(force_terminal=True),
+        planner_ui="classic",
     )
 
     assert "0x69" in artifact["groups"]
@@ -205,6 +206,7 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
         dst=0x15,
         observer=_NoopObserver(),
         console=Console(force_terminal=True),
+        planner_ui="classic",
     )
 
     group = artifact["groups"]["0x02"]
@@ -218,6 +220,70 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
         rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x01
     }
     assert scanned_registers == set(range(0x0002 + 1))
+
+
+def test_scan_b524_applies_aggressive_preset_to_textual_default_plan(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    transport = DummyTransport(_write_fixture_unknown_group_69(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(
+        _groups,
+        *,
+        request_rate_rps,
+        default_plan,
+        default_preset,
+    ):
+        captured["default_preset"] = default_preset
+        captured["default_plan"] = default_plan
+        captured["request_rate_rps"] = request_rate_rps
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="aggressive",
+    )
+
+    assert captured["default_preset"] == "aggressive"
+    default_plan = captured["default_plan"]
+    assert isinstance(default_plan, dict)
+    assert 0x69 in default_plan
+    group_plan = default_plan[0x69]
+    assert group_plan.rr_max == 0x30
+    assert group_plan.instances == tuple(range(0x0A + 1))
+
+
+def test_scan_b524_applies_preset_in_non_interactive_mode(tmp_path: Path) -> None:
+    artifact = scan_b524(
+        DummyTransport(_write_fixture_unknown_group_69(tmp_path)),
+        dst=0x15,
+        planner_ui="auto",
+        planner_preset="aggressive",
+    )
+
+    scan_plan = artifact["meta"]["scan_plan"]["groups"]
+    assert "0x69" in scan_plan
+    assert scan_plan["0x69"]["rr_max"] == "0x0030"
+    assert scan_plan["0x69"]["instances"] == [f"0x{ii:02x}" for ii in range(0x0A + 1)]
+
+    # With aggressive preset we scan unknown groups and all instance slots even when not present.
+    scanned_absent_instance = artifact["groups"]["0x69"]["instances"]["0x01"]
+    assert scanned_absent_instance["present"] is False
+    assert "0x0030" in scanned_absent_instance["registers"]
 
 
 def test_scan_b524_marks_incomplete_on_keyboard_interrupt(tmp_path: Path) -> None:

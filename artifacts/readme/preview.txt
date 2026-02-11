@@ -1,0 +1,29 @@
+───────────────── helianthus-vrc-explorer scan (B524) dst=0x15 ─────────────────
+Started: 2026-02-11 19:12:31Z
+ebusd: 127.0.0.1:8888
+Planner: auto (preset=recommended)
+✓ Starting scan dst=0x15
+✓ Discovered group GG=0x00 desc=3.0
+✓ Discovered group GG=0x01 desc=3.0
+✓ Discovered group GG=0x02 desc=1.0
+✓ Discovered group GG=0x03 desc=1.0
+✓ Discovered group GG=0x04 desc=6.0
+✓ Discovered group GG=0x05 desc=1.0
+✓ Discovered group GG=0x06 desc=1.0
+✓ Discovered group GG=0x07 desc=1.0
+✓ Discovered group GG=0x09 desc=1.0
+✓ Discovered group GG=0x0A desc=1.0
+✓ Discovered group GG=0x0C desc=1.0
+✓ Directory terminator at GG=0x12 (NaN)
+⚠ Found 2 unknown groups (0x06, 0x07); skipped by default (enable in planner).
+✓ Discovered 11 groups
+✓ GG=0x02 Heating Circuits: 4/11 present, RR_max=0x0021 (34 registers/instance)
+✓ GG=0x03 Zones: 2/11 present, RR_max=0x002F (48 registers/instance)
+✓ GG=0x05 Hot Water Cylinder: 11/11 present, RR_max=0x000F (16
+registers/instance)
+✓ GG=0x09 RoomSensors: 1/11 present, RR_max=0x002F (48 registers/instance)
+✓ GG=0x0A RoomState: 1/11 present, RR_max=0x003F (64 registers/instance)
+✓ GG=0x0C Unrecognized: 1/11 present, RR_max=0x003F (64 registers/instance)
+Group Discovery    ━━━━━━━━━━━━ 19/19     0:00:27
+Instance Discovery ━━━━━━━━━━━━ 66/66     0:02:42
+Register Scan      ━━━━━━━━━━━━   68/3574 0:01:54 Read GG=0x00 II=0x00 RR=0x0043
