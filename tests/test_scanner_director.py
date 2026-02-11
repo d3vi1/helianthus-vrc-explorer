@@ -113,5 +113,5 @@ def test_classify_groups_warns_on_descriptor_mismatch(
     assert any("Descriptor mismatch for GG=0x02" in record.message for record in caplog.records)
 
 
-def test_group_00_rr_max_is_0x01ff() -> None:
-    assert GROUP_CONFIG[0x00]["rr_max"] == 0x01FF
+def test_group_00_rr_max_is_0x00ff() -> None:
+    assert GROUP_CONFIG[0x00]["rr_max"] == 0x00FF
