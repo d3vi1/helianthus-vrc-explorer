@@ -134,6 +134,7 @@ def _parse_ebusd_info_lines(lines: Sequence[str]) -> None:
     payload is treated as success.
     """
 
+    saw_non_err_line = False
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
@@ -143,6 +144,8 @@ def _parse_ebusd_info_lines(lines: Sequence[str]) -> None:
             if "timeout" in lowered or "timed out" in lowered or "no answer" in lowered:
                 raise TransportTimeout(line)
             raise TransportError(line)
+        saw_non_err_line = True
+    if saw_non_err_line:
         return
     raise TransportError("Empty ebusd response")
 
@@ -246,7 +249,13 @@ class EbusdTcpTransport(TransportInterface):
 
         self._session_depth += 1
         if self._session_depth == 1:
-            self._open_session()
+            try:
+                self._open_session()
+            except Exception:
+                self._session_depth -= 1
+                if self._session_depth < 0:
+                    self._session_depth = 0
+                raise
         try:
             yield self
         finally:

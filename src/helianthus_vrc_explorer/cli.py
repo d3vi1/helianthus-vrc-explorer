@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 from typing import cast
 
@@ -32,6 +33,50 @@ app = typer.Typer(
     no_args_is_help=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+
+def _load_default_myvaillant_map() -> tuple[MyvaillantRegisterMap | None, str | None]:
+    """Load bundled default myVaillant mapping for installed/package use."""
+
+    try:
+        resource = resources.files("helianthus_vrc_explorer.data").joinpath(
+            "myvaillant_register_map.csv"
+        )
+        with resources.as_file(resource) as map_path:
+            return (
+                MyvaillantRegisterMap.from_path(map_path),
+                f"myvaillant_map:{map_path.name}",
+            )
+    except Exception:
+        # Dev fallback (editable checkout) when package resources are unavailable.
+        fallback = Path(__file__).resolve().parents[2] / "data" / "myvaillant_register_map.csv"
+        if fallback.exists():
+            try:
+                return (
+                    MyvaillantRegisterMap.from_path(fallback),
+                    f"myvaillant_map:{fallback.name}",
+                )
+            except Exception:
+                return (None, None)
+        return (None, None)
+
+
+def _load_default_dry_run_fixture_text() -> tuple[str | None, str | None]:
+    """Load bundled default dry-run fixture JSON text."""
+
+    try:
+        resource = resources.files("helianthus_vrc_explorer.fixtures").joinpath(
+            "vrc720_full_scan.json"
+        )
+        return (resource.read_text(encoding="utf-8"), "packaged:vrc720_full_scan.json")
+    except Exception:
+        fallback = Path(__file__).resolve().parents[2] / "fixtures" / "vrc720_full_scan.json"
+        if fallback.exists():
+            try:
+                return (fallback.read_text(encoding="utf-8"), str(fallback))
+            except Exception:
+                return (None, None)
+        return (None, None)
 
 
 def _parse_u8_address(value: str) -> int:
@@ -158,29 +203,25 @@ def scan(
 
     myvaillant_map: MyvaillantRegisterMap | None = None
     myvaillant_map_source: str | None = None
-    resolved_myvaillant_map_path = myvaillant_map_path
-    if resolved_myvaillant_map_path is None:
-        default_map_path = (
-            Path(__file__).resolve().parents[2] / "data" / "myvaillant_register_map.csv"
-        )
-        if default_map_path.exists():
-            resolved_myvaillant_map_path = default_map_path
-    if resolved_myvaillant_map_path is not None:
+    if myvaillant_map_path is not None:
         try:
-            myvaillant_map = MyvaillantRegisterMap.from_path(resolved_myvaillant_map_path)
-            myvaillant_map_source = f"myvaillant_map:{resolved_myvaillant_map_path.name}"
+            myvaillant_map = MyvaillantRegisterMap.from_path(myvaillant_map_path)
+            myvaillant_map_source = f"myvaillant_map:{myvaillant_map_path.name}"
         except Exception as exc:
             typer.echo(f"Warning: failed to load myVaillant mapping: {exc}", err=True)
+    else:
+        myvaillant_map, myvaillant_map_source = _load_default_myvaillant_map()
 
     if dry_run:
-        fixture_path = Path(__file__).resolve().parents[2] / "fixtures" / "vrc720_full_scan.json"
-        if not fixture_path.exists():
-            typer.echo(f"Fixture not found: {fixture_path}", err=True)
+        fixture_text, fixture_source = _load_default_dry_run_fixture_text()
+        if fixture_text is None:
+            typer.echo("Fixture not found: vrc720_full_scan.json", err=True)
             raise typer.Exit(2)
         try:
-            artifact = json.loads(fixture_path.read_text(encoding="utf-8"))
+            artifact = json.loads(fixture_text)
         except json.JSONDecodeError as exc:
-            typer.echo(f"Invalid JSON fixture: {fixture_path} ({exc})", err=True)
+            origin = fixture_source or "vrc720_full_scan.json"
+            typer.echo(f"Invalid JSON fixture: {origin} ({exc})", err=True)
             raise typer.Exit(2) from exc
     else:
         b509_ranges: list[tuple[int, int]] = []

@@ -5,7 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from helianthus_vrc_explorer import __version__
-from helianthus_vrc_explorer.cli import app
+from helianthus_vrc_explorer.cli import _load_default_dry_run_fixture_text, app
 
 
 def test_version_prints_version() -> None:
@@ -89,3 +89,29 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
 
     assert raw_hex_values
     bytes.fromhex(raw_hex_values[0])
+
+
+def test_scan_dry_run_loads_default_myvaillant_mapping(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dry-run",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    output_path = Path(result.stdout.strip())
+    artifact = json.loads(output_path.read_text(encoding="utf-8"))
+    schema_sources = artifact.get("meta", {}).get("schema_sources")
+    assert isinstance(schema_sources, list)
+    assert "myvaillant_map:myvaillant_register_map.csv" in schema_sources
+
+
+def test_default_dry_run_fixture_is_bundled() -> None:
+    fixture_text, fixture_source = _load_default_dry_run_fixture_text()
+    assert fixture_text is not None
+    assert fixture_source == "packaged:vrc720_full_scan.json"

@@ -46,6 +46,10 @@ def test_parse_str_cstring_empty_string() -> None:
     assert parse_typed_value("STR:*", b"\x00\x00") == ""
 
 
+def test_parse_str_cstring_stops_at_first_nul() -> None:
+    assert parse_typed_value("STR:*", b"zone\x00junk\x00") == "zone"
+
+
 def test_parse_hda3_date_u24le_ddmmyy() -> None:
     assert parse_typed_value("HDA:3", bytes.fromhex("060226")) == "2026-02-06"
 

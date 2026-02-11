@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import io
+
+from rich.console import Console
+
 from helianthus_vrc_explorer.ui.viewer import (
     apply_row_type_override,
     candidate_type_specs_for_length,
     cycle_type_spec,
     get_row_type_override,
+    run_results_viewer,
 )
 
 
@@ -73,3 +78,13 @@ def test_apply_row_type_override_persists_and_reparses_values() -> None:
         assert entry["type"] == "U32"
         assert entry["value"] == expected
         assert entry["error"] is None
+
+
+def test_run_results_viewer_requires_stdout_tty(monkeypatch) -> None:
+    artifact = {"meta": {}, "groups": {"0x00": {"instances": {}}}}
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+
+    changed = run_results_viewer(Console(force_terminal=True), artifact)
+
+    assert changed is False
