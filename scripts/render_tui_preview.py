@@ -86,7 +86,7 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Input transcript text file.")
     parser.add_argument("--png", required=True, help="Output PNG path.")
     parser.add_argument("--gif", required=True, help="Output GIF path.")
-    parser.add_argument("--duration", type=int, default=30, help="GIF duration in seconds.")
+    parser.add_argument("--duration", type=float, default=30.0, help="GIF duration in seconds.")
     parser.add_argument("--fps", type=int, default=8, help="GIF frames per second.")
     parser.add_argument("--columns", type=int, default=120, help="Rendered terminal width.")
     parser.add_argument("--rows", type=int, default=34, help="Rendered terminal height.")
@@ -105,7 +105,7 @@ def main() -> None:
         lines = ["(no output captured)"]
 
     font = _find_font(args.font_path)
-    total_frames = max(1, args.duration * args.fps)
+    total_frames = max(1, int(round(args.duration * args.fps)))
     frames: list[Image.Image] = []
     for i in range(total_frames):
         visible = max(1, int((i + 1) / total_frames * len(lines)))

@@ -37,13 +37,14 @@ Key scan UX flags:
   <img src="artifacts/readme/preview.png" alt="helianthus-vrc-explorer terminal preview">
 </picture>
 
-Regenerate preview assets (30s, transcript + GIF + PNG):
+Regenerate preview assets from first 5 minutes of autorun, sped up 10x (300s -> 30s):
 
 ```bash
-./scripts/capture_tui_preview.sh --duration 30
+./scripts/capture_tui_preview.sh --capture-seconds 300 --speedup 10
 ```
 
 Optional:
+- `--output-seconds 45` to override final animation duration
 - `--command "python -m helianthus_vrc_explorer scan ..."` to capture a different run
 - `--font-path "/path/to/Anonymous Pro.ttf"` to force font selection
 

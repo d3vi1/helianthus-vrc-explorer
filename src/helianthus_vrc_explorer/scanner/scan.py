@@ -16,7 +16,7 @@ from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
 from ..transport.base import TransportInterface, emit_trace_label
 from ..transport.instrumented import CountingTransport
-from ..ui.planner import PlannerGroup, PlannerPreset, prompt_scan_plan
+from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, prompt_scan_plan
 from .b509 import scan_b509
 from .director import GROUP_CONFIG, classify_groups, discover_groups
 from .observer import ScanObserver
@@ -410,7 +410,14 @@ def scan_b524(
                         )
                     )
             with observer.suspend():
-                planner_default_plan = dict(plan)
+                planner_default_plan: dict[int, GroupScanPlan]
+                if planner_preset == "custom":
+                    planner_default_plan = dict(plan)
+                else:
+                    planner_default_plan = build_plan_from_preset(
+                        planner_groups,
+                        preset=planner_preset,
+                    )
                 if planner_mode == "textual":
                     try:
                         from ..ui.planner_textual import run_textual_scan_plan

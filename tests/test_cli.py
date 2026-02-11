@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -18,9 +19,10 @@ def test_scan_command_is_present() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["scan", "--help"])
     assert result.exit_code == 0
-    assert "--planner-ui" in result.stdout
-    assert "--preset" in result.stdout
-    assert "--no-tips" in result.stdout
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", result.stdout)
+    assert "planner-ui" in plain
+    assert "preset" in plain
+    assert "no-tips" in plain
 
 
 def test_discover_command_is_present() -> None:
