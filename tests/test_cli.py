@@ -18,6 +18,9 @@ def test_scan_command_is_present() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["scan", "--help"])
     assert result.exit_code == 0
+    assert "--planner-ui" in result.stdout
+    assert "--preset" in result.stdout
+    assert "--no-tips" in result.stdout
 
 
 def test_discover_command_is_present() -> None:

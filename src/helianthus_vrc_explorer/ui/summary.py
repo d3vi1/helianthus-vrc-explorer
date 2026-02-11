@@ -144,17 +144,18 @@ def render_summary(console: Console, artifact: dict[str, Any], *, output_path: P
     table = Table(show_header=True, header_style="bold", box=None)
     table.add_column("Group", style="cyan", no_wrap=True)
     table.add_column("Name", style="white")
-    table.add_column("Desc", style="white", justify="right", no_wrap=True)
+    table.add_column("Type", style="white", justify="right", no_wrap=True)
     table.add_column("Instances", style="white", justify="right", no_wrap=True)
     table.add_column("Registers", style="white", justify="right", no_wrap=True)
     table.add_column("Errors", style="white", justify="right", no_wrap=True)
 
     for s in group_stats:
-        instances = (
-            f"{s.instances_present}/{s.instances_total}"
-            if s.instances_total > 0
-            else str(s.instances_present)
-        )
+        if s.instances_total == 1 and s.instances_present == 1:
+            instances = "singleton"
+        elif s.instances_total > 0:
+            instances = f"{s.instances_present}/{s.instances_total}"
+        else:
+            instances = str(s.instances_present)
         table.add_row(
             s.group,
             s.name,

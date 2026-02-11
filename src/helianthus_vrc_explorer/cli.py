@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import typer
 from rich.console import Console
@@ -13,13 +15,14 @@ from .protocol.basv import parse_scan_identification, parse_vaillant_scan_id_chu
 from .scanner.b509 import parse_b509_range
 from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
 from .scanner.register import is_instance_present
-from .scanner.scan import default_output_filename, scan_vrc
+from .scanner.scan import PlannerUiMode, default_output_filename, scan_vrc
 from .schema.ebusd_csv import EbusdCsvSchema
 from .schema.myvaillant_map import MyvaillantRegisterMap
 from .transport.base import TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 from .ui.html_report import render_html_report
 from .ui.live import make_scan_observer
+from .ui.planner import PlannerPreset
 from .ui.summary import render_summary
 from .ui.viewer import run_results_viewer
 
@@ -109,10 +112,40 @@ def scan(
             "If omitted, defaults to 0x2700..0x27FF."
         ),
     ),
+    planner_ui: str = typer.Option(  # noqa: B008
+        "auto",
+        "--planner-ui",
+        help="Interactive planner mode: auto, textual, or classic.",
+    ),
+    preset: str = typer.Option(  # noqa: B008
+        "recommended",
+        "--preset",
+        help="Planner preset: conservative, recommended, aggressive, or custom.",
+    ),
+    no_tips: bool = typer.Option(  # noqa: B008
+        False,
+        "--no-tips",
+        help="Hide scan header tips in interactive terminal mode.",
+    ),
 ) -> None:
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
     dst_u8 = _parse_u8_address(dst)
     console = Console(stderr=True)
+    planner_ui_value = planner_ui.strip().lower()
+    if planner_ui_value not in {"auto", "textual", "classic"}:
+        typer.echo(
+            "Invalid --planner-ui value. Expected one of: auto, textual, classic.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    preset_value = preset.strip().lower()
+    if preset_value not in {"conservative", "recommended", "aggressive", "custom"}:
+        typer.echo(
+            "Invalid --preset value. Expected one of: conservative, recommended, "
+            "aggressive, custom.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     ebusd_schema: EbusdCsvSchema | None = None
     ebusd_schema_source: str | None = None
@@ -163,7 +196,20 @@ def scan(
 
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
         title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
-        with make_scan_observer(console=console, title=title) as observer, transport.session():
+        subtitle_lines = [
+            f"Started: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')}",
+            f"ebusd: {host}:{port}",
+            f"Planner: {planner_ui_value} (preset={preset_value})",
+        ]
+        with (
+            make_scan_observer(
+                console=console,
+                title=title,
+                subtitle_lines=subtitle_lines,
+                show_tips=not no_tips,
+            ) as observer,
+            transport.session(),
+        ):
             artifact = scan_vrc(
                 transport,
                 dst=dst_u8,
@@ -174,6 +220,8 @@ def scan(
                 myvaillant_map=myvaillant_map,
                 observer=observer,
                 console=console,
+                planner_ui=cast(PlannerUiMode, planner_ui_value),
+                planner_preset=cast(PlannerPreset, preset_value),
             )
 
     meta_obj = artifact.get("meta")

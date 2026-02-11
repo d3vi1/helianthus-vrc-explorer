@@ -168,6 +168,7 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
         dst=0x15,
         observer=_NoopObserver(),
         console=Console(force_terminal=True),
+        planner_ui="classic",
     )
 
     assert "0x69" in artifact["groups"]
@@ -205,6 +206,7 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
         dst=0x15,
         observer=_NoopObserver(),
         console=Console(force_terminal=True),
+        planner_ui="classic",
     )
 
     group = artifact["groups"]["0x02"]

@@ -17,8 +17,35 @@ Helianthus VRC Explorer is a professional CLI tool for scanning Vaillant VRC hea
 
 ## Quick start (planned interface)
 ```bash
-python -m helianthus_vrc_explorer scan --dst 0x15 --host 127.0.0.1 --port 8888
+python -m helianthus_vrc_explorer scan \
+  --dst 0x15 \
+  --host 127.0.0.1 \
+  --port 8888 \
+  --planner-ui auto \
+  --preset recommended
 ```
+
+Key scan UX flags:
+- `--planner-ui auto|textual|classic`
+- `--preset conservative|recommended|aggressive|custom`
+- `--no-tips`
+- `--trace-file /path/to/trace.log`
+
+## TUI Preview
+<picture>
+  <source srcset="artifacts/readme/preview.gif" type="image/gif">
+  <img src="artifacts/readme/preview.png" alt="helianthus-vrc-explorer terminal preview">
+</picture>
+
+Regenerate preview assets (30s, transcript + GIF + PNG):
+
+```bash
+./scripts/capture_tui_preview.sh --duration 30
+```
+
+Optional:
+- `--command "python -m helianthus_vrc_explorer scan ..."` to capture a different run
+- `--font-path "/path/to/Anonymous Pro.ttf"` to force font selection
 
 ## Development
 Requirements: Python 3.12+
