@@ -1,7 +1,10 @@
 import json
 import re
+import struct
 from pathlib import Path
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
 from helianthus_vrc_explorer import __version__
@@ -10,6 +13,7 @@ from helianthus_vrc_explorer.cli import (
     _format_fw,
     _load_default_dry_run_fixture_text,
     _probe_scan_identity,
+    _resolve_scan_destination,
     app,
 )
 
@@ -29,6 +33,7 @@ def test_scan_command_is_present() -> None:
     assert "planner-ui" in plain
     assert "preset" in plain
     assert "no-tips" in plain
+    assert "auto" in plain
 
 
 def test_discover_command_is_present() -> None:
@@ -202,9 +207,116 @@ class _FakeTransport:
         return chunks[qq]
 
 
+class _AutoResolveTransport:
+    def __init__(
+        self,
+        *,
+        info_lines: list[str],
+        ident_payloads: dict[int, bytes],
+        descriptors: dict[int, bytes],
+    ) -> None:
+        self._info_lines = info_lines
+        self._ident_payloads = ident_payloads
+        self._descriptors = descriptors
+        self.info_calls = 0
+        self.send_proto_calls = 0
+        self.send_calls = 0
+
+    def command_lines(self, command: str, *, read_all: bool = False) -> list[str]:
+        assert command == "info"
+        assert read_all is True
+        self.info_calls += 1
+        return list(self._info_lines)
+
+    def send_proto(
+        self,
+        dst: int,
+        primary: int,
+        secondary: int,
+        payload: bytes,
+        *,
+        expect_response: bool = True,
+    ) -> bytes:
+        self.send_proto_calls += 1
+        if (dst, primary, secondary) == (0xFE, 0x07, 0xFE):
+            assert expect_response is False
+            return b""
+        assert (primary, secondary) == (0x07, 0x04)
+        return self._ident_payloads[dst]
+
+    def send(self, dst: int, payload: bytes) -> bytes:
+        self.send_calls += 1
+        return self._descriptors[dst]
+
+
 def test_probe_scan_identity() -> None:
     identity = _probe_scan_identity(_FakeTransport(), dst=0x15)  # type: ignore[arg-type]
     assert identity["device"] == "VRC 720f/2"
     assert identity["model"] == "0020262148"
     assert identity["serial"] != "n/a"
     assert identity["firmware"] == "SW 0507 / HW 1704"
+
+
+def test_resolve_scan_destination_explicit_skips_autodiscovery() -> None:
+    transport = _AutoResolveTransport(
+        info_lines=[],
+        ident_payloads={},
+        descriptors={},
+    )
+    assert _resolve_scan_destination(transport, dst="0x15") == 0x15
+    assert transport.info_calls == 0
+    assert transport.send_proto_calls == 0
+    assert transport.send_calls == 0
+
+
+def test_resolve_scan_destination_auto_prefers_0x15() -> None:
+    vaillant_ident = bytes.fromhex("b556524320373230662f3205071704")
+    descriptor = struct.pack("<f", 3.0)
+    transport = _AutoResolveTransport(
+        info_lines=[
+            "address 30: slave, scanned Vaillant;XYZ",
+            "address 15: slave, scanned Vaillant;XYZ",
+        ],
+        ident_payloads={
+            0x30: vaillant_ident,
+            0x15: vaillant_ident,
+        },
+        descriptors={
+            0x30: descriptor,
+            0x15: descriptor,
+        },
+    )
+    assert _resolve_scan_destination(transport, dst="auto") == 0x15
+
+
+def test_resolve_scan_destination_auto_picks_lowest_compatible_non_0x15() -> None:
+    vaillant_ident = bytes.fromhex("b556524320373230662f3205071704")
+    descriptor = struct.pack("<f", 3.0)
+    transport = _AutoResolveTransport(
+        info_lines=[
+            "address 30: slave, scanned Vaillant;XYZ",
+            "address 08: slave, scanned Vaillant;XYZ",
+        ],
+        ident_payloads={
+            0x30: vaillant_ident,
+            0x08: vaillant_ident,
+        },
+        descriptors={
+            0x30: descriptor,
+            0x08: descriptor,
+        },
+    )
+    assert _resolve_scan_destination(transport, dst="auto") == 0x08
+
+
+def test_resolve_scan_destination_auto_errors_when_no_compatible_target() -> None:
+    # Non-Vaillant 0704 payload (manufacturer byte != 0xB5).
+    non_vaillant_ident = bytes.fromhex("105652432d4e4f5001020304")
+    transport = _AutoResolveTransport(
+        info_lines=["address 08: slave, scanned device"],
+        ident_payloads={0x08: non_vaillant_ident},
+        descriptors={0x08: struct.pack("<f", 3.0)},
+    )
+    with pytest.raises(typer.Exit) as exc:
+        _resolve_scan_destination(transport, dst="auto")
+    assert exc.value.exit_code == 2
