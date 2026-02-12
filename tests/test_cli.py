@@ -36,6 +36,19 @@ def test_scan_command_is_present() -> None:
     assert "auto" in plain
 
 
+def test_scan_invalid_dst_fails_before_transport_setup(monkeypatch) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    def _fail_init(self, *_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("transport should not be initialized for invalid --dst")
+
+    monkeypatch.setattr(cli_mod.EbusdTcpTransport, "__init__", _fail_init)
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", "--dst", "bogus"])
+    assert result.exit_code == 2
+    assert "Invalid address: 'bogus'" in result.stderr
+
+
 def test_discover_command_is_present() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["discover", "--help"])

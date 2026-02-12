@@ -333,6 +333,12 @@ def scan(
     ),
 ) -> None:
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
+    requested_dst = dst.strip().lower()
+    explicit_dst_u8: int | None = None
+    if requested_dst != "auto":
+        # Validate explicit destination before any network activity.
+        explicit_dst_u8 = _parse_u8_address(dst)
+
     dst_u8: int
     console = Console(stderr=True)
     planner_ui_value = planner_ui.strip().lower()
@@ -372,7 +378,7 @@ def scan(
         myvaillant_map, myvaillant_map_source = _load_default_myvaillant_map()
 
     if dry_run:
-        dst_u8 = 0x15 if dst.strip().lower() == "auto" else _parse_u8_address(dst)
+        dst_u8 = 0x15 if requested_dst == "auto" else cast(int, explicit_dst_u8)
         fixture_text, fixture_source = _load_default_dry_run_fixture_text()
         if fixture_text is None:
             typer.echo("Fixture not found: vrc720_full_scan.json", err=True)
@@ -403,7 +409,10 @@ def scan(
 
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
         with transport.session():
-            dst_u8 = _resolve_scan_destination(transport, dst=dst)
+            if requested_dst == "auto":
+                dst_u8 = _resolve_scan_destination(transport, dst=dst)
+            else:
+                dst_u8 = cast(int, explicit_dst_u8)
             title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
             subtitle_lines = [f"Planner: {planner_ui_value} (preset={preset_value})"]
 
