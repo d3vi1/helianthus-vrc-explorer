@@ -1,0 +1,59 @@
+#!/usr/bin/expect -f
+
+set timeout 60
+
+if {[info exists env(PYTHON_BIN)] && $env(PYTHON_BIN) ne ""} {
+    set py $env(PYTHON_BIN)
+} else {
+    set py "python3"
+}
+
+set env(PYTHONPATH) "src"
+
+log_user 0
+spawn $py scripts/demo_planner_textual.py
+log_user 1
+
+# Wait until the table is rendered before sending keys, otherwise Textual may buffer
+# keystrokes during startup and apply them all at once (bad for recording).
+expect {
+    -re {Enter edit RR_max} {}
+    timeout { exit 1 }
+}
+
+# Safety net: close stale dialogs and quit if the flow gets stuck.
+after 45000 {send "\033"; send "q"}
+
+after 800
+send "2"
+expect -re {Applied preset: recommended}
+
+# Move to 0x02 and edit RR_max.
+after 600
+send "\t\t"
+after 300
+send "\r"
+expect -re {RR_max for 0x02}
+after 300
+send "0x0025\r"
+expect -re {Updated RR_max for 0x02}
+
+# Edit instances to "present" to show request/ETA changes.
+after 600
+send "i"
+expect -re {Instances for 0x02}
+after 300
+send "present\r"
+expect -re {Updated instances for 0x02}
+
+# Enable an experimental group (0x06).
+after 600
+send "\t\t"
+after 300
+send " "
+after 800
+
+# Save and exit.
+send "s"
+
+expect eof

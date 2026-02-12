@@ -185,7 +185,10 @@ def run_browse_from_artifact(
             yield Vertical(*children)
 
         def on_mount(self) -> None:
-            self.query_one(Input).focus()
+            field = self.query_one(Input)
+            field.focus()
+            # Make edits overwrite the default value without requiring manual delete.
+            field.select_all()
 
         def action_cancel(self) -> None:
             self.dismiss(None)
@@ -380,7 +383,7 @@ def run_browse_from_artifact(
             self.query_one("#status", Static).update(text)
 
         def _build_tree(self) -> None:
-            tree = self.query_one("#browse-tree", Tree[str])
+            tree = self.query_one("#browse-tree", Tree)
             tree.clear()
             root = tree.root
             root.data = "root"
@@ -533,7 +536,7 @@ def run_browse_from_artifact(
                 self._render_watch_dock()
 
         def _focus_tree(self) -> None:
-            self.query_one("#browse-tree", Tree[str]).focus()
+            self.query_one("#browse-tree", Tree).focus()
             self._focus_idx = 0
 
         def _focus_tabs(self) -> None:
@@ -589,7 +592,13 @@ def run_browse_from_artifact(
                 self._refresh_table()
 
         def action_search(self) -> None:
-            target = self._focus_order[self._focus_idx]
+            # Prefer the actual focused widget over internal focus bookkeeping so search
+            # remains correct even if focus was moved by Textual's default Tab handling.
+            focused = self.focused
+            if isinstance(focused, Tree) and focused.id == "browse-tree":
+                target = "tree"
+            else:
+                target = "table"
             self._search.target = target
             self.push_screen(
                 _InputDialog(title=f"Search in {target}", value=self._search.query),
@@ -626,7 +635,7 @@ def run_browse_from_artifact(
                 return
             current = self._search.matches[self._search.index]
             if self._search.target == "tree":
-                tree = self.query_one("#browse-tree", Tree[str])
+                tree = self.query_one("#browse-tree", Tree)
                 node = self._tree_node_by_ref.get(str(current))
                 if node is not None:
                     parent = node.parent

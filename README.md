@@ -15,7 +15,7 @@ Helianthus VRC Explorer is a professional CLI tool for scanning Vaillant VRC hea
 - Shipping a full Home Assistant integration from this repository.
 - Writing to devices by default. Any write/control functionality must be explicit and reviewed.
 
-## Quick start (planned interface)
+## Quick start
 ```bash
 python -m helianthus_vrc_explorer scan \
   --dst 0x15 \
@@ -30,29 +30,79 @@ Key scan UX flags:
 - `--preset conservative|recommended|aggressive|custom`
 - `--no-tips`
 - `--trace-file /path/to/trace.log`
+- `--ebusd-csv-path /path/to/15.720.csv`
+- `--myvaillant-map-path /path/to/myvaillant_register_map.csv`
 
-## TUI Preview
+Output:
+- JSON artifact: `b524_scan_0x15_<timestamp>.json`
+- HTML report: `b524_scan_0x15_<timestamp>.html`
+
+Browse a saved artifact in fullscreen Textual UI:
+```bash
+python -m helianthus_vrc_explorer browse --file b524_scan_0x15_<timestamp>.json
+```
+
+Enable safe write mode in browse UI:
+```bash
+python -m helianthus_vrc_explorer browse \
+  --file b524_scan_0x15_<timestamp>.json \
+  --allow-write
+```
+
+## Features
+- Session preface with regulator identity and transport endpoint.
+- Phased scanner progress: Group Discovery, Instance Discovery, Register Scan.
+- Interactive planner (`textual` or classic) with presets and per-group overrides.
+- Register decoding with raw payload retention and TT/metadata annotations in JSON.
+- Auto-generated HTML report alongside JSON scan output.
+- Fullscreen register browser with tree navigation by category/group/instance/register.
+- Tabbed register views: `Config`, `Config-Limits`, `State`.
+- Watch/pin/rate controls and safe write workflow (`--allow-write` + confirmation).
+
+## Scan UI Preview
 <picture>
   <source srcset="artifacts/readme/preview.gif" type="image/gif">
-  <img src="artifacts/readme/preview.png" alt="helianthus-vrc-explorer terminal preview">
+  <img src="artifacts/readme/preview.png" alt="helianthus-vrc-explorer scan UI preview">
 </picture>
 
-Regenerate preview assets from first 5 minutes of autorun, sped up 10x (300s -> 30s):
+Capture first 5 minutes of autorun, sped up 10x (300s -> 30s):
 
 ```bash
 ./scripts/capture_tui_preview.sh --capture-seconds 300 --speedup 10
 ```
 
-Optional:
-- `--output-seconds 45` to override final animation duration
-- `--cols 132 --rows 40` to tune terminal geometry
-- `--poster-percent 40` to choose which moment becomes `preview.png`
-- `--command "python -m helianthus_vrc_explorer scan ..."` to capture a different run
-- `--font-path "/path/to/Anonymous Pro.ttf"` to force font selection
+## Planner UI Preview
+<picture>
+  <source srcset="artifacts/readme/planner.gif" type="image/gif">
+  <img src="artifacts/readme/planner.png" alt="helianthus-vrc-explorer planner UI preview">
+</picture>
+
+```bash
+./scripts/capture_planner_preview.sh
+```
+
+## Browse UI Preview
+<picture>
+  <source srcset="artifacts/readme/browse.gif" type="image/gif">
+  <img src="artifacts/readme/browse.png" alt="helianthus-vrc-explorer browse UI preview">
+</picture>
+
+```bash
+./scripts/capture_browse_preview.sh
+```
+
+Preview script options (all three capture scripts):
+- `--output-seconds 45` override final animation duration.
+- `--cols 132 --rows 40` tune terminal geometry.
+- `--poster-percent 40` choose which moment becomes `<name>.png`.
+- `--command "python -m helianthus_vrc_explorer ..."` capture a different run.
+- `--font-path "/path/to/Anonymous Pro.ttf"` force font selection.
 
 Dependencies for preview generation:
 - `asciinema`
 - `agg`
+- `expect`
+- `Pillow` (available in project dev environment)
 
 ## Development
 Requirements: Python 3.12+

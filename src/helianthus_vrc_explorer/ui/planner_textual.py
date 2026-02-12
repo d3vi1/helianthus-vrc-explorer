@@ -128,7 +128,10 @@ def run_textual_scan_plan(
             )
 
         def on_mount(self) -> None:
-            self.query_one(Input).focus()
+            field = self.query_one(Input)
+            field.focus()
+            # Make edits overwrite the default value without requiring manual delete.
+            field.select_all()
 
         def action_cancel(self) -> None:
             self.dismiss(None)
