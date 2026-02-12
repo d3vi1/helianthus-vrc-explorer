@@ -1,0 +1,68 @@
+#!/usr/bin/expect -f
+
+set timeout 60
+
+if {[info exists env(PYTHON_BIN)] && $env(PYTHON_BIN) ne ""} {
+    set py $env(PYTHON_BIN)
+} else {
+    set py "python3"
+}
+
+set env(PYTHONPATH) "src"
+
+log_user 0
+spawn $py scripts/demo_browse_textual.py
+log_user 1
+
+# Safety net: close stale dialogs and quit if the flow gets stuck.
+after 45000 {send "\033"; send "q"}
+
+# Wait until the UI renders before sending keys, otherwise keystrokes can get
+# buffered during startup and applied too fast for recording.
+expect {
+    -re {Rows:} {}
+    timeout { exit 1 }
+}
+
+after 800
+send "/"
+# Initial focus is tree; search there, then the selected register drives the table.
+expect -re {Search in tree}
+after 600
+send "child_lock"
+after 200
+send "\r"
+expect -re {Match 1/}
+after 300
+send "\t\t"
+after 1000
+send "w"
+expect -re {Watch added:}
+after 800
+send "p"
+expect -re {Pinned:}
+after 800
+send "r"
+expect -re {Poll rate for}
+after 700
+send "500ms\r"
+expect -re {Watch rate set}
+after 1000
+send "e"
+expect -re {Write }
+after 800
+send "false\r"
+expect -re {Confirm write}
+after 1000
+send "y"
+expect -re {Wrote }
+after 1000
+send "2"
+after 800
+send "3"
+after 800
+send "1"
+after 1000
+send "q"
+
+expect eof

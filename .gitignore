@@ -24,6 +24,11 @@ out/
 # OS
 .DS_Store
 
+# Artifacts (gitignored by design; README media is committed explicitly)
+artifacts/from-ha/
+artifacts/readme/*.cast
+artifacts/readme/*.txt
+
 # Local agent / integration config
 AGENTS-local.md
 AGENT-local.md
