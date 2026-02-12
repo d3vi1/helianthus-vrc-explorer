@@ -36,6 +36,7 @@ Key scan UX flags:
 Output:
 - JSON artifact: `b524_scan_0x15_<timestamp>.json`
 - HTML report: `b524_scan_0x15_<timestamp>.html`
+- Interactive terminals: after scan, the new fullscreen browse UI opens automatically (`q` to exit back to summary).
 
 Browse a saved artifact in fullscreen Textual UI:
 ```bash

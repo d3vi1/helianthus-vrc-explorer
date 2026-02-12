@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
@@ -26,7 +27,6 @@ from .ui.html_report import render_html_report
 from .ui.live import ScanSessionPreface, make_scan_observer
 from .ui.planner import PlannerPreset
 from .ui.summary import render_summary
-from .ui.viewer import run_results_viewer
 
 app = typer.Typer(
     add_completion=False,
@@ -154,6 +154,15 @@ def _emit_non_tty_session_preface(preface: ScanSessionPreface) -> None:
     typer.echo(preface.scan_line, err=True)
     for label, value in preface.rows:
         typer.echo(f"{label}: {value}", err=True)
+
+
+def _can_launch_interactive_browse(console: Console) -> bool:
+    return (
+        console.is_terminal
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and sys.platform != "win32"
+    )
 
 
 def _parse_u8_address(value: str) -> int:
@@ -370,11 +379,9 @@ def scan(
         encoding="utf-8",
     )
 
-    if run_results_viewer(console, artifact):
-        output_path.write_text(
-            json.dumps(artifact, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+    if _can_launch_interactive_browse(console):
+        # Post-scan default UX: enter the new fullscreen browse UI directly.
+        run_browse_from_artifact(artifact, allow_write=False)
 
     html_path = output_path.with_suffix(".html")
     html_path.write_text(
