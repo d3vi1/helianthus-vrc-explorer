@@ -221,8 +221,7 @@ def _resolve_scan_destination(transport: EbusdTcpTransport, *, dst: str) -> int:
 
     if not compatible_addrs:
         typer.echo(
-            "Auto destination failed: no compatible VRC/B524 device found. "
-            "Retry with --dst 0x..",
+            "Auto destination failed: no compatible VRC/B524 device found. Retry with --dst 0x..",
             err=True,
         )
         raise typer.Exit(2)
