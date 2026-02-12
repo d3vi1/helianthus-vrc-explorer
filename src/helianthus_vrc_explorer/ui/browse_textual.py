@@ -9,6 +9,15 @@ from .browse_models import BrowseTab, RegisterRow, TreeNodeRef
 from .browse_store import BrowseStore
 
 _ALLOWED_WATCH_INTERVALS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 5.0)
+_WRITE_MARK = "✎"
+
+
+def _fmt_value_text(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
 
 
 def format_watch_interval(seconds: float) -> str:
@@ -59,6 +68,17 @@ def compute_change_indicator(previous: str, current: str) -> str:
     return "Δ"
 
 
+def parse_bool_input(raw: str) -> bool | None:
+    text = raw.strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return None
+
+
 @dataclass(slots=True)
 class _SearchState:
     query: str = ""
@@ -86,6 +106,17 @@ class _WatchEntry:
     change_indicator: str
 
 
+@dataclass(slots=True)
+class _PendingWrite:
+    row_id: str
+    type_spec: str
+    old_value_text: str
+    old_raw_hex: str
+    new_value_text: str
+    new_raw_hex: str
+    new_value: object
+
+
 def _tab_id(tab: BrowseTab) -> str:
     return {
         "config": "tab-config",
@@ -110,8 +141,16 @@ def run_browse_from_artifact(
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
+    from textual.events import Key
     from textual.screen import ModalScreen
     from textual.widgets import DataTable, Footer, Header, Input, Label, Static, Tab, Tabs, Tree
+
+    from ..protocol.parser import (
+        ValueEncodeError,
+        ValueParseError,
+        encode_typed_value,
+        parse_typed_value,
+    )
 
     class _FocusableStatic(Static):
         can_focus = True
@@ -185,6 +224,45 @@ def run_browse_from_artifact(
         def action_close(self) -> None:
             self.dismiss(None)
 
+    class _ConfirmDialog(ModalScreen[bool]):
+        BINDINGS = [
+            Binding("escape", "cancel", "Cancel"),
+            Binding("q", "cancel", "Cancel"),
+            Binding("enter", "confirm", "Write"),
+            Binding("y", "confirm", "Write"),
+        ]
+        CSS = """
+        _ConfirmDialog {
+            align: center middle;
+        }
+        _ConfirmDialog > Vertical {
+            width: 90;
+            padding: 1 2;
+            border: heavy $accent;
+            background: $surface;
+        }
+        """
+
+        def __init__(
+            self,
+            *,
+            title: str,
+            summary_lines: list[str],
+        ) -> None:
+            super().__init__()
+            self._title = title
+            self._lines = summary_lines
+
+        def compose(self) -> ComposeResult:
+            body = "\n".join(self._lines)
+            yield Vertical(Label(self._title), Static(body), Static("Enter/Y=write  Esc/Q=cancel"))
+
+        def action_cancel(self) -> None:
+            self.dismiss(False)
+
+        def action_confirm(self) -> None:
+            self.dismiss(True)
+
     class _BrowseApp(App[None]):
         BINDINGS = [
             Binding("tab", "focus_next_section", "Next Focus"),
@@ -246,6 +324,10 @@ def run_browse_from_artifact(
             self._write_enabled = allow_write
             self._watch: dict[str, _WatchEntry] = {}
             self._editing_watch_row_id: str | None = None
+            self._artifact = artifact
+            self._editing_row_id: str | None = None
+            self._pending_write: _PendingWrite | None = None
+            self._written_at: dict[str, str] = {}
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -284,6 +366,15 @@ def run_browse_from_artifact(
             self.set_interval(0.2, self._on_watch_tick)
             self._set_status("Ready")
             self._focus_tree()
+
+        def on_key(self, event: Key) -> None:
+            if event.key not in {"enter", "ctrl+j", "ctrl+m"}:
+                return
+            if len(self.screen_stack) > 1:
+                return
+            if isinstance(self.focused, DataTable) and self.focused.id == "browse-table":
+                event.stop()
+                self.action_edit_selected()
 
         def _set_status(self, text: str) -> None:
             self.query_one("#status", Static).update(text)
@@ -354,6 +445,13 @@ def run_browse_from_artifact(
                 last_update_text = watch.last_poll_text if watch else row.last_update_text
                 age_text = f"{max(0.0, now - watch.last_poll_at):.1f}s" if watch else row.age_text
                 change_indicator = watch.change_indicator if watch else row.change_indicator
+                if row.row_id in self._written_at:
+                    if change_indicator.startswith(_WRITE_MARK):
+                        pass
+                    elif change_indicator == "-":
+                        change_indicator = _WRITE_MARK
+                    else:
+                        change_indicator = f"{_WRITE_MARK}{change_indicator}"
                 table.add_row(
                     row.path,
                     row.address.label,
@@ -397,8 +495,9 @@ def run_browse_from_artifact(
                 row = self._store.row_by_id(item.row_id)
                 label = row.address.label if row is not None else item.row_id
                 pin = "[p]" if item.pinned else "   "
+                mark = _WRITE_MARK if item.row_id in self._written_at else " "
                 lines.append(
-                    f"{pin} {label} = {item.current_value} Δ={item.change_indicator} "
+                    f"{pin} {mark}{label} = {item.current_value} Δ={item.change_indicator} "
                     f"@ {format_watch_interval(item.poll_interval_s)}"
                 )
             if len(entries) > 5:
@@ -643,11 +742,244 @@ def run_browse_from_artifact(
                 self._on_watch_rate_entered,
             )
 
+        def _entry_for_row(self, row: RegisterRow) -> dict[str, Any] | None:
+            groups = self._artifact.get("groups")
+            if not isinstance(groups, dict):
+                return None
+            group_obj = groups.get(row.group_key)
+            if not isinstance(group_obj, dict):
+                return None
+            instances = group_obj.get("instances")
+            if not isinstance(instances, dict):
+                return None
+            instance_obj = instances.get(row.instance_key)
+            if not isinstance(instance_obj, dict):
+                return None
+            registers = instance_obj.get("registers")
+            if not isinstance(registers, dict):
+                return None
+            entry = registers.get(row.register_key)
+            return entry if isinstance(entry, dict) else None
+
+        def _parse_new_value(self, *, type_spec: str, raw: str) -> tuple[object, bytes] | None:
+            normalized = type_spec.strip().upper()
+            if normalized == "BOOL":
+                parsed_bool = parse_bool_input(raw)
+                if parsed_bool is None:
+                    self._set_status("Invalid BOOL. Use true/false or 1/0.")
+                    return None
+                try:
+                    data = encode_typed_value("BOOL", parsed_bool)
+                except ValueEncodeError as exc:
+                    self._set_status(f"Encode error: {exc}")
+                    return None
+                return (parsed_bool, data)
+            if normalized in {"UIN", "UCH", "I8", "I16", "U32", "I32"}:
+                try:
+                    parsed_int = int(raw.strip(), 0)
+                except ValueError:
+                    self._set_status("Invalid integer. Use hex (0x..) or decimal.")
+                    return None
+                try:
+                    data = encode_typed_value(normalized, parsed_int)
+                except ValueEncodeError as exc:
+                    self._set_status(f"Encode error: {exc}")
+                    return None
+                return (parsed_int, data)
+            if normalized == "EXP":
+                try:
+                    parsed_float = float(raw.strip())
+                except ValueError:
+                    self._set_status("Invalid float.")
+                    return None
+                try:
+                    data = encode_typed_value("EXP", parsed_float)
+                except ValueEncodeError as exc:
+                    self._set_status(f"Encode error: {exc}")
+                    return None
+                return (parsed_float, data)
+            if normalized.startswith("STR:"):
+                try:
+                    data = encode_typed_value(normalized, raw)
+                except ValueEncodeError as exc:
+                    self._set_status(f"Encode error: {exc}")
+                    return None
+                return (raw, data)
+            if normalized == "HDA:3" or normalized == "HTI" or normalized.startswith("HEX:"):
+                try:
+                    data = encode_typed_value(normalized, raw)
+                except ValueEncodeError as exc:
+                    self._set_status(f"Encode error: {exc}")
+                    return None
+                return (raw, data)
+            self._set_status(f"Unsupported type for write: {type_spec}")
+            return None
+
+        def _update_store_row(
+            self,
+            *,
+            row_id: str,
+            value_text: str,
+            raw_hex: str,
+            last_update_text: str,
+            age_text: str,
+        ) -> None:
+            from dataclasses import replace
+
+            current = self._store.row_by_id(row_id)
+            if current is None:
+                return
+            updated = replace(
+                current,
+                value_text=value_text,
+                raw_hex=raw_hex,
+                last_update_text=last_update_text,
+                age_text=age_text,
+            )
+            self._store._row_by_id[row_id] = updated
+            for idx, existing in enumerate(self._store.rows):
+                if existing.row_id == row_id:
+                    self._store.rows[idx] = updated
+                    break
+
+        def _apply_write(self, pending: _PendingWrite) -> None:
+            row = self._store.row_by_id(pending.row_id)
+            if row is None:
+                self._set_status("Selected row no longer exists.")
+                return
+            entry = self._entry_for_row(row)
+            if entry is None:
+                self._set_status("Artifact entry not found.")
+                return
+
+            entry["type"] = pending.type_spec
+            entry["value"] = pending.new_value
+            entry["raw_hex"] = pending.new_raw_hex
+            entry["error"] = None
+            entry["written"] = True
+            entry["written_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+
+            now_txt = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+            self._written_at[pending.row_id] = now_txt
+
+            self._update_store_row(
+                row_id=pending.row_id,
+                value_text=pending.new_value_text,
+                raw_hex=pending.new_raw_hex,
+                last_update_text=now_txt,
+                age_text="0.0s",
+            )
+
+            watch = self._watch.get(pending.row_id)
+            if watch is not None:
+                now_mono = monotonic()
+                watch.previous_value = watch.current_value
+                watch.previous_raw = watch.current_raw
+                watch.current_value = pending.new_value_text
+                watch.current_raw = pending.new_raw_hex
+                watch.change_indicator = _WRITE_MARK
+                watch.last_poll_at = now_mono
+                watch.last_poll_text = now_txt
+                watch.next_poll_at = now_mono + watch.poll_interval_s
+
+            self._render_watch_dock()
+            self._refresh_table()
+            self._set_status(f"Wrote {row.address.label}")
+
+        def _on_confirm_write(self, confirmed: bool | None) -> None:
+            pending = self._pending_write
+            self._pending_write = None
+            if not confirmed or pending is None:
+                self._set_status("Write cancelled")
+                return
+            self._apply_write(pending)
+
+        def _on_edit_value_entered(self, value: str | None) -> None:
+            row_id = self._editing_row_id
+            self._editing_row_id = None
+            if value is None or row_id is None:
+                self._set_status("Edit cancelled")
+                return
+            row = self._store.row_by_id(row_id)
+            if row is None:
+                self._set_status("Row no longer exists.")
+                return
+            entry = self._entry_for_row(row)
+            if entry is None:
+                self._set_status("Artifact entry not found.")
+                return
+            type_spec_obj = entry.get("type")
+            type_spec = (
+                type_spec_obj if isinstance(type_spec_obj, str) and type_spec_obj else "HEX:0"
+            )
+            if type_spec == "HEX:0":
+                self._set_status("Missing type; edit raw_hex is not supported yet.")
+                return
+
+            parsed = self._parse_new_value(type_spec=type_spec, raw=value)
+            if parsed is None:
+                return
+            new_value_obj, new_bytes = parsed
+            try:
+                canonical_value = parse_typed_value(type_spec, new_bytes)
+            except ValueParseError:
+                canonical_value = new_value_obj
+            new_value_text = _fmt_value_text(canonical_value)
+            new_raw_hex = new_bytes.hex()
+
+            old_raw_hex_obj = entry.get("raw_hex")
+            old_raw_hex = old_raw_hex_obj if isinstance(old_raw_hex_obj, str) else ""
+            old_value_text = row.value_text
+
+            self._pending_write = _PendingWrite(
+                row_id=row_id,
+                type_spec=type_spec,
+                old_value_text=old_value_text,
+                old_raw_hex=old_raw_hex,
+                new_value_text=new_value_text,
+                new_raw_hex=new_raw_hex,
+                new_value=canonical_value,
+            )
+            self.push_screen(
+                _ConfirmDialog(
+                    title="Confirm write",
+                    summary_lines=[
+                        f"Target: {row.address.label}",
+                        f"Type:   {type_spec}",
+                        "",
+                        f"Old: {old_value_text}  raw={old_raw_hex}",
+                        f"New: {new_value_text}  raw={new_raw_hex}",
+                    ],
+                ),
+                self._on_confirm_write,
+            )
+
         def action_edit_selected(self) -> None:
             if not self._write_enabled:
                 self._set_status("Write disabled: run with --allow-write")
                 return
-            self._set_status("Write flow is planned for P2 (not implemented in P0).")
+            row = self._selected_table_row()
+            if row is None:
+                self._set_status("Select a table row to edit.")
+                return
+            if row.tab == "state":
+                self._set_status("State tab is read-only.")
+                return
+            entry = self._entry_for_row(row)
+            type_spec_obj = entry.get("type") if entry is not None else None
+            type_spec = type_spec_obj if isinstance(type_spec_obj, str) and type_spec_obj else None
+            if type_spec is None:
+                self._set_status("No type for this row; cannot edit safely.")
+                return
+            self._editing_row_id = row.row_id
+            self.push_screen(
+                _InputDialog(
+                    title=f"Write {row.address.label} ({type_spec})",
+                    value=row.value_text if row.value_text != "null" else "",
+                    hint="Enter new value. Esc=cancel. (Safe mode: confirmation required.)",
+                ),
+                self._on_edit_value_entered,
+            )
 
         def action_close_dialog(self) -> None:
             if len(self.screen_stack) > 1:
