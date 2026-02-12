@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
+import struct
+import sys
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
@@ -12,6 +15,7 @@ from rich.console import Console
 
 from . import __version__
 from .ebusd import parse_ebusd_info_slave_addresses
+from .protocol.b524 import build_directory_probe_payload
 from .protocol.basv import parse_scan_identification, parse_vaillant_scan_id_chunks
 from .scanner.b509 import parse_b509_range
 from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
@@ -26,7 +30,6 @@ from .ui.html_report import render_html_report
 from .ui.live import ScanSessionPreface, make_scan_observer
 from .ui.planner import PlannerPreset
 from .ui.summary import render_summary
-from .ui.viewer import run_results_viewer
 
 app = typer.Typer(
     add_completion=False,
@@ -156,6 +159,85 @@ def _emit_non_tty_session_preface(preface: ScanSessionPreface) -> None:
         typer.echo(f"{label}: {value}", err=True)
 
 
+def _can_launch_interactive_browse(console: Console) -> bool:
+    return (
+        console.is_terminal
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and sys.platform != "win32"
+    )
+
+
+def _probe_group_descriptor(
+    transport: EbusdTcpTransport,
+    *,
+    dst: int,
+    group: int,
+) -> float | None:
+    payload = build_directory_probe_payload(group)
+    for _ in range(2):
+        try:
+            response = transport.send(dst, payload)
+        except (TransportError, TransportTimeout):
+            continue
+        if len(response) < 4:
+            continue
+        descriptor = struct.unpack("<f", response[:4])[0]
+        if math.isnan(descriptor) or descriptor == 0.0:
+            continue
+        return descriptor
+    return None
+
+
+def _resolve_scan_destination(transport: EbusdTcpTransport, *, dst: str) -> int:
+    requested = dst.strip().lower()
+    if requested != "auto":
+        return _parse_u8_address(dst)
+
+    # Best-effort bus wake-up. Some ebusd setups ignore this and that's fine.
+    with contextlib.suppress(TransportError, TransportTimeout):
+        transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
+
+    addresses = parse_ebusd_info_slave_addresses(transport.command_lines("info", read_all=True))
+    if not addresses:
+        typer.echo(
+            "Auto destination failed: no slave addresses found in ebusd info output.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    compatible_addrs: list[int] = []
+    for addr in addresses:
+        try:
+            ident = parse_scan_identification(transport.send_proto(addr, 0x07, 0x04, b""))
+        except Exception:
+            continue
+        if ident.manufacturer != 0xB5:
+            continue
+        descriptor = _probe_group_descriptor(transport, dst=addr, group=0x00)
+        if descriptor is None:
+            continue
+        compatible_addrs.append(addr)
+
+    if not compatible_addrs:
+        typer.echo(
+            "Auto destination failed: no compatible VRC/B524 device found. Retry with --dst 0x..",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    selected = 0x15 if 0x15 in compatible_addrs else min(compatible_addrs)
+    if len(compatible_addrs) > 1:
+        candidates = ", ".join(f"0x{addr:02X}" for addr in compatible_addrs)
+        typer.echo(
+            f"Auto-selected dst=0x{selected:02X} (compatible candidates: {candidates})",
+            err=True,
+        )
+    else:
+        typer.echo(f"Auto-selected dst=0x{selected:02X} (compatible B524 target).", err=True)
+    return selected
+
+
 def _parse_u8_address(value: str) -> int:
     try:
         parsed = int(value, 0)
@@ -184,9 +266,9 @@ def main(
 @app.command()
 def scan(
     dst: str = typer.Option(  # noqa: B008
-        "0x15",
+        "auto",
         "--dst",
-        help="Destination eBUS address (e.g. 0x15).",
+        help="Destination eBUS address (e.g. 0x15) or auto (default).",
     ),
     host: str = typer.Option(  # noqa: B008
         "127.0.0.1",
@@ -251,7 +333,13 @@ def scan(
     ),
 ) -> None:
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
-    dst_u8 = _parse_u8_address(dst)
+    requested_dst = dst.strip().lower()
+    explicit_dst_u8: int | None = None
+    if requested_dst != "auto":
+        # Validate explicit destination before any network activity.
+        explicit_dst_u8 = _parse_u8_address(dst)
+
+    dst_u8: int
     console = Console(stderr=True)
     planner_ui_value = planner_ui.strip().lower()
     if planner_ui_value not in {"auto", "textual", "classic"}:
@@ -290,6 +378,7 @@ def scan(
         myvaillant_map, myvaillant_map_source = _load_default_myvaillant_map()
 
     if dry_run:
+        dst_u8 = 0x15 if requested_dst == "auto" else cast(int, explicit_dst_u8)
         fixture_text, fixture_source = _load_default_dry_run_fixture_text()
         if fixture_text is None:
             typer.echo("Fixture not found: vrc720_full_scan.json", err=True)
@@ -319,9 +408,14 @@ def scan(
             b509_ranges = [(0x2700, 0x27FF)]
 
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
-        title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
-        subtitle_lines = [f"Planner: {planner_ui_value} (preset={preset_value})"]
         with transport.session():
+            if requested_dst == "auto":
+                dst_u8 = _resolve_scan_destination(transport, dst=dst)
+            else:
+                dst_u8 = cast(int, explicit_dst_u8)
+            title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
+            subtitle_lines = [f"Planner: {planner_ui_value} (preset={preset_value})"]
+
             identity = _probe_scan_identity(transport, dst=dst_u8)
             preface = _build_scan_session_preface(
                 dst=dst_u8,
@@ -370,11 +464,9 @@ def scan(
         encoding="utf-8",
     )
 
-    if run_results_viewer(console, artifact):
-        output_path.write_text(
-            json.dumps(artifact, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+    if _can_launch_interactive_browse(console):
+        # Post-scan default UX: enter the new fullscreen browse UI directly.
+        run_browse_from_artifact(artifact, allow_write=False)
 
     html_path = output_path.with_suffix(".html")
     html_path.write_text(

@@ -18,12 +18,13 @@ Helianthus VRC Explorer is a professional CLI tool for scanning Vaillant VRC hea
 ## Quick start
 ```bash
 python -m helianthus_vrc_explorer scan \
-  --dst 0x15 \
   --host 127.0.0.1 \
   --port 8888 \
   --planner-ui auto \
   --preset recommended
 ```
+
+`scan` auto-discovers the destination (`--dst auto`) by default. Use `--dst 0x..` to force an address.
 
 Key scan UX flags:
 - `--planner-ui auto|textual|classic`
@@ -34,8 +35,9 @@ Key scan UX flags:
 - `--myvaillant-map-path /path/to/myvaillant_register_map.csv`
 
 Output:
-- JSON artifact: `b524_scan_0x15_<timestamp>.json`
-- HTML report: `b524_scan_0x15_<timestamp>.html`
+- JSON artifact: `b524_scan_0x??_<timestamp>.json`
+- HTML report: `b524_scan_0x??_<timestamp>.html`
+- Interactive terminals: after scan, the new fullscreen browse UI opens automatically (`q` to exit back to summary).
 
 Browse a saved artifact in fullscreen Textual UI:
 ```bash
