@@ -1,10 +1,62 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from time import monotonic
 from typing import Any
 
 from .browse_models import BrowseTab, RegisterRow, TreeNodeRef
 from .browse_store import BrowseStore
+
+_ALLOWED_WATCH_INTERVALS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 5.0)
+
+
+def format_watch_interval(seconds: float) -> str:
+    if seconds < 1.0:
+        return f"{int(seconds * 1000)}ms"
+    if seconds.is_integer():
+        return f"{int(seconds)}s"
+    return f"{seconds:.2f}s"
+
+
+def parse_watch_interval(raw: str) -> float | None:
+    text = raw.strip().lower()
+    if not text:
+        return None
+    if text.endswith("ms"):
+        try:
+            value = float(text[:-2].strip()) / 1000.0
+        except ValueError:
+            return None
+    elif text.endswith("s"):
+        try:
+            value = float(text[:-1].strip())
+        except ValueError:
+            return None
+    else:
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+    for allowed in _ALLOWED_WATCH_INTERVALS:
+        if abs(value - allowed) < 1e-9:
+            return allowed
+    return None
+
+
+def compute_change_indicator(previous: str, current: str) -> str:
+    if previous == current:
+        return "-"
+    try:
+        prev_n = float(previous)
+        curr_n = float(current)
+    except ValueError:
+        return "Δ"
+    if curr_n > prev_n:
+        return "▲"
+    if curr_n < prev_n:
+        return "▼"
+    return "Δ"
 
 
 @dataclass(slots=True)
@@ -17,6 +69,21 @@ class _SearchState:
     def __post_init__(self) -> None:
         if self.matches is None:
             self.matches = []
+
+
+@dataclass(slots=True)
+class _WatchEntry:
+    row_id: str
+    pinned: bool
+    poll_interval_s: float
+    next_poll_at: float
+    last_poll_at: float
+    last_poll_text: str
+    current_value: str
+    current_raw: str
+    previous_value: str
+    previous_raw: str
+    change_indicator: str
 
 
 def _tab_id(tab: BrowseTab) -> str:
@@ -66,13 +133,17 @@ def run_browse_from_artifact(
         }
         """
 
-        def __init__(self, *, title: str, value: str) -> None:
+        def __init__(self, *, title: str, value: str, hint: str | None = None) -> None:
             super().__init__()
             self._title = title
             self._value = value
+            self._hint = hint
 
         def compose(self) -> ComposeResult:
-            yield Vertical(Label(self._title), Input(value=self._value, id="value"))
+            children: list[Any] = [Label(self._title), Input(value=self._value, id="value")]
+            if self._hint:
+                children.append(Static(self._hint, classes="dim"))
+            yield Vertical(*children)
 
         def on_mount(self) -> None:
             self.query_one(Input).focus()
@@ -106,8 +177,8 @@ def run_browse_from_artifact(
                 Static(
                     "Tab/Shift+Tab focus | 1/2/3 tabs | Arrow keys navigate\n"
                     "/ search (focused widget) | n/N next/prev match\n"
-                    "? help | q quit\n"
-                    "W/P/R/E are reserved for watch/write flows (P1/P2)."
+                    "W watch/unwatch | P pin/unpin | R poll rate\n"
+                    "? help | q quit | E write (P2)."
                 ),
             )
 
@@ -125,6 +196,9 @@ def run_browse_from_artifact(
             Binding("n", "search_next", "Next Match"),
             Binding("N", "search_prev", "Prev Match"),
             Binding("question_mark", "help", "Help"),
+            Binding("w", "toggle_watch", "Watch"),
+            Binding("p", "toggle_pin", "Pin"),
+            Binding("r", "set_watch_rate", "Rate"),
             Binding("e", "edit_selected", "Edit"),
             Binding("q", "quit", "Quit"),
             Binding("escape", "close_dialog", "Back"),
@@ -170,6 +244,8 @@ def run_browse_from_artifact(
             self._table_rows: list[RegisterRow] = []
             self._search = _SearchState()
             self._write_enabled = allow_write
+            self._watch: dict[str, _WatchEntry] = {}
+            self._editing_watch_row_id: str | None = None
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -204,6 +280,8 @@ def run_browse_from_artifact(
             )
             self._build_tree()
             self._refresh_table()
+            self._render_watch_dock()
+            self.set_interval(0.2, self._on_watch_tick)
             self._set_status("Ready")
             self._focus_tree()
 
@@ -268,17 +346,24 @@ def run_browse_from_artifact(
             self._table_rows = self._store.rows_for_selection(selected, tab=self._active_tab)
             cursor = max(0, table.cursor_row)
             table.clear(columns=False)
+            now = monotonic()
             for row in self._table_rows:
+                watch = self._watch.get(row.row_id)
+                value_text = watch.current_value if watch else row.value_text
+                raw_hex = watch.current_raw if watch else row.raw_hex
+                last_update_text = watch.last_poll_text if watch else row.last_update_text
+                age_text = f"{max(0.0, now - watch.last_poll_at):.1f}s" if watch else row.age_text
+                change_indicator = watch.change_indicator if watch else row.change_indicator
                 table.add_row(
                     row.path,
                     row.address.label,
-                    row.value_text,
-                    row.raw_hex,
+                    value_text,
+                    raw_hex,
                     row.unit,
                     row.access_flags,
-                    row.last_update_text,
-                    row.age_text,
-                    row.change_indicator,
+                    last_update_text,
+                    age_text,
+                    change_indicator,
                     key=row.row_id,
                 )
             if self._table_rows:
@@ -288,6 +373,65 @@ def run_browse_from_artifact(
                 f"Tab: {self._active_tab}"
             )
             self._set_status(status_text)
+
+        def _selected_table_row(self) -> RegisterRow | None:
+            if not self._table_rows:
+                return None
+            table = self.query_one("#browse-table", DataTable)
+            idx = table.cursor_row
+            if idx < 0 or idx >= len(self._table_rows):
+                return None
+            return self._table_rows[idx]
+
+        def _render_watch_dock(self) -> None:
+            dock = self.query_one("#watch-dock", Static)
+            if not self._watch:
+                dock.update("Watchlist: empty (W add/remove, P pin, R rate)")
+                return
+            entries = sorted(
+                self._watch.values(),
+                key=lambda item: (not item.pinned, item.row_id),
+            )
+            lines = [f"Watchlist ({len(entries)}):"]
+            for item in entries[:5]:
+                row = self._store.row_by_id(item.row_id)
+                label = row.address.label if row is not None else item.row_id
+                pin = "[p]" if item.pinned else "   "
+                lines.append(
+                    f"{pin} {label} = {item.current_value} Δ={item.change_indicator} "
+                    f"@ {format_watch_interval(item.poll_interval_s)}"
+                )
+            if len(entries) > 5:
+                lines.append(f"... +{len(entries) - 5} more")
+            dock.update("\n".join(lines))
+
+        def _on_watch_tick(self) -> None:
+            if not self._watch:
+                return
+            now = monotonic()
+            changed = False
+            for item in self._watch.values():
+                if now < item.next_poll_at:
+                    continue
+                row = self._store.row_by_id(item.row_id)
+                item.next_poll_at = now + item.poll_interval_s
+                item.last_poll_at = now
+                item.last_poll_text = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+                if row is None:
+                    continue
+                current_value = row.value_text
+                current_raw = row.raw_hex
+                item.previous_value = item.current_value
+                item.previous_raw = item.current_raw
+                item.current_value = current_value
+                item.current_raw = current_raw
+                item.change_indicator = compute_change_indicator(
+                    item.previous_value, item.current_value
+                )
+                changed = True
+            if changed:
+                self._refresh_table()
+                self._render_watch_dock()
 
         def _focus_tree(self) -> None:
             self.query_one("#browse-tree", Tree[str]).focus()
@@ -418,6 +562,86 @@ def run_browse_from_artifact(
 
         def action_help(self) -> None:
             self.push_screen(_HelpDialog())
+
+        def action_toggle_watch(self) -> None:
+            row = self._selected_table_row()
+            if row is None:
+                self._set_status("Select a table row first.")
+                return
+            if row.row_id in self._watch:
+                del self._watch[row.row_id]
+                self._render_watch_dock()
+                self._refresh_table()
+                self._set_status(f"Watch removed: {row.address.label}")
+                return
+            now = monotonic()
+            self._watch[row.row_id] = _WatchEntry(
+                row_id=row.row_id,
+                pinned=False,
+                poll_interval_s=1.0,
+                next_poll_at=now,
+                last_poll_at=now,
+                last_poll_text=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ"),
+                current_value=row.value_text,
+                current_raw=row.raw_hex,
+                previous_value=row.value_text,
+                previous_raw=row.raw_hex,
+                change_indicator="-",
+            )
+            self._render_watch_dock()
+            self._refresh_table()
+            self._set_status(f"Watch added: {row.address.label}")
+
+        def action_toggle_pin(self) -> None:
+            row = self._selected_table_row()
+            if row is None:
+                self._set_status("Select a watched row to pin/unpin.")
+                return
+            item = self._watch.get(row.row_id)
+            if item is None:
+                self._set_status("Row is not watched. Press W first.")
+                return
+            item.pinned = not item.pinned
+            self._render_watch_dock()
+            self._set_status(f"{'Pinned' if item.pinned else 'Unpinned'}: {row.address.label}")
+
+        def _on_watch_rate_entered(self, value: str | None) -> None:
+            row_id = self._editing_watch_row_id
+            self._editing_watch_row_id = None
+            if value is None or row_id is None:
+                self._set_status("Watch rate edit cancelled")
+                return
+            interval = parse_watch_interval(value)
+            if interval is None:
+                self._set_status("Invalid rate. Use 250ms/500ms/1s/2s/5s.")
+                return
+            item = self._watch.get(row_id)
+            if item is None:
+                self._set_status("Watch row no longer exists.")
+                return
+            item.poll_interval_s = interval
+            item.next_poll_at = monotonic() + interval
+            self._render_watch_dock()
+            self._set_status(f"Watch rate set to {format_watch_interval(interval)}")
+
+        def action_set_watch_rate(self) -> None:
+            row = self._selected_table_row()
+            if row is None:
+                self._set_status("Select a watched row to set rate.")
+                return
+            item = self._watch.get(row.row_id)
+            if item is None:
+                self._set_status("Row is not watched. Press W first.")
+                return
+            self._editing_watch_row_id = row.row_id
+            self.push_screen(
+                _InputDialog(
+                    title=f"Poll rate for {row.address.label}",
+                    value=format_watch_interval(item.poll_interval_s),
+                    hint="Allowed: 250ms, 500ms, 1s, 2s, 5s",
+                ),
+                self._on_watch_rate_entered,
+            )
 
         def action_edit_selected(self) -> None:
             if not self._write_enabled:
