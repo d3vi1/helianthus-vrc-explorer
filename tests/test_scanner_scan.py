@@ -85,6 +85,27 @@ def _write_fixture_unknown_group_69(tmp_path: Path) -> Path:
     return path
 
 
+def _write_fixture_unknown_descriptor(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x01"}},
+        "groups": {
+            "0x00": {
+                "descriptor_type": 2.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_unknown_descriptor.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
 class _NoopObserver(ScanObserver):
     def phase_start(self, phase: str, *, total: int) -> None:  # noqa: ARG002
         return
@@ -174,6 +195,16 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
     assert "0x69" in artifact["groups"]
     registers = artifact["groups"]["0x69"]["instances"]["0x00"]["registers"]
     assert registers["0x0000"]["raw_hex"] == "00"
+    issue_suggestion = artifact["meta"]["issue_suggestion"]
+    assert issue_suggestion["unknown_groups"] == ["0x69"]
+    assert issue_suggestion["suggest_issue"] is True
+
+
+def test_scan_b524_flags_unknown_descriptor_class_for_issue_suggestion(tmp_path: Path) -> None:
+    artifact = scan_b524(DummyTransport(_write_fixture_unknown_descriptor(tmp_path)), dst=0x15)
+    issue_suggestion = artifact["meta"]["issue_suggestion"]
+    assert issue_suggestion["unknown_descriptor_types"] == [2.0]
+    assert issue_suggestion["suggest_issue"] is True
 
 
 def test_scan_b524_scans_absent_instances_when_planner_overrides(

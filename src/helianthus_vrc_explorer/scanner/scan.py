@@ -36,6 +36,7 @@ _LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
 _REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
 
 PlannerUiMode = Literal["auto", "textual", "classic"]
+_KNOWN_DESCRIPTOR_TYPES = frozenset(float(config["desc"]) for config in GROUP_CONFIG.values())
 
 
 def _entry_has_valid_value(entry: RegisterEntry) -> bool:
@@ -226,6 +227,13 @@ def scan_b524(
         unknown_groups = sorted(
             group.group for group in classified if group.group not in GROUP_CONFIG
         )
+        unknown_descriptor_types = sorted(
+            {
+                float(group.descriptor)
+                for group in classified
+                if float(group.descriptor) not in _KNOWN_DESCRIPTOR_TYPES
+            }
+        )
         if unknown_groups and observer is not None:
             unknown_text = ", ".join(f"0x{gg:02X}" for gg in unknown_groups)
             observer.log(
@@ -233,6 +241,24 @@ def scan_b524(
                 "skipped by default (enable in planner).",
                 level="warn",
             )
+        if unknown_descriptor_types and observer is not None:
+            descriptor_text = ", ".join(f"{value:g}" for value in unknown_descriptor_types)
+            observer.log(
+                "Found new descriptor class(es): "
+                f"{descriptor_text}. Continue scan, then report with artifact JSON/HTML.",
+                level="warn",
+            )
+        if unknown_groups or unknown_descriptor_types:
+            advisory: dict[str, Any] = {
+                "kind": "protocol_discovery",
+                "suggest_issue": True,
+                "attach_artifacts": ["scan_json", "scan_html"],
+            }
+            if unknown_groups:
+                advisory["unknown_groups"] = [f"0x{group:02X}" for group in unknown_groups]
+            if unknown_descriptor_types:
+                advisory["unknown_descriptor_types"] = unknown_descriptor_types
+            artifact["meta"]["issue_suggestion"] = advisory
         if observer is not None:
             observer.phase_finish("group_discovery")
             observer.log(f"Discovered {len(classified)} groups", level="info")

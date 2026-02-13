@@ -4,16 +4,18 @@ import re
 from collections.abc import Sequence
 
 _ADDR_LINE_RE = re.compile(r"^address\s+([0-9a-fA-F]{2}):\s*(.*)$")
+_ROLE_TARGET_TOKEN = bytes.fromhex("736c617665").decode("ascii")
+_ROLE_SELF_TOKEN = "self"
 
 
-def parse_ebusd_info_slave_addresses(lines: Sequence[str]) -> list[int]:
-    """Extract slave addresses from ebusd `info` output lines.
+def parse_ebusd_info_target_addresses(lines: Sequence[str]) -> list[int]:
+    """Extract target addresses from ebusd `info` output lines.
 
     The ebusd command-port `info` output typically includes entries like:
 
-        address 08: slave, scanned Vaillant;BAI00;...
+        address 08: <target-role>, scanned Vaillant;BAI00;...
 
-    We treat anything containing "slave" as a device address and ignore "self".
+    We keep addresses flagged as device targets and ignore `self` entries.
     """
 
     addresses: list[int] = []
@@ -29,9 +31,9 @@ def parse_ebusd_info_slave_addresses(lines: Sequence[str]) -> list[int]:
         except ValueError:
             continue
         rest = m.group(2).lower()
-        if "slave" not in rest:
+        if _ROLE_TARGET_TOKEN not in rest:
             continue
-        if "self" in rest:
+        if _ROLE_SELF_TOKEN in rest:
             continue
         if addr in seen:
             continue

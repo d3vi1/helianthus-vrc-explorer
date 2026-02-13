@@ -15,9 +15,13 @@ import typer
 from rich.console import Console
 
 from . import __version__
-from .ebusd import parse_ebusd_info_slave_addresses
+from .ebusd import parse_ebusd_info_target_addresses
 from .protocol.b524 import build_directory_probe_payload
-from .protocol.basv import parse_scan_identification, parse_vaillant_scan_id_chunks
+from .protocol.basv import (
+    ScanIdentification,
+    parse_scan_identification,
+    parse_vaillant_scan_id_chunks,
+)
 from .scanner.b509 import parse_b509_range
 from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
 from .scanner.register import is_instance_present
@@ -42,6 +46,7 @@ app = typer.Typer(
 _DEFAULT_TRANSPORT_PROTOCOL = "tcp"
 _DEFAULT_EBUSD_HOST = "127.0.0.1"
 _DEFAULT_EBUSD_PORT = 8888
+_SCAN_IDENT_RETRIES = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +292,25 @@ def _probe_group_descriptor(
     return None
 
 
+def _probe_scan_identification(
+    transport: EbusdTcpTransport,
+    *,
+    dst: int,
+    retries: int = _SCAN_IDENT_RETRIES,
+) -> ScanIdentification | None:
+    attempts = max(1, retries + 1)
+    for _ in range(attempts):
+        try:
+            payload = transport.send_proto(dst, 0x07, 0x04, b"")
+        except (TransportError, TransportTimeout):
+            continue
+        try:
+            return parse_scan_identification(payload)
+        except Exception:
+            continue
+    return None
+
+
 def _resolve_scan_destination(transport: EbusdTcpTransport, *, dst: str) -> int:
     requested = dst.strip().lower()
     if requested != "auto":
@@ -296,19 +320,18 @@ def _resolve_scan_destination(transport: EbusdTcpTransport, *, dst: str) -> int:
     with contextlib.suppress(TransportError, TransportTimeout):
         transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
 
-    addresses = parse_ebusd_info_slave_addresses(transport.command_lines("info", read_all=True))
+    addresses = parse_ebusd_info_target_addresses(transport.command_lines("info", read_all=True))
     if not addresses:
         typer.echo(
-            "Auto destination failed: no slave addresses found in ebusd info output.",
+            "Auto destination failed: no target addresses found in ebusd info output.",
             err=True,
         )
         raise typer.Exit(2)
 
     compatible_addrs: list[int] = []
     for addr in addresses:
-        try:
-            ident = parse_scan_identification(transport.send_proto(addr, 0x07, 0x04, b""))
-        except Exception:
+        ident = _probe_scan_identification(transport, dst=addr)
+        if ident is None:
             continue
         if ident.manufacturer != 0xB5:
             continue
@@ -637,21 +660,15 @@ def discover(
             transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
 
         info_lines = transport.command_lines("info", read_all=True)
-        addresses = parse_ebusd_info_slave_addresses(info_lines)
+        addresses = parse_ebusd_info_target_addresses(info_lines)
         if not addresses:
-            typer.echo("No slave addresses found in ebusd info output.", err=True)
+            typer.echo("No target addresses found in ebusd info output.", err=True)
             raise typer.Exit(2)
 
         devices: dict[int, dict[str, object]] = {}
         for addr in addresses:
-            try:
-                payload = transport.send_proto(addr, 0x07, 0x04, b"")
-            except (TransportError, TransportTimeout):
-                continue
-
-            try:
-                ident = parse_scan_identification(payload)
-            except Exception:
+            ident = _probe_scan_identification(transport, dst=addr)
+            if ident is None:
                 continue
 
             entry: dict[str, object] = {

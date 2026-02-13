@@ -25,6 +25,9 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
+      - name: Protocol terminology gate
+        run: python scripts/check_protocol_terminology.py
+
       - name: Ruff format check
         run: ruff format --check .
 
