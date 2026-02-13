@@ -1,6 +1,7 @@
 import json
 import re
 import struct
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,124 @@ def test_scan_invalid_dst_fails_before_transport_setup(monkeypatch) -> None:
     result = runner.invoke(app, ["scan", "--dst", "bogus"])
     assert result.exit_code == 2
     assert "Invalid address: 'bogus'" in result.stderr
+
+
+class _SessionOnlyTransport:
+    def __init__(self, *, fail_open: bool) -> None:
+        self._fail_open = fail_open
+
+    @contextmanager
+    def session(self):
+        from helianthus_vrc_explorer.transport.base import TransportError
+
+        if self._fail_open:
+            raise TransportError("Failed talking to ebusd at 127.0.0.1:8888: refused")
+        yield self
+
+
+def test_scan_default_transport_failure_prompts_retry_and_succeeds(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    build_calls: list[tuple[str, str, int]] = []
+    prompt_calls = {"count": 0}
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = trace_file
+        build_calls.append((settings.protocol, settings.host, settings.port))
+        fail = settings.host == "127.0.0.1" and settings.port == 8888
+        return _SessionOnlyTransport(fail_open=fail)
+
+    def _fake_prompt(_console, *, settings, error_message):  # noqa: ANN001
+        prompt_calls["count"] += 1
+        _ = settings
+        _ = error_message
+        return cli_mod._TransportSettings(protocol="tcp", host="127.0.0.2", port=9999)
+
+    @contextmanager
+    def _fake_observer(*_args, **_kwargs):
+        yield None
+
+    def _fake_scan_vrc(*_args, **_kwargs):
+        return {
+            "meta": {
+                "scan_timestamp": "2026-02-13T00:00:00Z",
+                "destination_address": "0x15",
+                "incomplete": False,
+                "schema_sources": [],
+            },
+            "groups": {},
+        }
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_can_prompt_transport_retry", lambda _console: True)
+    monkeypatch.setattr(cli_mod, "_prompt_transport_retry_settings", _fake_prompt)
+    monkeypatch.setattr(cli_mod, "_resolve_scan_destination", lambda _transport, dst: 0x15)
+    monkeypatch.setattr(cli_mod, "_probe_scan_identity", lambda _transport, *, dst: {})
+    monkeypatch.setattr(cli_mod, "make_scan_observer", _fake_observer)
+    monkeypatch.setattr(cli_mod, "scan_vrc", _fake_scan_vrc)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", "--output-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    assert prompt_calls["count"] == 1
+    assert build_calls == [("tcp", "127.0.0.1", 8888), ("tcp", "127.0.0.2", 9999)]
+
+
+def test_scan_default_transport_failure_cancel_exits(monkeypatch, tmp_path: Path) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = settings
+        _ = trace_file
+        return _SessionOnlyTransport(fail_open=True)
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_can_prompt_transport_retry", lambda _console: True)
+    monkeypatch.setattr(
+        cli_mod,
+        "_prompt_transport_retry_settings",
+        lambda _console, *, settings, error_message: None,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", "--output-dir", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "Transport setup aborted by user." in result.stderr
+
+
+def test_scan_custom_transport_failure_does_not_prompt_retry(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    prompt_called = {"value": False}
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = settings
+        _ = trace_file
+        return _SessionOnlyTransport(fail_open=True)
+
+    def _fake_prompt(_console, *, settings, error_message):  # noqa: ANN001
+        prompt_called["value"] = True
+        _ = settings
+        _ = error_message
+        return None
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_can_prompt_transport_retry", lambda _console: True)
+    monkeypatch.setattr(cli_mod, "_prompt_transport_retry_settings", _fake_prompt)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["scan", "--host", "10.0.0.42", "--output-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert prompt_called["value"] is False
 
 
 def test_discover_command_is_present() -> None:
