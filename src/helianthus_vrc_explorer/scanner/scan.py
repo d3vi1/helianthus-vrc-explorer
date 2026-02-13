@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass, asdict
 import math
 import os
 import sys
@@ -11,10 +12,10 @@ from typing import Any, Literal
 
 from rich.console import Console
 
-from ..protocol.b524 import RegisterOpcode
+from ..protocol.b524 import RegisterOpcode, build_metadata_probe_payload
 from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
-from ..transport.base import TransportInterface, emit_trace_label
+from ..transport.base import TransportError, TransportInterface, emit_trace_label
 from ..transport.instrumented import CountingTransport
 from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, prompt_scan_plan
 from .b509 import scan_b509
@@ -34,9 +35,107 @@ def _hex_u16(value: int) -> str:
 
 _LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
 _REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
+_UNKNOWN_GROUP_DEFAULT_RR_MAX = 0x0030
+_UNKNOWN_GROUP_DEFAULT_II_MAX = 0x0A
 
 PlannerUiMode = Literal["auto", "textual", "classic"]
 _KNOWN_DESCRIPTOR_TYPES = frozenset(float(config["desc"]) for config in GROUP_CONFIG.values())
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMetadata:
+    """Metadata used to auto-size the scan plan for a discovered group."""
+
+    rr_max: int
+    ii_max: int | None
+    source: str
+    probe: str | None = None
+    error: str | None = None
+
+
+def _read_metadata_payload(
+    payload: bytes,
+    response: bytes,
+) -> bytes:
+    """Strip matching metadata/read header and return body bytes."""
+
+    if len(response) < 4:
+        raise ValueError(f"Short metadata response: got {len(response)} bytes")
+
+    header = response[:4]
+    expected_group = payload[1]
+    expected_rr = payload[3:5]
+    if header[1] != expected_group or header[2:4] != expected_rr:
+        raise ValueError(
+            "Metadata header mismatch: "
+            f"expected_gg={expected_group:02x} expected_rr={expected_rr.hex()} "
+            f"got={header.hex()}"
+        )
+    return response[4:]
+
+
+def _parse_metadata_bounds(
+    payload: bytes,
+    response: bytes,
+) -> tuple[int | None, int | None]:
+    """Best-effort parse of opcode 0x01 metadata into `(rr_max, ii_max)`."""
+
+    value = _read_metadata_payload(payload, response)
+    if not value:
+        return None, None
+
+    rr_max = None
+    ii_max = None
+    if len(value) >= 2:
+        rr_max = int.from_bytes(value[0:2], byteorder="little", signed=False)
+    if len(value) >= 4:
+        ii_max = int.from_bytes(value[2:4], byteorder="little", signed=False)
+    return rr_max, ii_max
+
+
+def _infer_metadata_range(
+    transport: TransportInterface,
+    *,
+    dst: int,
+    group: int,
+    observer: ScanObserver | None,
+) -> tuple[int | None, int | None, str | None]:
+    """Probe opcode 0x01 metadata for group defaults.
+
+    Returns:
+        `(rr_max, ii_max, error)`
+    """
+
+    payload = build_metadata_probe_payload(group=group, instance=0x00, register=0x0000)
+    if observer is not None:
+        observer.log(f"Metadata probe GG=0x{group:02X}", level="info")
+    emit_trace_label(transport, f"Metadata probe GG=0x{group:02X}")
+    try:
+        response = transport.send(dst, payload)
+    except TransportError as exc:
+        return None, None, f"metadata_transport_error: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive
+        return None, None, f"metadata_unexpected_error: {exc}"
+
+    try:
+        rr_max, ii_max = _parse_metadata_bounds(payload=payload, response=response)
+    except Exception as exc:
+        return None, None, f"metadata_parse_error: {exc}"
+    return rr_max, ii_max, None
+
+
+def _metadata_map_to_dict(metadata_map: dict[int, GroupMetadata]) -> dict[str, Any]:
+    serializable: dict[str, Any] = {}
+    for group, meta in sorted(metadata_map.items()):
+        payload = asdict(meta)
+        rr_max = payload["rr_max"]
+        ii_max = payload["ii_max"]
+        if isinstance(rr_max, int):
+            payload["rr_max"] = _hex_u16(rr_max)
+        if isinstance(ii_max, int):
+            payload["ii_max"] = _hex_u8(ii_max)
+        serializable[_hex_u8(group)] = payload
+    return serializable
 
 
 def _entry_has_valid_value(entry: RegisterEntry) -> bool:
@@ -263,14 +362,63 @@ def scan_b524(
             observer.phase_finish("group_discovery")
             observer.log(f"Discovered {len(classified)} groups", level="info")
 
+        # Phase B': metadata coverage probe (opcode 0x01).
+        # Derive plan dimensions from protocol metadata when possible; use statically
+        # configured fallbacks when metadata is unavailable.
+        metadata_map: dict[int, GroupMetadata] = {}
+        if observer is not None:
+            observer.log("Probing group metadata defaults via opcode 0x01", level="info")
+        emit_trace_label(transport, "Deriving Scan Coverage")
+
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            fallback_rr_max = (
+                int(config["rr_max"]) if config is not None else _UNKNOWN_GROUP_DEFAULT_RR_MAX
+            )
+            if config is not None and group.descriptor == 1.0:
+                fallback_ii_max = int(config["ii_max"])
+            elif config is not None:
+                fallback_ii_max = None
+            else:
+                fallback_ii_max = _UNKNOWN_GROUP_DEFAULT_II_MAX if group.descriptor == 1.0 else None
+
+            rr_max, ii_max, metadata_error = _infer_metadata_range(
+                transport,
+                dst=dst,
+                group=group.group,
+                observer=observer,
+            )
+
+            if rr_max is None or rr_max < 0 or rr_max > 0xFFFF:
+                rr_max = fallback_rr_max
+            if group.descriptor != 1.0:
+                ii_max = None
+            elif ii_max is None or ii_max < 0 or ii_max > 0xFF:
+                ii_max = fallback_ii_max
+            if ii_max is None:
+                ii_max = fallback_ii_max
+
+            source = "metadata" if metadata_error is None else "fallback"
+            metadata_map[group.group] = GroupMetadata(
+                rr_max=rr_max,
+                ii_max=ii_max,
+                source=source,
+                error=metadata_error,
+            )
+            if metadata_error is not None and observer is not None:
+                observer.log(
+                    f"Metadata probe failed for GG=0x{group.group:02X}: "
+                    f"{metadata_error}; using defaults.",
+                    level="warn",
+                )
+
         # Phase C: instance discovery (desc==1.0 groups only).
         instance_total = 0
         for group in classified:
-            config = GROUP_CONFIG.get(group.group)
-            if config is None:
-                continue
             if group.descriptor == 1.0:
-                instance_total += int(config["ii_max"]) + 1
+                meta = metadata_map[group.group]
+                assert meta.ii_max is not None
+                instance_total += meta.ii_max + 1
         if observer is not None:
             observer.phase_start("instance_discovery", total=instance_total or 1)
 
@@ -299,8 +447,9 @@ def scan_b524(
                 group_obj["instances"][_hex_u8(0x00)] = {"present": True}
                 continue
 
-            ii_max = int(config["ii_max"])
-            rr_max = int(config["rr_max"])
+            meta = metadata_map[group.group]
+            ii_max = meta.ii_max
+            rr_max = meta.rr_max
             present_count = 0
             for ii in range(0x00, ii_max + 1):
                 if observer is not None:
@@ -337,8 +486,10 @@ def scan_b524(
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             if config is None:
-                continue
-            rr_max = int(config["rr_max"])
+                config_meta = metadata_map[group.group]
+                rr_max = config_meta.rr_max
+            else:
+                rr_max = metadata_map[group.group].rr_max
 
             group_obj = artifact["groups"][_hex_u8(group.group)]
             if group.descriptor == 1.0:
@@ -380,13 +531,16 @@ def scan_b524(
         planner_groups: list[PlannerGroup] = []
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
+            group_meta = metadata_map[group.group]
+
             if config is None:
-                rr_max_default = 0x30
-                ii_max_default: int | None
+                rr_max_default = group_meta.rr_max
+                ii_max_default = group_meta.ii_max
                 present_instances_default: tuple[int, ...]
                 if group.descriptor == 1.0:
-                    ii_max_default = 0x0A
-                    present_instances_default = tuple(range(0x00, 0x0A + 1))
+                    if ii_max_default is None:
+                        ii_max_default = _UNKNOWN_GROUP_DEFAULT_II_MAX
+                    present_instances_default = tuple(range(0x00, ii_max_default + 1))
                 else:
                     ii_max_default = None
                     present_instances_default = (0x00,)
@@ -405,7 +559,6 @@ def scan_b524(
 
             group_obj = artifact["groups"][_hex_u8(group.group)]
             if group.descriptor == 1.0:
-                ii_max = int(config["ii_max"])
                 present_instances_for_planner: list[int] = [
                     int(ii_key, 0)
                     for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
@@ -417,8 +570,8 @@ def scan_b524(
                         name=group.name,
                         descriptor=group.descriptor,
                         known=True,
-                        ii_max=ii_max,
-                        rr_max=int(config["rr_max"]),
+                        ii_max=group_meta.ii_max,
+                        rr_max=group_meta.rr_max,
                         present_instances=tuple(sorted(present_instances_for_planner)),
                     )
                 )
@@ -430,7 +583,7 @@ def scan_b524(
                         descriptor=group.descriptor,
                         known=True,
                         ii_max=None,
-                        rr_max=int(config["rr_max"]),
+                        rr_max=group_meta.rr_max,
                         present_instances=(0x00,),
                     )
                 )
@@ -493,6 +646,7 @@ def scan_b524(
             "estimated_register_requests": estimate_register_requests(plan),
             "measured_request_rate_rps": round(request_rate_rps, 4) if request_rate_rps else None,
         }
+        artifact["meta"]["group_metadata_bounds"] = _metadata_map_to_dict(metadata_map)
 
         # Phase D: register scan (supports interactive replanning).
         done: set[RegisterTask] = set()

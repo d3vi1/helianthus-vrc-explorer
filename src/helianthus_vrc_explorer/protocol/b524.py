@@ -27,6 +27,7 @@ class B524UnknownOpcodeError(B524IdParseError):
 type RegisterOpcode = Literal[0x02, 0x06]
 type TimerOpcode = Literal[0x03, 0x04]
 type DirectoryOpcode = Literal[0x00]
+type MetadataOpcode = Literal[0x01]
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,19 @@ class B524DirectorySelector:
 
     opcode: DirectoryOpcode
     group: int
+
+
+@dataclass(frozen=True, slots=True)
+class B524MetadataSelector:
+    """B524 metadata probe selector (`01 <GG> <II> <RR_LO> <RR_HI>`).
+
+    The field format is empirically observed on BASV regulators for opcode 0x01.
+    """
+
+    opcode: MetadataOpcode
+    group: int
+    instance: int
+    register: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,11 +97,14 @@ class B524TimerSelector:
     weekday: int
 
 
-type B524IdSelector = B524DirectorySelector | B524RegisterSelector | B524TimerSelector
+type B524IdSelector = (
+    B524DirectorySelector | B524RegisterSelector | B524TimerSelector | B524MetadataSelector
+)
 
 _REGISTER_SELECTOR_LEN: Final[int] = 6
 _TIMER_SELECTOR_LEN: Final[int] = 5
 _DIRECTORY_SELECTOR_LEN: Final[int] = 3
+_METADATA_SELECTOR_LEN: Final[int] = 5
 
 
 def parse_b524_id(id_hex: str) -> B524IdSelector:
@@ -184,6 +201,20 @@ def parse_b524_id(id_hex: str) -> B524IdSelector:
                 weekday=weekday,
             )
 
+        case 0x01:
+            if len(payload) != _METADATA_SELECTOR_LEN:
+                raise B524IdLengthError(
+                    f"Opcode 0x{opcode:02X} expects {_METADATA_SELECTOR_LEN} bytes, "
+                    f"got {len(payload)}"
+                )
+            register = int.from_bytes(payload[3:5], byteorder="little", signed=False)
+            return B524MetadataSelector(
+                opcode=0x01,
+                group=payload[1],
+                instance=payload[2],
+                register=register,
+            )
+
         case _:
             raise B524UnknownOpcodeError(f"Unknown B524 opcode: 0x{opcode:02X}")
 
@@ -216,6 +247,28 @@ def build_directory_probe_payload(group: int) -> bytes:
 
     _validate_u8("group", group)
     return bytes((0x00, group, 0x00))
+
+
+def build_metadata_probe_payload(group: int, instance: int, register: int) -> bytes:
+    """Build a raw B524 metadata probe payload.
+
+    Payload structure (`<RR>` is a little-endian u16):
+
+        <opcode> <GG> <II> <RR_LO> <RR_HI>
+
+    Where:
+    - opcode: 0x01
+    - GG: group
+    - II: instance
+    - RR: register id
+    """
+
+    _validate_u8("group", group)
+    _validate_u8("instance", instance)
+    _validate_u16("register", register)
+    return bytes((0x01, group, instance)) + register.to_bytes(
+        2, byteorder="little", signed=False
+    )
 
 
 def build_register_read_payload(

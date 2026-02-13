@@ -3,6 +3,7 @@ import pytest
 from helianthus_vrc_explorer.protocol.b524 import (
     B524IdHexError,
     B524IdLengthError,
+    B524MetadataSelector,
     B524RegisterSelector,
     B524TimerSelector,
     B524UnknownOpcodeError,
@@ -95,6 +96,21 @@ def test_parse_b524_id_timer_examples() -> None:
         opcode=0x04,
         selector=(0x00, 0x00, 0x01),
         weekday=0x06,
+    )
+
+
+def test_parse_b524_id_metadata_example() -> None:
+    assert parse_b524_id("010000") == B524MetadataSelector(
+        opcode=0x01,
+        group=0x00,
+        instance=0x00,
+        register=0x0000,
+    )
+    assert parse_b524_id("b524,010a0010") == B524MetadataSelector(
+        opcode=0x01,
+        group=0x0A,
+        instance=0x00,
+        register=0x1000,
     )
 
 

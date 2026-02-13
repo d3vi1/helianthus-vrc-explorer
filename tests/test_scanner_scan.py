@@ -40,6 +40,33 @@ class InterruptingTransport(TransportInterface):
         return self._inner.send(dst, payload)
 
 
+class MetadataAwareTransport(TransportInterface):
+    def __init__(
+        self,
+        inner: TransportInterface,
+        *,
+        metadata: dict[int, tuple[int, int]] | None = None,
+    ) -> None:
+        self._inner = inner
+        self._metadata = metadata or {}
+        self.metadata_requests: list[tuple[int, int, int]] = []
+
+    def send(self, dst: int, payload: bytes) -> bytes:
+        if payload and payload[0] == 0x01 and len(payload) == 5:
+            group = payload[1]
+            instance = payload[2]
+            register = int.from_bytes(payload[3:5], byteorder="little", signed=False)
+            self.metadata_requests.append((group, instance, register))
+            rr_max, ii_max = self._metadata[group]
+            return (
+                bytes((0x01, group))
+                + payload[3:5]
+                + rr_max.to_bytes(2, byteorder="little")
+                + ii_max.to_bytes(2, byteorder="little")
+            )
+        return self._inner.send(dst, payload)
+
+
 def _write_fixture_group_02(tmp_path: Path) -> Path:
     fixture = {
         "meta": {"dummy_transport": {"directory_terminator_group": "0x05"}},
@@ -169,6 +196,59 @@ def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> Non
         rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
     }
     assert scanned_registers == set(range(0x21 + 1))
+
+
+def test_scan_b524_uses_metadata_for_group_bounds(tmp_path: Path) -> None:
+    transport = MetadataAwareTransport(
+        RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path))),
+        metadata={0x02: (0x0002, 0x0002)},
+    )
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    plan = artifact["meta"]["scan_plan"]["groups"]["0x02"]
+    assert plan["rr_max"] == "0x0002"
+    assert plan["instances"] == ["0x00"]
+    bounds = artifact["meta"]["group_metadata_bounds"]["0x02"]
+    assert bounds["rr_max"] == "0x0002"
+    assert bounds["ii_max"] == "0x02"
+    assert bounds["source"] == "metadata"
+    scanned_registers = {
+        rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
+    }
+    assert scanned_registers == set(range(0x0002 + 1))
+
+
+def test_scan_b524_falls_back_to_config_when_metadata_fails(monkeypatch, tmp_path: Path) -> None:
+    import sys
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    transport = RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path)))
+
+    def fake_infer_metadata(*_args, **_kwargs) -> tuple[None, None, str]:
+        return (None, None, "metadata transport error")
+
+    monkeypatch.setattr(scan_mod, "_infer_metadata_range", fake_infer_metadata)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+    )
+
+    plan = artifact["meta"]["scan_plan"]["groups"]["0x02"]
+    assert plan["rr_max"] == "0x0021"
+    bounds = artifact["meta"]["group_metadata_bounds"]["0x02"]
+    assert bounds["source"] == "fallback"
+    assert bounds["error"] == "metadata transport error"
 
 
 def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path: Path) -> None:
