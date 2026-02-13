@@ -49,18 +49,16 @@ class MetadataAwareTransport(TransportInterface):
     ) -> None:
         self._inner = inner
         self._metadata = metadata or {}
-        self.metadata_requests: list[tuple[int, int, int]] = []
+        self.metadata_requests: list[tuple[int, int]] = []
 
     def send(self, dst: int, payload: bytes) -> bytes:
-        if payload and payload[0] == 0x01 and len(payload) == 5:
+        if payload and payload[0] == 0x01 and len(payload) == 3:
             group = payload[1]
             instance = payload[2]
-            register = int.from_bytes(payload[3:5], byteorder="little", signed=False)
-            self.metadata_requests.append((group, instance, register))
+            self.metadata_requests.append((group, instance))
             rr_max, ii_max = self._metadata[group]
             return (
-                bytes((0x01, group))
-                + payload[3:5]
+                bytes((0x01, group, 0x00, 0x00))
                 + rr_max.to_bytes(2, byteorder="little")
                 + ii_max.to_bytes(2, byteorder="little")
             )
@@ -215,6 +213,7 @@ def test_scan_b524_uses_metadata_for_group_bounds(tmp_path: Path) -> None:
     plan = artifact["meta"]["scan_plan"]["groups"]["0x02"]
     assert plan["rr_max"] == "0x0002"
     assert plan["instances"] == ["0x00"]
+    assert transport.metadata_requests == [(0x02, 0x01)]
     bounds = artifact["meta"]["group_metadata_bounds"]["0x02"]
     assert bounds["rr_max"] == "0x0002"
     assert bounds["ii_max"] == "0x02"

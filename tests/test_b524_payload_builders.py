@@ -46,19 +46,18 @@ def test_build_directory_probe_payload_range_validation(group: int) -> None:
 
 
 @pytest.mark.parametrize(
-    ("group", "instance", "register", "expected_hex"),
+    ("group", "instance", "expected_hex"),
     [
-        (0x00, 0x00, 0x0000, "01000000"),
-        (0x0A, 0x01, 0x1000, "010a011000"),
+        (0x00, 0x00, "010000"),
+        (0x0A, 0x01, "010a01"),
     ],
 )
 def test_build_metadata_probe_payload(
     group: int,
     instance: int,
-    register: int,
     expected_hex: str,
 ) -> None:
-    assert build_metadata_probe_payload(group, instance, register) == bytes.fromhex(expected_hex)
+    assert build_metadata_probe_payload(group, instance) == bytes.fromhex(expected_hex)
 
 
 @pytest.mark.parametrize(

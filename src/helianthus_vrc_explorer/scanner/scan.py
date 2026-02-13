@@ -59,6 +59,17 @@ def _read_metadata_payload(
 ) -> bytes:
     """Strip matching metadata/read header and return body bytes."""
 
+    if len(response) < 1:
+        raise ValueError("Empty metadata response")
+
+    # Short metadata probe form: 01 <GG> <II>. Accept both headered replies
+    # (`<TT> <GG> <RR_LO> <RR_HI> ...`) and bare payload replies.
+    if len(payload) == 3:
+        expected_group = payload[1]
+        if len(response) >= 4 and response[1] == expected_group:
+            return response[4:]
+        return response
+
     if len(response) < 4:
         raise ValueError(f"Short metadata response: got {len(response)} bytes")
 
@@ -106,7 +117,7 @@ def _infer_metadata_range(
         `(rr_max, ii_max, error)`
     """
 
-    payload = build_metadata_probe_payload(group=group, instance=0x00, register=0x0000)
+    payload = build_metadata_probe_payload(group=group, instance=0x01)
     if observer is not None:
         observer.log(f"Metadata probe GG=0x{group:02X}", level="info")
     emit_trace_label(transport, f"Metadata probe GG=0x{group:02X}")

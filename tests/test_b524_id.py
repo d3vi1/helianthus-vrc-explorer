@@ -104,13 +104,11 @@ def test_parse_b524_id_metadata_example() -> None:
         opcode=0x01,
         group=0x00,
         instance=0x00,
-        register=0x0000,
     )
-    assert parse_b524_id("b524,010a0010") == B524MetadataSelector(
+    assert parse_b524_id("b524,010a01") == B524MetadataSelector(
         opcode=0x01,
         group=0x0A,
-        instance=0x00,
-        register=0x1000,
+        instance=0x01,
     )
 
 
