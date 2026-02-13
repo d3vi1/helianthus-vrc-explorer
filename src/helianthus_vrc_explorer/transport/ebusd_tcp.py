@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import random
 import socket
 import string
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,14 +22,19 @@ class EbusdTcpConfig:
     timeout_s: float = 5.0
     src: int | None = None
     trace_path: Path | None = None
+    timeout_max_retries: int = 5
+    collision_max_retries: int = 5
+    collision_backoff_min_ms: int = 10
+    collision_backoff_max_ms: int = 100
+    no_signal_poll_ms: int = 200
+    no_signal_max_s: float = 15.0
+    max_command_s: float = 30.0
 
 
 _PRIMARY_VAILLANT: Final[int] = 0xB5
 _SECONDARY_EXTENDED_REGISTER: Final[int] = 0x24
 _EBUSD_COMMAND_TERMINATOR: Final[bytes] = b"\n"
 _HEX_CHARS: Final[set[str]] = set(string.hexdigits)
-_TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
-_NO_SIGNAL_RETRY_DELAY_S: Final[float] = 10.0
 _POST_RESPONSE_DRAIN_TIMEOUT_S: Final[float] = 0.01
 _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS: Final[tuple[str, ...]] = (
     "syn received",
@@ -51,6 +57,15 @@ def _is_connection_level_timeout(exc: TransportTimeout) -> bool:
 def _is_connection_level_error(exc: TransportError) -> bool:
     lowered = str(exc).lower()
     return lowered.startswith("failed talking to ebusd") or lowered == "empty ebusd response"
+
+
+def _with_retry_suffix(exc: TransportError, suffix: str) -> TransportError:
+    message = str(exc)
+    if suffix and suffix not in message:
+        message = f"{message} ({suffix})"
+    if isinstance(exc, TransportTimeout):
+        return TransportTimeout(message)
+    return TransportError(message)
 
 
 def _utc_ts() -> str:
@@ -208,10 +223,28 @@ class EbusdTcpTransport(TransportInterface):
     """TCP transport against an ebusd daemon."""
 
     def __init__(self, config: EbusdTcpConfig) -> None:
+        self._validate_config(config)
         self._config = config
         self._trace_seq = 0
         self._session_depth = 0
         self._session: _EbusdTcpSession | None = None
+
+    @staticmethod
+    def _validate_config(config: EbusdTcpConfig) -> None:
+        if config.timeout_max_retries < 0:
+            raise ValueError("timeout_max_retries must be >= 0")
+        if config.collision_max_retries < 0:
+            raise ValueError("collision_max_retries must be >= 0")
+        if config.collision_backoff_min_ms < 0 or config.collision_backoff_max_ms < 0:
+            raise ValueError("collision backoff must be >= 0 ms")
+        if config.collision_backoff_max_ms < config.collision_backoff_min_ms:
+            raise ValueError("collision_backoff_max_ms must be >= collision_backoff_min_ms")
+        if config.no_signal_poll_ms <= 0:
+            raise ValueError("no_signal_poll_ms must be > 0")
+        if config.no_signal_max_s <= 0:
+            raise ValueError("no_signal_max_s must be > 0")
+        if config.max_command_s <= 0:
+            raise ValueError("max_command_s must be > 0")
 
     def _trace(self, message: str) -> None:
         trace_path = self._config.trace_path
@@ -292,65 +325,98 @@ class EbusdTcpTransport(TransportInterface):
     def send(self, dst: int, payload: bytes) -> bytes:
         self._trace_seq += 1
         seq = self._trace_seq
-        last_timeout: TransportTimeout | None = None
-        last_retryable_error: TransportError | None = None
-        recovered_no_signal = False
-        for attempt in range(2):
-            try:
-                return self._send_once(seq, dst, payload)
-            except TransportTimeout as exc:
-                last_timeout = exc
-                if attempt == 0:
-                    if self._session_depth > 0 and _is_connection_level_timeout(exc):
-                        # Connection-level timeouts should reconnect in session mode.
-                        self.close()
-                    time.sleep(_TIMEOUT_RETRY_DELAY_S)
-                    continue
-                raise
-            except TransportError as exc:
-                if attempt == 0 and self._session_depth > 0 and _is_connection_level_error(exc):
-                    # Connection-level failures should reconnect in session mode.
-                    self.close()
-                    time.sleep(_TIMEOUT_RETRY_DELAY_S)
-                    continue
-                if attempt == 0 and (not recovered_no_signal) and _is_no_signal_error(exc):
-                    recovered_no_signal = True
-                    self._trace(f"#{seq} RECOVER no_signal sleep_s={_NO_SIGNAL_RETRY_DELAY_S}")
-                    time.sleep(_NO_SIGNAL_RETRY_DELAY_S)
-                    # Best-effort health check: if `info` still returns "no signal", surface
-                    # the problem instead of retrying forever.
-                    try:
-                        self._send_info_once(seq)
-                    except TransportError as info_exc:
-                        if _is_no_signal_error(info_exc):
-                            raise TransportError(
-                                "ERR: no signal (still missing after wait+info check)"
-                            ) from exc
-                        # Other transport errors from `info` are treated as non-fatal; continue to
-                        # retry the last payload once.
-                    except TransportTimeout:
-                        # `info` timing out is not a definitive signal status; retry last payload
-                        # once.
-                        pass
-                    continue
-                if attempt == 0 and _is_retryable_transport_error(exc):
-                    last_retryable_error = exc
-                    time.sleep(_TIMEOUT_RETRY_DELAY_S)
-                    continue
-                raise
-        # Defensive: loop returns or raises.
-        if last_timeout is not None:
-            raise last_timeout
-        assert last_retryable_error is not None
-        raise last_retryable_error
+        return self._send_with_policy(
+            seq,
+            lambda: self._send_once(seq, dst, payload),
+        )
 
-    def _send_info_once(self, seq: int) -> None:
-        cmd = _build_info_command()
-        cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
-        self._trace(f"#{seq} INFO cmd={cmd_txt}")
-        lines = self._send_command_lines(cmd, read_all=False)
-        self._trace(f"#{seq} INFO_RECV lines={lines!r}")
-        _parse_ebusd_info_lines(lines)
+    def _send_with_policy(
+        self,
+        seq: int,
+        send_once: Callable[[], bytes],
+    ) -> bytes:
+        timeout_retries = 0
+        collision_retries = 0
+        no_signal_start_monotonic: float | None = None
+        connection_retried = False
+        command_started = time.monotonic()
+        max_command_s = self._config.max_command_s
+
+        while True:
+            if time.monotonic() - command_started >= max_command_s:
+                raise TransportTimeout(f"Command exceeded {max_command_s:.1f}s retry budget")
+            try:
+                return send_once()
+            except TransportTimeout as exc:
+                if _is_connection_level_timeout(exc):
+                    # Preserve previous behavior: one reconnect attempt in persistent-session mode.
+                    if self._session_depth > 0:
+                        self.close()
+                    if not connection_retried:
+                        connection_retried = True
+                        self._trace(f"#{seq} RETRY type=connection_timeout n=1/1")
+                        continue
+                    raise _with_retry_suffix(exc, "connection retry exhausted") from exc
+
+                timeout_retries += 1
+                if timeout_retries > self._config.timeout_max_retries:
+                    raise _with_retry_suffix(
+                        exc,
+                        f"timeout retries exhausted ({self._config.timeout_max_retries})",
+                    ) from exc
+                self._trace(
+                    "#"
+                    f"{seq} RETRY type=timeout "
+                    f"n={timeout_retries}/{self._config.timeout_max_retries}"
+                )
+                # Immediate retry for ERR: read timeout (no backoff).
+                continue
+            except TransportError as exc:
+                if _is_connection_level_error(exc):
+                    if self._session_depth > 0:
+                        self.close()
+                    if not connection_retried:
+                        connection_retried = True
+                        self._trace(f"#{seq} RETRY type=connection_error n=1/1")
+                        continue
+                    raise _with_retry_suffix(exc, "connection retry exhausted") from exc
+
+                if _is_no_signal_error(exc):
+                    if no_signal_start_monotonic is None:
+                        no_signal_start_monotonic = time.monotonic()
+                    elapsed_s = time.monotonic() - no_signal_start_monotonic
+                    if elapsed_s >= self._config.no_signal_max_s:
+                        raise _with_retry_suffix(
+                            exc,
+                            f"no-signal polling exceeded {self._config.no_signal_max_s:.1f}s",
+                        ) from exc
+                    sleep_s = self._config.no_signal_poll_ms / 1000.0
+                    self._trace(
+                        f"#{seq} RETRY type=no_signal elapsed_ms={int(elapsed_s * 1000)} "
+                        f"sleep_ms={self._config.no_signal_poll_ms}"
+                    )
+                    time.sleep(sleep_s)
+                    continue
+
+                no_signal_start_monotonic = None
+                if _is_retryable_transport_error(exc):
+                    collision_retries += 1
+                    if collision_retries > self._config.collision_max_retries:
+                        raise _with_retry_suffix(
+                            exc,
+                            f"collision retries exhausted ({self._config.collision_max_retries})",
+                        ) from exc
+                    min_ms = self._config.collision_backoff_min_ms
+                    max_ms = self._config.collision_backoff_max_ms
+                    sleep_s = random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+                    self._trace(
+                        f"#{seq} RETRY type=collision "
+                        f"n={collision_retries}/{self._config.collision_max_retries} "
+                        f"sleep_ms={int(round(sleep_s * 1000))}"
+                    )
+                    time.sleep(sleep_s)
+                    continue
+                raise
 
     def _send_once(self, seq: int, dst: int, payload: bytes) -> bytes:
         cmd = _build_hex_command(self._config, dst, payload)
@@ -495,12 +561,33 @@ class EbusdTcpTransport(TransportInterface):
         self._trace_seq += 1
         seq = self._trace_seq
         cmd = _build_hex_command_custom(self._config, dst, primary, secondary, payload)
+        return self._send_with_policy(
+            seq,
+            lambda: self._send_proto_once(
+                seq,
+                cmd,
+                primary=primary,
+                secondary=secondary,
+                payload=payload,
+                expect_response=expect_response,
+            ),
+        )
+
+    def _send_proto_once(
+        self,
+        seq: int,
+        cmd: bytes,
+        *,
+        primary: int,
+        secondary: int,
+        payload: bytes,
+        expect_response: bool,
+    ) -> bytes:
         cmd_txt = cmd.decode("ascii", errors="replace").rstrip("\r\n")
         self._trace(
             f"#{seq} SEND_PROTO primary=0x{primary:02X} secondary=0x{secondary:02X} "
             f"payload={_short_hex(payload)} cmd={cmd_txt}"
         )
-
         lines = self._send_command_lines(cmd, read_all=False)
         self._trace(f"#{seq} RECV_PROTO lines={lines!r}")
 

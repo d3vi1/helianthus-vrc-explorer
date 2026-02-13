@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import math
-import time
 from typing import Final, TypedDict
 
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
@@ -14,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 _REMOTE_GROUPS: Final[set[int]] = {0x09, 0x0A, 0x0C}
 _PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100))
-_TIMEOUT_RETRY_DELAY_S: Final[float] = 1.0
 
 
 class RegisterEntry(TypedDict):
@@ -192,41 +190,35 @@ def read_register(
         f"Reading dst=0x{dst:02X} GG=0x{group:02X} II=0x{instance:02X} RR=0x{register:04X}",
     )
     payload = build_register_read_payload(opcode, group=group, instance=instance, register=register)
-    response: bytes | None = None
-    for attempt in range(2):
-        try:
-            response = transport.send(dst, payload)
-            break
-        except TransportTimeout:
-            if attempt == 0:
-                time.sleep(_TIMEOUT_RETRY_DELAY_S)
-                continue
-            return {
-                "read_opcode": read_opcode,
-                "reply_hex": None,
-                "tt": None,
-                "tt_kind": None,
-                "ebusd_name": None,
-                "myvaillant_name": None,
-                "raw_hex": None,
-                "type": None,
-                "value": None,
-                "error": "timeout",
-            }
-        except TransportError as exc:
-            return {
-                "read_opcode": read_opcode,
-                "reply_hex": None,
-                "tt": None,
-                "tt_kind": None,
-                "ebusd_name": None,
-                "myvaillant_name": None,
-                "raw_hex": None,
-                "type": None,
-                "value": None,
-                "error": f"transport_error: {exc}",
-            }
-    assert response is not None
+    try:
+        response = transport.send(dst, payload)
+    except TransportTimeout:
+        return {
+            "read_opcode": read_opcode,
+            "reply_hex": None,
+            "tt": None,
+            "tt_kind": None,
+            "ebusd_name": None,
+            "myvaillant_name": None,
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": "timeout",
+        }
+    except TransportError as exc:
+        return {
+            "read_opcode": read_opcode,
+            "reply_hex": None,
+            "tt": None,
+            "tt_kind": None,
+            "ebusd_name": None,
+            "myvaillant_name": None,
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": f"transport_error: {exc}",
+        }
+
     reply_hex = response.hex()
     tt: int | None = response[0] if response else None
     tt_kind: str | None = _interpret_tt(tt) if tt is not None else None

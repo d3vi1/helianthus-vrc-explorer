@@ -34,15 +34,10 @@ class _AlwaysTimeoutTransport(TransportInterface):
         raise TransportTimeout("boom")
 
 
-def test_read_register_retries_timeout_once_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    import helianthus_vrc_explorer.scanner.register as register
-
-    sleep_calls: list[float] = []
-
-    def _sleep(seconds: float) -> None:
-        sleep_calls.append(seconds)
-
-    monkeypatch.setattr(register.time, "sleep", _sleep)
+def test_read_register_surfaces_timeout_without_local_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = monkeypatch
     transport = _FlakyOnceTransport()
 
     entry = read_register(
@@ -55,25 +50,17 @@ def test_read_register_retries_timeout_once_then_succeeds(monkeypatch: pytest.Mo
         type_hint="UIN",
     )
 
-    assert transport.calls == 2
-    assert sleep_calls == [1.0]
-    assert entry["error"] is None
-    assert entry["type"] == "UIN"
-    assert entry["value"] == 1
-    assert entry["raw_hex"] == "0100"
+    # Scanner layer now delegates retry policy to transport, so a timeout from this dummy
+    # transport is surfaced directly.
+    assert transport.calls == 1
+    assert entry["error"] == "timeout"
+    assert entry["raw_hex"] is None
 
 
-def test_read_register_retries_timeout_once_then_returns_timeout(
+def test_read_register_timeout_returns_timeout_entry_without_local_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import helianthus_vrc_explorer.scanner.register as register
-
-    sleep_calls: list[float] = []
-
-    def _sleep(seconds: float) -> None:
-        sleep_calls.append(seconds)
-
-    monkeypatch.setattr(register.time, "sleep", _sleep)
+    _ = monkeypatch
     transport = _AlwaysTimeoutTransport()
 
     entry = read_register(
@@ -86,8 +73,7 @@ def test_read_register_retries_timeout_once_then_returns_timeout(
         type_hint="UIN",
     )
 
-    assert transport.calls == 2
-    assert sleep_calls == [1.0]
+    assert transport.calls == 1
     assert entry["error"] == "timeout"
     assert entry["raw_hex"] is None
 
@@ -183,9 +169,8 @@ def test_is_instance_present_group_0c_transport_errors_do_not_count_as_present()
 def test_is_instance_present_group_0c_true_on_first_valid_register_response() -> None:
     transport = _FlakyOnceTransport()
 
-    # Avoid sleeping on the first timeout: this tests presence logic, not retry delay.
+    # First probe times out, next probe succeeds and marks the instance present.
     assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is True
-    # First RR=0x0002 read times out then succeeds on retry, so two calls.
     assert transport.calls == 2
 
 

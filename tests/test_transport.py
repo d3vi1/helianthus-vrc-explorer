@@ -214,11 +214,13 @@ def test_transport_send_retries_timeout_once_then_succeeds(monkeypatch: pytest.M
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
-    assert sleep_calls == [1.0]
+    assert sleep_calls == []
 
 
-def test_transport_send_retries_timeout_once_then_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    with _run_ebusd_test_server([["ERR: timeout"], ["ERR: timeout"]]) as (host, port, commands):
+def test_transport_send_timeout_retries_exhaust_after_five_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _run_ebusd_test_server([["ERR: timeout"] for _ in range(6)]) as (host, port, commands):
         sleep_calls: list[float] = []
 
         def _sleep(seconds: float) -> None:
@@ -229,11 +231,11 @@ def test_transport_send_retries_timeout_once_then_raises(monkeypatch: pytest.Mon
         monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
         payload = bytes.fromhex("020002000F00")
-        with pytest.raises(TransportTimeout):
+        with pytest.raises(TransportTimeout, match=r"timeout retries exhausted"):
             transport.send(0x15, payload)
 
-    assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
-    assert sleep_calls == [1.0]
+    assert commands == ["hex 15B52406020002000F00"] * 6
+    assert sleep_calls == []
 
 
 @pytest.mark.parametrize("err_line", ["ERR: SYN received", "ERR: wrong symbol received"])
@@ -250,13 +252,14 @@ def test_transport_send_retries_retryable_transport_errors_once_then_succeeds(
         import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
 
         monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        monkeypatch.setattr(ebusd_tcp.random, "uniform", lambda _a, _b: 0.05)
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
         payload = bytes.fromhex("020002000F00")
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
-    assert sleep_calls == [1.0]
+    assert sleep_calls == [0.05]
 
 
 def test_transport_send_retries_socket_timeout_once_then_succeeds(
@@ -277,13 +280,13 @@ def test_transport_send_retries_socket_timeout_once_then_succeeds(
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
-    assert sleep_calls == [1.0]
+    assert sleep_calls == []
 
 
-def test_transport_send_recovers_from_no_signal_then_retries_last_payload(
+def test_transport_send_polls_no_signal_then_recovers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with _run_ebusd_test_server([["ERR: no signal"], ["signal: ok"], ["010203"]]) as (
+    with _run_ebusd_test_server([["ERR: no signal"], ["010203"]]) as (
         host,
         port,
         commands,
@@ -301,29 +304,40 @@ def test_transport_send_recovers_from_no_signal_then_retries_last_payload(
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
-    assert commands == ["hex 15B52406020002000F00", "info", "hex 15B52406020002000F00"]
-    assert sleep_calls == [10.0]
+    assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
+    assert sleep_calls == [0.2]
 
 
-def test_transport_send_no_signal_still_missing_after_info_raises(
+def test_transport_send_no_signal_polling_exhausts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with _run_ebusd_test_server([["ERR: no signal"], ["ERR: no signal"]]) as (host, port, commands):
+    with _run_ebusd_test_server([["ERR: no signal"]] * 4) as (host, port, commands):
         sleep_calls: list[float] = []
+        now = {"t": 0.0}
 
         def _sleep(seconds: float) -> None:
             sleep_calls.append(seconds)
+            now["t"] += seconds
 
         import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
 
         monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
-        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        monkeypatch.setattr(ebusd_tcp.time, "monotonic", lambda: now["t"])
+        transport = EbusdTcpTransport(
+            EbusdTcpConfig(
+                host=host,
+                port=port,
+                timeout_s=0.5,
+                no_signal_max_s=0.6,
+                no_signal_poll_ms=200,
+            )
+        )
         payload = bytes.fromhex("020002000F00")
-        with pytest.raises(TransportError, match=r"no signal"):
+        with pytest.raises(TransportError, match=r"no-signal polling exceeded 0.6s"):
             transport.send(0x15, payload)
 
-    assert commands == ["hex 15B52406020002000F00", "info"]
-    assert sleep_calls == [10.0]
+    assert commands == ["hex 15B52406020002000F00"] * 4
+    assert sleep_calls == [0.2, 0.2, 0.2]
 
 
 def test_parse_ebusd_info_lines_scans_all_lines_for_errors() -> None:
@@ -431,4 +445,69 @@ def test_transport_session_reconnects_on_socket_timeout_once_then_succeeds(
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
-    assert sleep_calls == [1.0]
+    assert sleep_calls == []
+
+
+def test_transport_send_collision_retries_exhaust(monkeypatch: pytest.MonkeyPatch) -> None:
+    err = "ERR: SYN received"
+    with _run_ebusd_test_server([[err] for _ in range(6)]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        monkeypatch.setattr(ebusd_tcp.random, "uniform", lambda _a, _b: 0.03)
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        payload = bytes.fromhex("020002000F00")
+        with pytest.raises(TransportError, match=r"collision retries exhausted"):
+            transport.send(0x15, payload)
+
+    assert commands == ["hex 15B52406020002000F00"] * 6
+    assert sleep_calls == [0.03] * 5
+
+
+def test_transport_send_respects_max_command_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _run_ebusd_test_server([["ERR: no signal"]] * 10) as (host, port, _commands):
+        now = {"t": 0.0}
+
+        def _sleep(seconds: float) -> None:
+            now["t"] += seconds
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        monkeypatch.setattr(ebusd_tcp.time, "monotonic", lambda: now["t"])
+        transport = EbusdTcpTransport(
+            EbusdTcpConfig(
+                host=host,
+                port=port,
+                timeout_s=0.5,
+                no_signal_max_s=15.0,
+                no_signal_poll_ms=200,
+                max_command_s=0.5,
+            )
+        )
+        payload = bytes.fromhex("020002000F00")
+        with pytest.raises(TransportTimeout, match=r"Command exceeded 0.5s retry budget"):
+            transport.send(0x15, payload)
+
+
+def test_transport_send_proto_uses_retry_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _run_ebusd_test_server([["ERR: timeout"], ["0100"]]) as (host, port, commands):
+        sleep_calls: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
+
+        monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
+        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
+        result = transport.send_proto(0x15, 0x07, 0x04, b"")
+
+    assert result == bytes.fromhex("00")
+    assert commands == ["hex 15070400", "hex 15070400"]
+    assert sleep_calls == []
