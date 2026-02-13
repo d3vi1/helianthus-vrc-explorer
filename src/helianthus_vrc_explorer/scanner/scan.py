@@ -656,6 +656,14 @@ def scan_b524(
                     )
                     if mv is not None:
                         entry["myvaillant_name"] = mv.leaf
+                        if entry.get("ebusd_name") is None:
+                            mapped_ebusd_name = mv.resolved_ebusd_name(
+                                group=task.group,
+                                instance=task.instance,
+                                register=task.register,
+                            )
+                            if mapped_ebusd_name:
+                                entry["ebusd_name"] = mapped_ebusd_name
                 done.add(task)
 
                 group_key = _hex_u8(task.group)

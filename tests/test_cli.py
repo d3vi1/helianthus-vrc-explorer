@@ -13,6 +13,7 @@ from helianthus_vrc_explorer.cli import (
     _build_scan_session_preface,
     _format_fw,
     _load_default_dry_run_fixture_text,
+    _load_ebus_model_name_map,
     _probe_scan_identity,
     _resolve_scan_destination,
     app,
@@ -300,6 +301,11 @@ def test_default_dry_run_fixture_is_bundled() -> None:
     assert fixture_source == "packaged:vrc720_full_scan.json"
 
 
+def test_default_ebus_model_name_map_includes_basv2() -> None:
+    names = _load_ebus_model_name_map()
+    assert names["BASV2"] == "Bus Application Software Version 2"
+
+
 def test_format_fw() -> None:
     assert _format_fw("0507", "1704") == "SW 0507 / HW 1704"
     assert _format_fw("", "") == "n/a"
@@ -312,8 +318,8 @@ def test_build_scan_session_preface() -> None:
         endpoint="127.0.0.1:8888",
         identity={
             "device": "VRC 720f/2 (BASV2)",
-            "model": "0020262148",
-            "serial": "21213400202621480082014267N7",
+            "model": "Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148",
+            "serial": "21213400202621480000000001N7",
             "firmware": "SW 0507 / HW 1704",
         },
     )
@@ -335,8 +341,26 @@ class _FakeTransport:
         chunks = {
             0x24: b"\x0021213400",
             0x25: b"\x0020262148",
-            0x26: b"\x0000820142",
-            0x27: b"\x0067N7    ",
+            0x26: b"\x0000000000",
+            0x27: b"\x0001N7    ",
+        }
+        return chunks[qq]
+
+
+class _FakeTransportBasv:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int, bytes]] = []
+
+    def send_proto(self, dst: int, primary: int, secondary: int, payload: bytes) -> bytes:
+        self.calls.append((primary, secondary, payload))
+        if (primary, secondary) == (0x07, 0x04):
+            return bytes.fromhex("b5424153563205071704")
+        qq = payload[0] if payload else 0
+        chunks = {
+            0x24: b"\x0021213400",
+            0x25: b"\x0020262148",
+            0x26: b"\x0000000000",
+            0x27: b"\x0001N7    ",
         }
         return chunks[qq]
 
@@ -395,9 +419,16 @@ class _AutoResolveTransport:
 def test_probe_scan_identity() -> None:
     identity = _probe_scan_identity(_FakeTransport(), dst=0x15)  # type: ignore[arg-type]
     assert identity["device"] == "VRC 720f/2"
-    assert identity["model"] == "0020262148"
-    assert identity["serial"] != "n/a"
+    assert identity["model"] == "Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148"
+    assert identity["serial"] == "21213400202621480000000001N7"
     assert identity["firmware"] == "SW 0507 / HW 1704"
+
+
+def test_probe_scan_identity_formats_basv2_friendly_name() -> None:
+    identity = _probe_scan_identity(_FakeTransportBasv(), dst=0x15)  # type: ignore[arg-type]
+    assert identity["device"] == "Bus Application Software Version 2 (BASV2)"
+    assert identity["model"] == "Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148"
+    assert identity["serial"] == "21213400202621480000000001N7"
 
 
 def test_resolve_scan_destination_explicit_skips_autodiscovery() -> None:

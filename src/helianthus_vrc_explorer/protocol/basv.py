@@ -40,7 +40,12 @@ class VaillantScanId:
 
     @property
     def serial_number(self) -> str:
-        # Best-effort: the scan-id "serial" is everything except the product number.
+        # Keep the complete scan-id token as the serial identifier.
+        return self.raw
+
+    @property
+    def serial_number_short(self) -> str:
+        # Legacy shorthand used in earlier artifacts/logs.
         return f"{self.prefix}{self.year}{self.week}{self.supplier}{self.counter}{self.suffix}"
 
 
@@ -87,39 +92,53 @@ def parse_vaillant_scan_id_chunks(chunks: list[bytes]) -> VaillantScanId:
     if len(chunks) != 4:
         raise VaillantScanIdParseError(f"Expected 4 chunks (0x24..0x27), got {len(chunks)}")
 
-    parts: list[str] = []
-    for chunk in chunks:
+    raw_chunks = [bytes(chunk) for chunk in chunks]
+    for chunk in raw_chunks:
         if len(chunk) < 9:
             raise VaillantScanIdParseError(
                 f"Scan-id chunk too short: expected >=9 bytes, got {len(chunk)}"
             )
-        status = chunk[0]
-        if status != 0x00:
-            raise VaillantScanIdParseError(f"Scan-id chunk returned status 0x{status:02X}")
-        segment = chunk[1:9]
-        parts.append(segment.decode("ascii", errors="replace"))
 
-    raw = "".join(parts)
-    raw = raw.rstrip("\x00").strip()
+    # Variant A (legacy/documented in many setups):
+    #   <status:1><ascii:8> for each QQ=0x24..0x27
+    status_payload: bytes | None = None
+    if all(chunk[0] == 0x00 for chunk in raw_chunks):
+        status_payload = b"".join(chunk[1:9] for chunk in raw_chunks)
 
-    if len(raw) < 28:
-        raise VaillantScanIdParseError(f"Scan-id string too short: {len(raw)} chars")
+    # Variant B (observed on some VRC setups):
+    #   9-byte chunk payload without a dedicated status byte; first chunk may start with 0x00,
+    #   last chunk may be padded with 0xFF.
+    raw9_payload = b"".join(chunk[:9] for chunk in raw_chunks)
 
-    prefix = raw[0:2]
-    year = raw[2:4]
-    week = raw[4:6]
-    product = raw[6:16]
-    supplier = raw[16:20]
-    counter = raw[20:26]
-    suffix = raw[26:28]
+    candidate_payloads: list[bytes] = []
+    if status_payload is not None:
+        candidate_payloads.append(status_payload)
+    candidate_payloads.append(raw9_payload)
 
-    return VaillantScanId(
-        prefix=prefix,
-        year=year,
-        week=week,
-        product=product,
-        supplier=supplier,
-        counter=counter,
-        suffix=suffix,
-        raw=raw,
+    for payload in candidate_payloads:
+        raw = payload.strip(b"\x00\x20\xff").decode("ascii", errors="replace")
+        if len(raw) < 28:
+            continue
+
+        prefix = raw[0:2]
+        year = raw[2:4]
+        week = raw[4:6]
+        product = raw[6:16]
+        supplier = raw[16:20]
+        counter = raw[20:26]
+        suffix = raw[26:28]
+
+        return VaillantScanId(
+            prefix=prefix,
+            year=year,
+            week=week,
+            product=product,
+            supplier=supplier,
+            counter=counter,
+            suffix=suffix,
+            raw=raw,
+        )
+
+    raise VaillantScanIdParseError(
+        "Scan-id string too short after normalization (expected >=28 chars)"
     )

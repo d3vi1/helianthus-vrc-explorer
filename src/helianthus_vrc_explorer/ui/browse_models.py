@@ -29,6 +29,8 @@ class RegisterRow:
     instance_key: str
     register_key: str
     name: str
+    myvaillant_name: str
+    ebusd_name: str
     path: str
     tab: BrowseTab
     address: RegisterAddress

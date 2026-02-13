@@ -18,13 +18,25 @@ def test_parse_scan_identification_parses_manufacturer_id_sw_hw() -> None:
 
 
 def test_parse_vaillant_scan_id_chunks_parses_model_and_serial() -> None:
-    raw = "21231600202609140953035469N6" + " " * 4
+    raw = "21231600202609140000000001A1" + " " * 4
     segments = [raw[i : i + 8] for i in range(0, 32, 8)]
     chunks = [bytes([0x00]) + s.encode("ascii") for s in segments]
 
     scan_id = parse_vaillant_scan_id_chunks(chunks)
     assert scan_id.model_number == "0020260914"
-    assert scan_id.serial_number == "2123160953035469N6"
+    assert scan_id.serial_number == "21231600202609140000000001A1"
+    assert scan_id.serial_number_short == "2123160000000001A1"
+
+
+def test_parse_vaillant_scan_id_chunks_supports_raw_9byte_variant() -> None:
+    raw = b"21213400202621480000000001N7"
+    padded = raw + (b"\xff" * (36 - len(raw)))
+    chunks = [padded[i : i + 9] for i in range(0, 36, 9)]
+
+    scan_id = parse_vaillant_scan_id_chunks(chunks)
+    assert scan_id.model_number == "0020262148"
+    assert scan_id.serial_number == "21213400202621480000000001N7"
+    assert scan_id.serial_number_short == "2121340000000001N7"
 
 
 def test_parse_ebusd_info_target_addresses_filters_initiator_and_self() -> None:
