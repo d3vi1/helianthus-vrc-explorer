@@ -34,6 +34,8 @@ Key scan UX flags:
 - `--ebusd-csv-path /path/to/15.720.csv`
 - `--myvaillant-map-path /path/to/myvaillant_register_map.csv`
 
+If startup fails on default transport (`tcp://127.0.0.1:8888`) in an interactive TTY, scan opens a retry dialog so you can adjust protocol/host/port and retry or cancel.
+
 Output:
 - JSON artifact: `b524_scan_0x??_<timestamp>.json`
 - HTML report: `b524_scan_0x??_<timestamp>.html`

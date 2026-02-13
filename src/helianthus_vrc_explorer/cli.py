@@ -5,6 +5,7 @@ import json
 import math
 import struct
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
@@ -37,6 +38,17 @@ app = typer.Typer(
     no_args_is_help=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+_DEFAULT_TRANSPORT_PROTOCOL = "tcp"
+_DEFAULT_EBUSD_HOST = "127.0.0.1"
+_DEFAULT_EBUSD_PORT = 8888
+
+
+@dataclass(frozen=True, slots=True)
+class _TransportSettings:
+    protocol: str
+    host: str
+    port: int
 
 
 def _load_default_myvaillant_map() -> tuple[MyvaillantRegisterMap | None, str | None]:
@@ -168,6 +180,92 @@ def _can_launch_interactive_browse(console: Console) -> bool:
     )
 
 
+def _can_prompt_transport_retry(console: Console) -> bool:
+    return (
+        console.is_terminal
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and sys.platform != "win32"
+    )
+
+
+def _is_default_transport_settings(settings: _TransportSettings) -> bool:
+    return (
+        settings.protocol == _DEFAULT_TRANSPORT_PROTOCOL
+        and settings.host == _DEFAULT_EBUSD_HOST
+        and settings.port == _DEFAULT_EBUSD_PORT
+    )
+
+
+def _build_transport(
+    settings: _TransportSettings,
+    *,
+    trace_file: Path | None,
+) -> EbusdTcpTransport:
+    if settings.protocol != "tcp":
+        raise typer.BadParameter(f"Unsupported transport protocol: {settings.protocol!r}")
+    return EbusdTcpTransport(
+        EbusdTcpConfig(host=settings.host, port=settings.port, trace_path=trace_file)
+    )
+
+
+def _prompt_transport_retry_settings(
+    console: Console,
+    *,
+    settings: _TransportSettings,
+    error_message: str,
+) -> _TransportSettings | None:
+    typer.echo(f"Transport setup failed: {error_message}", err=True)
+    try:
+        from .ui.transport_retry_textual import TransportRetrySettings, run_transport_retry_modal
+
+        result = run_transport_retry_modal(
+            initial=TransportRetrySettings(
+                protocol=settings.protocol,
+                host=settings.host,
+                port=settings.port,
+            ),
+            error_message=error_message,
+        )
+        if result is None:
+            return None
+        return _TransportSettings(
+            protocol=result.protocol,
+            host=result.host,
+            port=result.port,
+        )
+    except Exception as exc:
+        typer.echo(
+            f"Transport retry modal unavailable ({exc}). Falling back to prompts.",
+            err=True,
+        )
+
+    protocol = typer.prompt(
+        "Protocol",
+        default=settings.protocol,
+    ).strip()
+    host = typer.prompt(
+        "ebusd host",
+        default=settings.host,
+    ).strip()
+    port = typer.prompt(
+        "ebusd port",
+        default=str(settings.port),
+    ).strip()
+    try:
+        parsed_port = int(port, 10)
+    except ValueError:
+        typer.echo(f"Invalid port value: {port!r}", err=True)
+        return settings
+    if not (1 <= parsed_port <= 65535):
+        typer.echo(f"Port out of range 1..65535: {parsed_port}", err=True)
+        return settings
+    retry = typer.confirm("Retry with these settings?", default=True)
+    if not retry:
+        return None
+    return _TransportSettings(protocol=protocol, host=host or settings.host, port=parsed_port)
+
+
 def _probe_group_descriptor(
     transport: EbusdTcpTransport,
     *,
@@ -271,12 +369,12 @@ def scan(
         help="Destination eBUS address (e.g. 0x15) or auto (default).",
     ),
     host: str = typer.Option(  # noqa: B008
-        "127.0.0.1",
+        _DEFAULT_EBUSD_HOST,
         "--host",
         help="ebusd host (TCP).",
     ),
     port: int = typer.Option(  # noqa: B008
-        8888,
+        _DEFAULT_EBUSD_PORT,
         "--port",
         help="ebusd port (TCP).",
     ),
@@ -396,6 +494,12 @@ def scan(
         )
         _emit_non_tty_session_preface(preface)
     else:
+        transport_settings = _TransportSettings(
+            protocol=_DEFAULT_TRANSPORT_PROTOCOL,
+            host=host,
+            port=port,
+        )
+        allow_transport_retry = _is_default_transport_settings(transport_settings)
         b509_ranges: list[tuple[int, int]] = []
         if b509_range:
             for spec in b509_range:
@@ -406,44 +510,66 @@ def scan(
                     raise typer.Exit(2) from exc
         else:
             b509_ranges = [(0x2700, 0x27FF)]
+        while True:
+            transport = _build_transport(transport_settings, trace_file=trace_file)
+            opened_session = False
+            try:
+                with transport.session():
+                    opened_session = True
+                    if requested_dst == "auto":
+                        dst_u8 = _resolve_scan_destination(transport, dst=dst)
+                    else:
+                        dst_u8 = cast(int, explicit_dst_u8)
+                    title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
+                    subtitle_lines = [f"Planner: {planner_ui_value} (preset={preset_value})"]
 
-        transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
-        with transport.session():
-            if requested_dst == "auto":
-                dst_u8 = _resolve_scan_destination(transport, dst=dst)
-            else:
-                dst_u8 = cast(int, explicit_dst_u8)
-            title = f"helianthus-vrc-explorer scan (B524) dst=0x{dst_u8:02X}"
-            subtitle_lines = [f"Planner: {planner_ui_value} (preset={preset_value})"]
-
-            identity = _probe_scan_identity(transport, dst=dst_u8)
-            preface = _build_scan_session_preface(
-                dst=dst_u8,
-                endpoint=f"{host}:{port}",
-                identity=identity,
-            )
-            if not console.is_terminal:
-                _emit_non_tty_session_preface(preface)
-            with make_scan_observer(
-                console=console,
-                title=title,
-                subtitle_lines=subtitle_lines,
-                show_tips=not no_tips,
-                session_preface=preface,
-            ) as observer:
-                artifact = scan_vrc(
-                    transport,
-                    dst=dst_u8,
-                    b509_ranges=b509_ranges,
-                    ebusd_host=host,
-                    ebusd_port=port,
-                    ebusd_schema=ebusd_schema,
-                    myvaillant_map=myvaillant_map,
-                    observer=observer,
-                    console=console,
-                    planner_ui=cast(PlannerUiMode, planner_ui_value),
-                    planner_preset=cast(PlannerPreset, preset_value),
-                )
+                    identity = _probe_scan_identity(transport, dst=dst_u8)
+                    preface = _build_scan_session_preface(
+                        dst=dst_u8,
+                        endpoint=f"{transport_settings.host}:{transport_settings.port}",
+                        identity=identity,
+                    )
+                    if not console.is_terminal:
+                        _emit_non_tty_session_preface(preface)
+                    with make_scan_observer(
+                        console=console,
+                        title=title,
+                        subtitle_lines=subtitle_lines,
+                        show_tips=not no_tips,
+                        session_preface=preface,
+                    ) as observer:
+                        artifact = scan_vrc(
+                            transport,
+                            dst=dst_u8,
+                            b509_ranges=b509_ranges,
+                            ebusd_host=transport_settings.host,
+                            ebusd_port=transport_settings.port,
+                            ebusd_schema=ebusd_schema,
+                            myvaillant_map=myvaillant_map,
+                            observer=observer,
+                            console=console,
+                            planner_ui=cast(PlannerUiMode, planner_ui_value),
+                            planner_preset=cast(PlannerPreset, preset_value),
+                        )
+                break
+            except (TransportError, TransportTimeout) as exc:
+                if (
+                    not opened_session
+                    and allow_transport_retry
+                    and _can_prompt_transport_retry(console)
+                ):
+                    maybe_settings = _prompt_transport_retry_settings(
+                        console,
+                        settings=transport_settings,
+                        error_message=str(exc),
+                    )
+                    if maybe_settings is None:
+                        typer.echo("Transport setup aborted by user.", err=True)
+                        raise typer.Exit(1) from exc
+                    transport_settings = maybe_settings
+                    allow_transport_retry = True
+                    continue
+                raise
 
     meta_obj = artifact.get("meta")
     if isinstance(meta_obj, dict):
