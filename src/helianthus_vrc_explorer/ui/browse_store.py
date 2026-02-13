@@ -191,11 +191,11 @@ class BrowseStore:
                     if not isinstance(entry, dict):
                         continue
 
-                    name = (
-                        str(entry.get("myvaillant_name") or "").strip()
-                        or str(entry.get("ebusd_name") or "").strip()
-                        or register_key
-                    )
+                    myvaillant_name = str(entry.get("myvaillant_name") or "").strip()
+                    ebusd_name = str(entry.get("ebusd_name") or "").strip()
+                    # Keep tree register labels strictly on myVaillant terms.
+                    # If unknown, fall back to RR only (not ebusd naming).
+                    name = myvaillant_name or register_key
                     tab = _tab_from_entry(entry)
                     address = RegisterAddress(
                         group_key=group_key,
@@ -218,6 +218,8 @@ class BrowseStore:
                         instance_key=instance_key,
                         register_key=register_key,
                         name=name,
+                        myvaillant_name=myvaillant_name,
+                        ebusd_name=ebusd_name,
                         path=path,
                         tab=tab,
                         address=address,
@@ -231,6 +233,8 @@ class BrowseStore:
                         search_blob=" ".join(
                             [
                                 path.lower(),
+                                myvaillant_name.lower(),
+                                ebusd_name.lower(),
                                 _address_label(
                                     group_key,
                                     instance_key,
@@ -245,10 +249,13 @@ class BrowseStore:
                     )
                     rows.append(row)
                     row_by_id[row_id] = row
+                    register_label = (
+                        register_key if name == register_key else f"{register_key} {name}"
+                    )
                     tree_nodes.append(
                         TreeNodeRef(
                             node_id=f"reg:{group_key}:{instance_key}:{register_key}",
-                            label=f"{register_key} {name}",
+                            label=register_label,
                             level="register",
                             category_key=category_key,
                             group_key=group_key,

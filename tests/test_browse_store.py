@@ -43,7 +43,7 @@ def _sample_artifact() -> dict[str, object]:
     }
 
 
-def test_browse_store_builds_rows_and_prefers_myvaillant_name() -> None:
+def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> None:
     store = BrowseStore.from_artifact(_sample_artifact())
     assert store.device_label == "Device 0x15"
     assert len(store.rows) == 3
@@ -52,9 +52,17 @@ def test_browse_store_builds_rows_and_prefers_myvaillant_name() -> None:
     assert by_register["0x0001"].tab == "config"
     assert by_register["0x0002"].tab == "config_limits"
     assert by_register["0x0003"].tab == "state"
-    assert by_register["0x0001"].name == "regulator_param_1"
+    assert by_register["0x0001"].name == "0x0001"
     assert by_register["0x0002"].name == "limit_value"
     assert by_register["0x0003"].name == "0x0003"
+    assert by_register["0x0001"].myvaillant_name == ""
+    assert by_register["0x0001"].ebusd_name == "regulator_param_1"
+    assert by_register["0x0002"].myvaillant_name == "limit_value"
+    assert by_register["0x0002"].ebusd_name == ""
+
+    by_node_id = {node.node_id: node for node in store.tree_nodes}
+    assert by_node_id["reg:0x00:0x00:0x0001"].label == "0x0001"
+    assert by_node_id["reg:0x00:0x00:0x0002"].label == "0x0002 limit_value"
 
 
 def test_browse_store_filters_rows_for_tree_selection() -> None:

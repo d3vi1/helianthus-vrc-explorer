@@ -353,7 +353,8 @@ def run_browse_from_artifact(
             table = self.query_one("#browse-table", DataTable)
             table.cursor_type = "row"
             table.add_columns(
-                "Path/Name",
+                "myVaillant",
+                "eBUSd",
                 "Address",
                 "Value",
                 "Raw",
@@ -456,7 +457,8 @@ def run_browse_from_artifact(
                     else:
                         change_indicator = f"{_WRITE_MARK}{change_indicator}"
                 table.add_row(
-                    row.path,
+                    row.myvaillant_name or row.name,
+                    row.ebusd_name or "—",
                     row.address.label,
                     value_text,
                     raw_hex,

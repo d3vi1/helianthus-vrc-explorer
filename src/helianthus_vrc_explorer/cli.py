@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
 import math
 import struct
@@ -56,6 +57,14 @@ class _TransportSettings:
     port: int
 
 
+@dataclass(frozen=True, slots=True)
+class _ModelCatalogEntry:
+    model_number: str
+    marketing_name: str
+    ebus_model: str
+    notes: str
+
+
 def _load_default_myvaillant_map() -> tuple[MyvaillantRegisterMap | None, str | None]:
     """Load bundled default myVaillant mapping for installed/package use."""
 
@@ -80,6 +89,124 @@ def _load_default_myvaillant_map() -> tuple[MyvaillantRegisterMap | None, str | 
             except Exception:
                 return (None, None)
         return (None, None)
+
+
+def _load_default_model_catalog() -> dict[str, _ModelCatalogEntry]:
+    paths: list[Path] = []
+    with contextlib.suppress(Exception):
+        resource = resources.files("helianthus_vrc_explorer.data").joinpath("models.csv")
+        with resources.as_file(resource) as path:
+            paths.append(path)
+    paths.append(Path(__file__).resolve().parents[2] / "data" / "models.csv")
+
+    for candidate in paths:
+        if not candidate.exists():
+            continue
+        rows: dict[str, _ModelCatalogEntry] = {}
+        with candidate.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                model_number = str((row or {}).get("model_number") or "").strip()
+                if not model_number:
+                    continue
+                rows[model_number] = _ModelCatalogEntry(
+                    model_number=model_number,
+                    marketing_name=str((row or {}).get("marketing_name") or "").strip(),
+                    ebus_model=str((row or {}).get("ebus_model") or "").strip(),
+                    notes=str((row or {}).get("notes") or "").strip(),
+                )
+        if rows:
+            return rows
+    return {}
+
+
+def _load_ebus_model_name_map() -> dict[str, str]:
+    paths: list[Path] = []
+    with contextlib.suppress(Exception):
+        resource = resources.files("helianthus_vrc_explorer.data").joinpath("ebus_model_names.csv")
+        with resources.as_file(resource) as path:
+            paths.append(path)
+    paths.append(Path(__file__).resolve().parents[2] / "data" / "ebus_model_names.csv")
+
+    for candidate in paths:
+        if not candidate.exists():
+            continue
+        rows: dict[str, str] = {}
+        with candidate.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                code = str((row or {}).get("ebus_model") or "").strip().upper()
+                friendly_name = str((row or {}).get("friendly_name") or "").strip()
+                if not code or not friendly_name:
+                    continue
+                rows[code] = friendly_name
+        if rows:
+            return rows
+    return {}
+
+
+def _format_device_identity(
+    *,
+    device_id: str,
+    model_name_map: dict[str, str],
+) -> str:
+    code = device_id.strip()
+    if not code:
+        return "n/a"
+    friendly_name = model_name_map.get(code.upper())
+    if not friendly_name:
+        return code
+    if friendly_name.lower() == code.lower():
+        return friendly_name
+    return f"{friendly_name} ({code})"
+
+
+def _resolve_brand_name(
+    manufacturer_id: int,
+    *,
+    entry: _ModelCatalogEntry | None,
+) -> str:
+    if entry is not None:
+        text = " ".join((entry.marketing_name, entry.notes, entry.ebus_model)).lower()
+        if "saunier" in text or "duval" in text:
+            return "Saunier Duval"
+    if manufacturer_id == 0xB5:
+        return "Vaillant"
+    return f"MF 0x{manufacturer_id:02X}"
+
+
+def _format_model_identity(
+    *,
+    manufacturer_id: int,
+    model_number: str,
+    catalog: dict[str, _ModelCatalogEntry],
+) -> str:
+    number = model_number.strip()
+    if not number:
+        return "n/a"
+
+    entry = catalog.get(number)
+    if entry is None:
+        return number
+
+    family = entry.notes.strip()
+    model = entry.marketing_name.strip()
+    ebus_model = entry.ebus_model.strip()
+
+    descriptor = ""
+    if family and model:
+        descriptor = family if family.lower() == model.lower() else f"{family} ({model})"
+    elif family:
+        descriptor = family
+    elif model:
+        descriptor = model
+    elif ebus_model:
+        descriptor = ebus_model
+
+    brand = _resolve_brand_name(manufacturer_id, entry=entry)
+    if descriptor:
+        return f"{brand} {descriptor} {number}"
+    return f"{brand} {number}"
 
 
 def _load_default_dry_run_fixture_text() -> tuple[str | None, str | None]:
@@ -117,6 +244,8 @@ def _probe_scan_identity(
     transport: EbusdTcpTransport,
     *,
     dst: int,
+    model_catalog: dict[str, _ModelCatalogEntry] | None = None,
+    model_name_map: dict[str, str] | None = None,
 ) -> dict[str, str]:
     identity = {
         "device": "n/a",
@@ -130,7 +259,10 @@ def _probe_scan_identity(
     except Exception:
         return identity
 
-    identity["device"] = _na(ident.device_id)
+    device_name_map = model_name_map if model_name_map is not None else _load_ebus_model_name_map()
+    identity["device"] = _na(
+        _format_device_identity(device_id=ident.device_id, model_name_map=device_name_map)
+    )
     identity["firmware"] = _format_fw(ident.sw, ident.hw)
     if ident.manufacturer != 0xB5:
         return identity
@@ -143,7 +275,14 @@ def _probe_scan_identity(
     except Exception:
         return identity
 
-    identity["model"] = _na(scan_id.model_number)
+    catalog = model_catalog if model_catalog is not None else _load_default_model_catalog()
+    identity["model"] = _na(
+        _format_model_identity(
+            manufacturer_id=ident.manufacturer,
+            model_number=scan_id.model_number,
+            catalog=catalog,
+        )
+    )
     identity["serial"] = _na(scan_id.serial_number)
     return identity
 
