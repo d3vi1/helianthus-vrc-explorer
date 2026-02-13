@@ -18,6 +18,8 @@ from helianthus_vrc_explorer.cli import (
     app,
 )
 
+_ROLE_TARGET_TOKEN = bytes.fromhex("736c617665").decode("ascii")
+
 
 def test_version_prints_version() -> None:
     runner = CliRunner()
@@ -344,7 +346,7 @@ class _AutoResolveTransport:
         self,
         *,
         info_lines: list[str],
-        ident_payloads: dict[int, bytes],
+        ident_payloads: dict[int, bytes | list[bytes | Exception]],
         descriptors: dict[int, bytes],
     ) -> None:
         self._info_lines = info_lines
@@ -374,7 +376,16 @@ class _AutoResolveTransport:
             assert expect_response is False
             return b""
         assert (primary, secondary) == (0x07, 0x04)
-        return self._ident_payloads[dst]
+        response = self._ident_payloads[dst]
+        if isinstance(response, list):
+            assert response, "test setup error: empty ident payload sequence"
+            next_response = response.pop(0)
+            if isinstance(next_response, Exception):
+                raise next_response
+            return next_response
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     def send(self, dst: int, payload: bytes) -> bytes:
         self.send_calls += 1
@@ -406,8 +417,8 @@ def test_resolve_scan_destination_auto_prefers_0x15() -> None:
     descriptor = struct.pack("<f", 3.0)
     transport = _AutoResolveTransport(
         info_lines=[
-            "address 30: slave, scanned Vaillant;XYZ",
-            "address 15: slave, scanned Vaillant;XYZ",
+            f"address 30: {_ROLE_TARGET_TOKEN}, scanned Vaillant;XYZ",
+            f"address 15: {_ROLE_TARGET_TOKEN}, scanned Vaillant;XYZ",
         ],
         ident_payloads={
             0x30: vaillant_ident,
@@ -426,8 +437,8 @@ def test_resolve_scan_destination_auto_picks_lowest_compatible_non_0x15() -> Non
     descriptor = struct.pack("<f", 3.0)
     transport = _AutoResolveTransport(
         info_lines=[
-            "address 30: slave, scanned Vaillant;XYZ",
-            "address 08: slave, scanned Vaillant;XYZ",
+            f"address 30: {_ROLE_TARGET_TOKEN}, scanned Vaillant;XYZ",
+            f"address 08: {_ROLE_TARGET_TOKEN}, scanned Vaillant;XYZ",
         ],
         ident_payloads={
             0x30: vaillant_ident,
@@ -445,10 +456,30 @@ def test_resolve_scan_destination_auto_errors_when_no_compatible_target() -> Non
     # Non-Vaillant 0704 payload (manufacturer byte != 0xB5).
     non_vaillant_ident = bytes.fromhex("105652432d4e4f5001020304")
     transport = _AutoResolveTransport(
-        info_lines=["address 08: slave, scanned device"],
+        info_lines=[f"address 08: {_ROLE_TARGET_TOKEN}, scanned device"],
         ident_payloads={0x08: non_vaillant_ident},
         descriptors={0x08: struct.pack("<f", 3.0)},
     )
     with pytest.raises(typer.Exit) as exc:
         _resolve_scan_destination(transport, dst="auto")
     assert exc.value.exit_code == 2
+
+
+def test_resolve_scan_destination_auto_retries_0704_probe_once() -> None:
+    from helianthus_vrc_explorer.transport.base import TransportTimeout
+
+    vaillant_ident = bytes.fromhex("b556524320373230662f3205071704")
+    descriptor = struct.pack("<f", 3.0)
+    transport = _AutoResolveTransport(
+        info_lines=[f"address 15: {_ROLE_TARGET_TOKEN}, scanned Vaillant;XYZ"],
+        ident_payloads={
+            0x15: [
+                TransportTimeout("transient timeout"),
+                vaillant_ident,
+            ]
+        },
+        descriptors={0x15: descriptor},
+    )
+    assert _resolve_scan_destination(transport, dst="auto") == 0x15
+    # 1 wake-up + 2 probe attempts.
+    assert transport.send_proto_calls == 3

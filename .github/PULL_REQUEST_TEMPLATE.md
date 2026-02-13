@@ -17,6 +17,7 @@ Notes (no secrets, no private infra):
 
 ## Checklist
 - [ ] `ruff check .`
+- [ ] `python scripts/check_protocol_terminology.py`
 - [ ] `ruff format .`
 - [ ] `pytest`
 - [ ] Manual SSH integration test (if required by the issue): YES / NO / N/A

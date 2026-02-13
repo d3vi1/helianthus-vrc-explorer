@@ -166,4 +166,27 @@ def render_summary(console: Console, artifact: dict[str, Any], *, output_path: P
         )
 
     console.print(table)
+    suggestion_obj = meta.get("issue_suggestion")
+    if isinstance(suggestion_obj, dict) and suggestion_obj.get("suggest_issue") is True:
+        groups_obj = suggestion_obj.get("unknown_groups")
+        unknown_groups = (
+            ", ".join(str(value) for value in groups_obj)
+            if isinstance(groups_obj, list) and groups_obj
+            else "none"
+        )
+        descriptor_obj = suggestion_obj.get("unknown_descriptor_types")
+        unknown_descriptors = (
+            ", ".join(f"{float(value):g}" for value in descriptor_obj)
+            if isinstance(descriptor_obj, list) and descriptor_obj
+            else "none"
+        )
+        console.print(
+            "Suggestion: open a GitHub issue for new protocol coverage "
+            f"(groups: {unknown_groups}; descriptor classes: {unknown_descriptors}).",
+            style="yellow",
+        )
+        console.print(
+            f"Attach artifacts: {output_path} and {output_path.with_suffix('.html')}",
+            style="yellow",
+        )
     console.print(f"artifact={output_path}", style="dim")
