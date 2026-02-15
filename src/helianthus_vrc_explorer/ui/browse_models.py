@@ -4,29 +4,34 @@ from dataclasses import dataclass
 from typing import Literal
 
 BrowseTab = Literal["config", "config_limits", "state"]
+ProtocolKey = Literal["b524", "b509"]
 
 
 @dataclass(frozen=True, slots=True)
 class RegisterAddress:
-    group_key: str
-    instance_key: str
+    protocol: ProtocolKey
+    group_key: str | None
+    instance_key: str | None
     register_key: str
     read_opcode: str | None
 
     @property
     def label(self) -> str:
         suffix = f" {self.read_opcode}" if self.read_opcode else ""
-        return f"GG={self.group_key} II={self.instance_key} RR={self.register_key}{suffix}"
+        if self.protocol == "b509":
+            return f"B509 RR={self.register_key}{suffix}"
+        group_key = self.group_key or "0x??"
+        instance_key = self.instance_key or "0x??"
+        return f"GG={group_key} II={instance_key} RR={self.register_key}{suffix}"
 
 
 @dataclass(frozen=True, slots=True)
 class RegisterRow:
     row_id: str
-    category_key: str
-    category_label: str
-    group_key: str
+    protocol: ProtocolKey
+    group_key: str | None
     group_name: str
-    instance_key: str
+    instance_key: str | None
     register_key: str
     name: str
     myvaillant_name: str
@@ -44,12 +49,15 @@ class RegisterRow:
     search_blob: str
 
 
+TreeNodeLevel = Literal["root", "protocol", "group", "instance", "range"]
+
+
 @dataclass(frozen=True, slots=True)
 class TreeNodeRef:
     node_id: str
     label: str
-    level: Literal["root", "category", "group", "instance", "register"]
-    category_key: str | None = None
+    level: TreeNodeLevel
+    protocol: ProtocolKey | None = None
     group_key: str | None = None
     instance_key: str | None = None
-    register_key: str | None = None
+    range_key: str | None = None

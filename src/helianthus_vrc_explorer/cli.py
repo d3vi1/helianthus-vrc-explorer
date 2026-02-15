@@ -572,8 +572,8 @@ def scan(
         None,
         "--b509-range",
         help=(
-            "B509 register range to dump (repeatable), format: 0x2700..0x27FF. "
-            "If omitted, defaults to 0x2700..0x27FF."
+            "B509 register range to dump (repeatable), format: 0x0000..0x00FF. "
+            "If omitted, defaults to 0x0000..0x00FF."
         ),
     ),
     planner_ui: str = typer.Option(  # noqa: B008
@@ -679,7 +679,7 @@ def scan(
                     typer.echo(f"Invalid --b509-range {spec!r}: {exc}", err=True)
                     raise typer.Exit(2) from exc
         else:
-            b509_ranges = [(0x2700, 0x27FF)]
+            b509_ranges = [(0x0000, 0x00FF)]
         while True:
             transport = _build_transport(transport_settings, trace_file=trace_file)
             opened_session = False

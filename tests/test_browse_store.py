@@ -63,30 +63,22 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
     assert by_register["0x0002"].ebusd_name == ""
 
     by_node_id = {node.node_id: node for node in store.tree_nodes}
-    assert by_node_id["reg:0x00:0x00:0x0001"].label == "0x0001"
-    assert by_node_id["reg:0x00:0x00:0x0002"].label == "0x0002 limit_value"
+    assert by_node_id["proto:b524"].label == "B524"
+    assert by_node_id["b524:group:0x00"].label == "Regulator Parameters (0x00)"
+    assert not any(node.level == "register" for node in store.tree_nodes)
 
 
 def test_browse_store_filters_rows_for_tree_selection() -> None:
     store = BrowseStore.from_artifact(_sample_artifact())
-    category_node = next(
-        node
-        for node in store.tree_nodes
-        if node.level == "category" and node.category_key == "regulator"
-    )
+    protocol_node = next(node for node in store.tree_nodes if node.level == "protocol")
     group_node = next(
         node for node in store.tree_nodes if node.level == "group" and node.group_key == "0x00"
     )
-    instance_node = next(
-        node
-        for node in store.tree_nodes
-        if node.level == "instance" and node.group_key == "0x00" and node.instance_key == "0x00"
-    )
 
     assert len(store.rows_for_selection(None, tab="state")) == 1
-    assert len(store.rows_for_selection(category_node, tab="config")) == 1
+    assert len(store.rows_for_selection(protocol_node, tab="config")) == 1
     assert len(store.rows_for_selection(group_node, tab="config_limits")) == 1
-    assert len(store.rows_for_selection(instance_node, tab="state")) == 1
+    assert len(store.rows_for_selection(group_node, tab="state")) == 1
 
 
 def test_browse_store_prefers_register_class_over_tt_kind_for_tab() -> None:

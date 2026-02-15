@@ -389,48 +389,48 @@ def run_browse_from_artifact(
             root = tree.root
             root.data = "root"
             self._tree_node_by_ref = {"root": root}
-            categories: dict[str, Any] = {}
-            groups: dict[str, Any] = {}
-            instances: dict[tuple[str, str], Any] = {}
+            protocols: dict[str, Any] = {}
+            groups: dict[tuple[str, str], Any] = {}
             for node in self._store.tree_nodes:
                 if node.level == "root":
                     continue
-                if node.level == "category" and node.category_key is not None:
-                    category_node = root.add(node.label, data=node.node_id)
-                    categories[node.category_key] = category_node
-                    self._tree_node_by_ref[node.node_id] = category_node
+                if node.level == "protocol" and node.protocol is not None:
+                    proto_node = root.add(node.label, data=node.node_id)
+                    protocols[node.protocol] = proto_node
+                    self._tree_node_by_ref[node.node_id] = proto_node
                     continue
-                if node.level == "group" and node.category_key is not None:
-                    parent = categories.get(node.category_key)
+                if (
+                    node.level == "group"
+                    and node.protocol is not None
+                    and node.group_key is not None
+                ):
+                    parent = protocols.get(node.protocol)
                     if parent is None:
                         continue
                     group_node = parent.add(node.label, data=node.node_id)
-                    groups[node.group_key or ""] = group_node
+                    groups[(node.protocol, node.group_key)] = group_node
                     self._tree_node_by_ref[node.node_id] = group_node
                     continue
                 if (
                     node.level == "instance"
                     and node.group_key is not None
-                    and node.instance_key is not None
+                    and node.protocol is not None
                 ):
-                    parent = groups.get(node.group_key)
+                    parent = groups.get((node.protocol, node.group_key))
                     if parent is None:
                         continue
                     instance_node = parent.add(node.label, data=node.node_id)
-                    instances[(node.group_key, node.instance_key)] = instance_node
                     self._tree_node_by_ref[node.node_id] = instance_node
                     continue
-                if (
-                    node.level == "register"
-                    and node.group_key is not None
-                    and node.instance_key is not None
-                ):
-                    parent = instances.get((node.group_key, node.instance_key))
+                if node.level == "range" and node.protocol is not None:
+                    parent = protocols.get(node.protocol)
                     if parent is None:
                         continue
-                    register_node = parent.add(node.label, data=node.node_id)
-                    self._tree_node_by_ref[node.node_id] = register_node
+                    range_node = parent.add(node.label, data=node.node_id)
+                    self._tree_node_by_ref[node.node_id] = range_node
             root.expand()
+            for node in protocols.values():
+                node.expand()
 
         def _current_node(self) -> TreeNodeRef | None:
             return self._node_by_id.get(self._selected_node_id)
@@ -754,6 +754,8 @@ def run_browse_from_artifact(
             )
 
         def _entry_for_row(self, row: RegisterRow) -> dict[str, Any] | None:
+            if row.protocol != "b524" or row.group_key is None or row.instance_key is None:
+                return None
             groups = self._artifact.get("groups")
             if not isinstance(groups, dict):
                 return None
