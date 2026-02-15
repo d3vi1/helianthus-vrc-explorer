@@ -23,6 +23,7 @@ from ..scanner.observer import ScanObserver
 
 _PHASE_LABELS: dict[str, str] = {
     "group_discovery": "Group Discovery",
+    "constraint_probe": "Constraint Probe",
     "instance_discovery": "Instance Discovery",
     "register_scan": "Register Scan",
     "b509_dump": "B509 Dump",

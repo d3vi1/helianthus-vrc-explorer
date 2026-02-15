@@ -3,18 +3,21 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import struct
 import sys
 import time
 from collections import deque
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from rich.console import Console
 
-from ..protocol.b524 import RegisterOpcode
+from ..protocol.b524 import RegisterOpcode, build_constraint_probe_payload
 from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
-from ..transport.base import TransportInterface, emit_trace_label
+from ..transport.base import TransportError, TransportInterface, emit_trace_label
 from ..transport.instrumented import CountingTransport
 from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, prompt_scan_plan
 from .b509 import scan_b509
@@ -34,9 +37,198 @@ def _hex_u16(value: int) -> str:
 
 _LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
 _REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
+_UNKNOWN_GROUP_DEFAULT_RR_MAX = 0x0030
+_UNKNOWN_GROUP_DEFAULT_II_MAX = 0x0A
 
 PlannerUiMode = Literal["auto", "textual", "classic"]
 _KNOWN_DESCRIPTOR_TYPES = frozenset(float(config["desc"]) for config in GROUP_CONFIG.values())
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMetadata:
+    """Metadata used to auto-size the scan plan for a discovered group."""
+
+    rr_max: int
+    ii_max: int | None
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConstraintEntry:
+    """Typed constraint dictionary entry from opcode 0x01."""
+
+    tt: int
+    kind: str
+    min_value: int | float | str
+    max_value: int | float | str
+    step_value: int | float
+    raw_hex: str
+    source: str = "opcode_0x01"
+
+
+def _decode_constraint_date(value: bytes) -> str:
+    if len(value) != 3:
+        raise ValueError(f"Date triplet expects 3 bytes, got {len(value)}")
+    day = value[0]
+    month = value[1]
+    year = 2000 + value[2]
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        raise ValueError(f"Invalid date triplet: {value.hex()}")
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _parse_constraint_entry(
+    *,
+    group: int,
+    register: int,
+    response: bytes,
+) -> ConstraintEntry:
+    if len(response) < 4:
+        raise ValueError(f"Short constraint response: expected >=4 bytes, got {len(response)}")
+
+    tt = response[0]
+    if response[1] != group or response[2] != register:
+        raise ValueError(
+            "Constraint header mismatch: "
+            f"expected_gg={group:02x} expected_rr={register:02x} got={response[:4].hex()}"
+        )
+    body = response[4:]
+    if tt == 0x06:
+        if len(body) < 3:
+            raise ValueError(f"TT=0x06 expects >=3 body bytes, got {len(body)}")
+        min_u8, max_u8, step_u8 = body[0], body[1], body[2]
+        return ConstraintEntry(
+            tt=tt,
+            kind="u8_range",
+            min_value=min_u8,
+            max_value=max_u8,
+            step_value=step_u8,
+            raw_hex=response.hex(),
+        )
+    if tt == 0x09:
+        if len(body) < 6:
+            raise ValueError(f"TT=0x09 expects >=6 body bytes, got {len(body)}")
+        min_u16 = int.from_bytes(body[0:2], byteorder="little", signed=False)
+        max_u16 = int.from_bytes(body[2:4], byteorder="little", signed=False)
+        step_u16 = int.from_bytes(body[4:6], byteorder="little", signed=False)
+        return ConstraintEntry(
+            tt=tt,
+            kind="u16_range",
+            min_value=min_u16,
+            max_value=max_u16,
+            step_value=step_u16,
+            raw_hex=response.hex(),
+        )
+    if tt == 0x0F:
+        if len(body) < 12:
+            raise ValueError(f"TT=0x0F expects >=12 body bytes, got {len(body)}")
+        min_f32 = struct.unpack("<f", body[0:4])[0]
+        max_f32 = struct.unpack("<f", body[4:8])[0]
+        step_f32 = struct.unpack("<f", body[8:12])[0]
+        return ConstraintEntry(
+            tt=tt,
+            kind="f32_range",
+            min_value=min_f32,
+            max_value=max_f32,
+            step_value=step_f32,
+            raw_hex=response.hex(),
+        )
+    if tt == 0x0C:
+        if len(body) < 9:
+            raise ValueError(f"TT=0x0C expects >=9 body bytes, got {len(body)}")
+        min_date = _decode_constraint_date(body[0:3])
+        max_date = _decode_constraint_date(body[3:6])
+        step_days = int.from_bytes(body[6:8], byteorder="little", signed=False)
+        return ConstraintEntry(
+            tt=tt,
+            kind="date_range",
+            min_value=min_date,
+            max_value=max_date,
+            step_value=step_days,
+            raw_hex=response.hex(),
+        )
+    raise ValueError(f"Unsupported constraint TT=0x{tt:02X}")
+
+
+def _probe_group_constraints(
+    transport: TransportInterface,
+    *,
+    dst: int,
+    group: int,
+    rr_max: int,
+    observer: ScanObserver | None,
+    progress_phase: str | None = None,
+) -> dict[int, ConstraintEntry]:
+    """Probe `01 GG RR` entries for one group and return decoded constraints."""
+
+    constraints: dict[int, ConstraintEntry] = {}
+
+    probe_rr_max = min(rr_max, 0xFF)
+    rr_candidates = list(range(0x00, probe_rr_max + 1))
+    # Observed shared constraint IDs may live above the per-group RR scan window.
+    if probe_rr_max < 0x80:
+        rr_candidates.append(0x80)
+
+    for rr in rr_candidates:
+        try:
+            if observer is not None:
+                observer.status(f"Probe constraints GG=0x{group:02X} RR=0x{rr:02X}")
+            payload = build_constraint_probe_payload(group=group, register=rr)
+            try:
+                response = transport.send(dst, payload)
+            except TransportError:
+                continue
+            except Exception:
+                continue
+            try:
+                parsed = _parse_constraint_entry(group=group, register=rr, response=response)
+            except Exception:
+                continue
+            constraints[rr] = parsed
+        finally:
+            if observer is not None and progress_phase is not None:
+                observer.phase_advance(progress_phase, advance=1)
+
+    if observer is not None and constraints:
+        observer.log(
+            f"GG=0x{group:02X} constraint_dictionary entries: {len(constraints)}",
+            level="info",
+        )
+    return constraints
+
+
+def _metadata_map_to_dict(metadata_map: dict[int, GroupMetadata]) -> dict[str, Any]:
+    serializable: dict[str, Any] = {}
+    for group, meta in sorted(metadata_map.items()):
+        payload = asdict(meta)
+        rr_max = payload["rr_max"]
+        ii_max = payload["ii_max"]
+        if isinstance(rr_max, int):
+            payload["rr_max"] = _hex_u16(rr_max)
+        if isinstance(ii_max, int):
+            payload["ii_max"] = _hex_u8(ii_max)
+        serializable[_hex_u8(group)] = payload
+    return serializable
+
+
+def _constraint_map_to_dict(
+    constraint_map: dict[int, dict[int, ConstraintEntry]],
+) -> dict[str, Any]:
+    serializable: dict[str, Any] = {}
+    for group, rr_map in sorted(constraint_map.items()):
+        group_obj: dict[str, Any] = {}
+        for register, entry in sorted(rr_map.items()):
+            group_obj[_hex_u8(register)] = {
+                "tt": _hex_u8(entry.tt),
+                "type": entry.kind,
+                "min": entry.min_value,
+                "max": entry.max_value,
+                "step": entry.step_value,
+                "raw_hex": entry.raw_hex,
+                "source": entry.source,
+            }
+        serializable[_hex_u8(group)] = group_obj
+    return serializable
 
 
 def _entry_has_valid_value(entry: RegisterEntry) -> bool:
@@ -56,6 +248,142 @@ def _entry_has_valid_value(entry: RegisterEntry) -> bool:
     if value is None:
         return False
     return not (isinstance(value, float) and math.isnan(value))
+
+
+def _entry_int_value(entry: Mapping[str, Any] | None) -> int | None:
+    if not isinstance(entry, Mapping):
+        return None
+    if entry.get("error") is not None:
+        return None
+    value = entry.get("value")
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _resolve_heating_circuit_type_name(raw_value: int) -> tuple[str, str]:
+    mapping = {
+        1: ("DIRECT_HEATING_CIRCUIT", "DIRECT_HEATING_CIRCUIT"),
+        2: ("MIXER_CIRCUIT_EXTERNAL", "MIXER_CIRCUIT_EXTERNAL"),
+    }
+    return mapping.get(
+        raw_value,
+        (f"UNKNOWN_{raw_value}", f"UNKNOWN_{raw_value}"),
+    )
+
+
+def _resolve_mixer_circuit_type_name(
+    raw_value: int,
+    *,
+    cooling_enabled: int | None,
+    gg05_present: bool,
+    system_schema: int | None,
+    pool_sensor_present: bool,
+) -> tuple[str, str]:
+    if raw_value == 0:
+        return "INACTIVE", "INACTIVE"
+    if raw_value == 1:
+        resolved = "COOLING" if cooling_enabled == 1 else "HEATING"
+        return "HEATING_OR_COOLING", resolved
+    if raw_value == 2:
+        pool_candidate_schema = system_schema in {8, 9, 12, 13}
+        resolved = "POOL" if (pool_candidate_schema and pool_sensor_present) else "FIXED_VALUE"
+        return "FIXED_VALUE_OR_POOL", resolved
+    if raw_value == 3:
+        resolved = "CYLINDER_CHARGING" if gg05_present else "DHW"
+        return "DHW_OR_CYLINDER_CHARGING", resolved
+    if raw_value == 4:
+        return "RETURN_INCREASE", "RETURN_INCREASE"
+    return f"UNKNOWN_{raw_value}", f"UNKNOWN_{raw_value}"
+
+
+def _resolve_room_influence_type_name(raw_value: int) -> tuple[str, str]:
+    mapping = {
+        0: ("INACTIVE", "INACTIVE"),
+        1: ("ACTIVE", "ACTIVE"),
+        2: ("EXTENDED", "EXTENDED"),
+    }
+    return mapping.get(
+        raw_value,
+        (f"UNKNOWN_{raw_value}", f"UNKNOWN_{raw_value}"),
+    )
+
+
+def _apply_contextual_enum_annotations(artifact: dict[str, Any]) -> None:
+    groups = artifact.get("groups")
+    if not isinstance(groups, dict):
+        return
+
+    gg02 = groups.get("0x02")
+    if not isinstance(gg02, dict):
+        return
+    gg02_instances = gg02.get("instances")
+    if not isinstance(gg02_instances, dict):
+        return
+
+    gg00 = groups.get("0x00")
+    system_schema: int | None = None
+    if isinstance(gg00, dict):
+        gg00_instances = gg00.get("instances")
+        if isinstance(gg00_instances, dict):
+            ii00 = gg00_instances.get("0x00")
+            if isinstance(ii00, dict):
+                regs = ii00.get("registers")
+                if isinstance(regs, dict):
+                    entry = regs.get("0x0001")
+                    if isinstance(entry, dict):
+                        system_schema = _entry_int_value(entry)
+
+    gg05_present = "0x05" in groups
+    pool_sensor_present = False
+
+    for instance_obj in gg02_instances.values():
+        if not isinstance(instance_obj, dict):
+            continue
+        registers = instance_obj.get("registers")
+        if not isinstance(registers, dict):
+            continue
+
+        cooling_enabled = (
+            _entry_int_value(registers.get("0x0006"))
+            if isinstance(registers.get("0x0006"), dict)
+            else None
+        )
+
+        rr01 = registers.get("0x0001")
+        if isinstance(rr01, dict):
+            raw_value = _entry_int_value(rr01)
+            if raw_value is not None:
+                raw_name, resolved_name = _resolve_heating_circuit_type_name(raw_value)
+                rr01["enum_raw_name"] = raw_name
+                rr01["enum_resolved_name"] = resolved_name
+                rr01["value_display"] = f"{raw_name} ({resolved_name})"
+
+        rr02 = registers.get("0x0002")
+        if isinstance(rr02, dict):
+            raw_value = _entry_int_value(rr02)
+            if raw_value is not None:
+                raw_name, resolved_name = _resolve_mixer_circuit_type_name(
+                    raw_value,
+                    cooling_enabled=cooling_enabled,
+                    gg05_present=gg05_present,
+                    system_schema=system_schema,
+                    pool_sensor_present=pool_sensor_present,
+                )
+                rr02["enum_raw_name"] = raw_name
+                rr02["enum_resolved_name"] = resolved_name
+                rr02["value_display"] = f"{raw_name} ({resolved_name})"
+
+        rr03 = registers.get("0x0003")
+        if isinstance(rr03, dict):
+            raw_value = _entry_int_value(rr03)
+            if raw_value is not None:
+                raw_name, resolved_name = _resolve_room_influence_type_name(raw_value)
+                rr03["enum_raw_name"] = raw_name
+                rr03["enum_resolved_name"] = resolved_name
+                rr03["value_display"] = f"{raw_name} ({resolved_name})"
 
 
 def _resolve_planner_mode(
@@ -168,6 +496,7 @@ def scan_b524(
     console: Console | None = None,
     planner_ui: PlannerUiMode = "auto",
     planner_preset: PlannerPreset = "recommended",
+    probe_constraints: bool = False,
 ) -> dict[str, Any]:
     """Scan a VRC regulator using B524 and return a JSON-serializable artifact.
 
@@ -263,14 +592,73 @@ def scan_b524(
             observer.phase_finish("group_discovery")
             observer.log(f"Discovered {len(classified)} groups", level="info")
 
+        # Phase B': establish scan coverage defaults from profile/fallback and
+        # probe optional opcode 0x01 constraint dictionary (`01 GG RR`).
+        metadata_map: dict[int, GroupMetadata] = {}
+        constraint_map: dict[int, dict[int, ConstraintEntry]] = {}
+        if observer is not None:
+            observer.log("Deriving scan coverage defaults from known profiles", level="info")
+        emit_trace_label(transport, "Deriving Scan Coverage")
+
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            rr_max = int(config["rr_max"]) if config is not None else _UNKNOWN_GROUP_DEFAULT_RR_MAX
+            if config is not None and group.descriptor == 1.0:
+                ii_max = int(config["ii_max"])
+            elif config is not None:
+                ii_max = None
+            else:
+                ii_max = _UNKNOWN_GROUP_DEFAULT_II_MAX if group.descriptor == 1.0 else None
+
+            source = "profile" if config is not None else "fallback"
+            metadata_map[group.group] = GroupMetadata(
+                rr_max=rr_max,
+                ii_max=ii_max,
+                source=source,
+            )
+
+        if probe_constraints:
+            if observer is not None:
+                observer.log("Probing opcode 0x01 constraint dictionary", level="info")
+            emit_trace_label(transport, "Constraint Dictionary Probe")
+
+            probe_total = 0
+            for group in classified:
+                group_meta = metadata_map[group.group]
+                rr_max = min(group_meta.rr_max, 0xFF)
+                probe_total += rr_max + 1
+                if rr_max < 0x80:
+                    probe_total += 1
+            if observer is not None:
+                observer.phase_start("constraint_probe", total=probe_total or 1)
+
+            for group in classified:
+                group_meta = metadata_map[group.group]
+                constraints = _probe_group_constraints(
+                    transport,
+                    dst=dst,
+                    group=group.group,
+                    rr_max=group_meta.rr_max,
+                    observer=observer,
+                    progress_phase="constraint_probe",
+                )
+                if constraints:
+                    constraint_map[group.group] = constraints
+            if observer is not None:
+                observer.phase_finish("constraint_probe")
+        elif observer is not None:
+            observer.log(
+                "Skipping opcode 0x01 constraint probe (using static annotations).",
+                level="info",
+            )
+
         # Phase C: instance discovery (desc==1.0 groups only).
         instance_total = 0
         for group in classified:
-            config = GROUP_CONFIG.get(group.group)
-            if config is None:
-                continue
             if group.descriptor == 1.0:
-                instance_total += int(config["ii_max"]) + 1
+                meta = metadata_map[group.group]
+                assert meta.ii_max is not None
+                instance_total += meta.ii_max + 1
         if observer is not None:
             observer.phase_start("instance_discovery", total=instance_total or 1)
 
@@ -299,8 +687,10 @@ def scan_b524(
                 group_obj["instances"][_hex_u8(0x00)] = {"present": True}
                 continue
 
-            ii_max = int(config["ii_max"])
-            rr_max = int(config["rr_max"])
+            meta = metadata_map[group.group]
+            ii_max = meta.ii_max
+            rr_max = meta.rr_max
+            assert ii_max is not None
             present_count = 0
             for ii in range(0x00, ii_max + 1):
                 if observer is not None:
@@ -337,8 +727,10 @@ def scan_b524(
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             if config is None:
-                continue
-            rr_max = int(config["rr_max"])
+                config_meta = metadata_map[group.group]
+                rr_max = config_meta.rr_max
+            else:
+                rr_max = metadata_map[group.group].rr_max
 
             group_obj = artifact["groups"][_hex_u8(group.group)]
             if group.descriptor == 1.0:
@@ -380,13 +772,16 @@ def scan_b524(
         planner_groups: list[PlannerGroup] = []
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
+            group_meta = metadata_map[group.group]
+
             if config is None:
-                rr_max_default = 0x30
-                ii_max_default: int | None
+                rr_max_default = group_meta.rr_max
+                ii_max_default = group_meta.ii_max
                 present_instances_default: tuple[int, ...]
                 if group.descriptor == 1.0:
-                    ii_max_default = 0x0A
-                    present_instances_default = tuple(range(0x00, 0x0A + 1))
+                    if ii_max_default is None:
+                        ii_max_default = _UNKNOWN_GROUP_DEFAULT_II_MAX
+                    present_instances_default = tuple(range(0x00, ii_max_default + 1))
                 else:
                     ii_max_default = None
                     present_instances_default = (0x00,)
@@ -405,7 +800,6 @@ def scan_b524(
 
             group_obj = artifact["groups"][_hex_u8(group.group)]
             if group.descriptor == 1.0:
-                ii_max = int(config["ii_max"])
                 present_instances_for_planner: list[int] = [
                     int(ii_key, 0)
                     for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
@@ -417,8 +811,8 @@ def scan_b524(
                         name=group.name,
                         descriptor=group.descriptor,
                         known=True,
-                        ii_max=ii_max,
-                        rr_max=int(config["rr_max"]),
+                        ii_max=group_meta.ii_max,
+                        rr_max=group_meta.rr_max,
                         present_instances=tuple(sorted(present_instances_for_planner)),
                     )
                 )
@@ -430,7 +824,7 @@ def scan_b524(
                         descriptor=group.descriptor,
                         known=True,
                         ii_max=None,
-                        rr_max=int(config["rr_max"]),
+                        rr_max=group_meta.rr_max,
                         present_instances=(0x00,),
                     )
                 )
@@ -493,6 +887,9 @@ def scan_b524(
             "estimated_register_requests": estimate_register_requests(plan),
             "measured_request_rate_rps": round(request_rate_rps, 4) if request_rate_rps else None,
         }
+        artifact["meta"]["group_metadata_bounds"] = _metadata_map_to_dict(metadata_map)
+        artifact["meta"]["constraint_probe_enabled"] = probe_constraints
+        artifact["meta"]["constraint_dictionary"] = _constraint_map_to_dict(constraint_map)
 
         # Phase D: register scan (supports interactive replanning).
         done: set[RegisterTask] = set()
@@ -656,6 +1053,8 @@ def scan_b524(
                     )
                     if mv is not None:
                         entry["myvaillant_name"] = mv.leaf
+                        if mv.register_class is not None:
+                            entry["register_class"] = mv.register_class
                         if entry.get("ebusd_name") is None:
                             mapped_ebusd_name = mv.resolved_ebusd_name(
                                 group=task.group,
@@ -664,6 +1063,14 @@ def scan_b524(
                             )
                             if mapped_ebusd_name:
                                 entry["ebusd_name"] = mapped_ebusd_name
+
+                constraint = constraint_map.get(task.group, {}).get(task.register)
+                if constraint is not None:
+                    entry["constraint_tt"] = _hex_u8(constraint.tt)
+                    entry["constraint_type"] = constraint.kind
+                    entry["constraint_min"] = constraint.min_value
+                    entry["constraint_max"] = constraint.max_value
+                    entry["constraint_step"] = constraint.step_value
                 done.add(task)
 
                 group_key = _hex_u8(task.group)
@@ -677,6 +1084,8 @@ def scan_b524(
                 if isinstance(instance_obj, dict):
                     registers = instance_obj.setdefault("registers", {})
                     registers[_hex_u16(task.register)] = entry
+
+        _apply_contextual_enum_annotations(artifact)
 
         if observer is not None:
             observer.phase_finish("register_scan")
@@ -705,6 +1114,7 @@ def scan_vrc(
     console: Console | None = None,
     planner_ui: PlannerUiMode = "auto",
     planner_preset: PlannerPreset = "recommended",
+    probe_constraints: bool = False,
 ) -> dict[str, Any]:
     """Run the full VRC scan flow: B524 primary scan, then B509 register dump."""
 
@@ -719,6 +1129,7 @@ def scan_vrc(
         console=console,
         planner_ui=planner_ui,
         planner_preset=planner_preset,
+        probe_constraints=probe_constraints,
     )
     meta = artifact.get("meta")
     if isinstance(meta, dict) and bool(meta.get("incomplete", False)):

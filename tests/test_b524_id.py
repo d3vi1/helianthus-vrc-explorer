@@ -1,6 +1,7 @@
 import pytest
 
 from helianthus_vrc_explorer.protocol.b524 import (
+    B524ConstraintSelector,
     B524IdHexError,
     B524IdLengthError,
     B524RegisterSelector,
@@ -95,6 +96,19 @@ def test_parse_b524_id_timer_examples() -> None:
         opcode=0x04,
         selector=(0x00, 0x00, 0x01),
         weekday=0x06,
+    )
+
+
+def test_parse_b524_id_constraint_example() -> None:
+    assert parse_b524_id("010000") == B524ConstraintSelector(
+        opcode=0x01,
+        group=0x00,
+        register=0x00,
+    )
+    assert parse_b524_id("b524,010a01") == B524ConstraintSelector(
+        opcode=0x01,
+        group=0x0A,
+        register=0x01,
     )
 
 

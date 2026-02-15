@@ -1,6 +1,7 @@
 import pytest
 
 from helianthus_vrc_explorer.protocol.b524 import (
+    build_constraint_probe_payload,
     build_directory_probe_payload,
     build_register_read_payload,
 )
@@ -42,6 +43,21 @@ def test_build_register_read_payload_known_selectors(
 def test_build_directory_probe_payload_range_validation(group: int) -> None:
     with pytest.raises(ValueError, match=r"group must be in range 0\.\.255"):
         build_directory_probe_payload(group)
+
+
+@pytest.mark.parametrize(
+    ("group", "register", "expected_hex"),
+    [
+        (0x00, 0x00, "010000"),
+        (0x0A, 0x01, "010a01"),
+    ],
+)
+def test_build_constraint_probe_payload(
+    group: int,
+    register: int,
+    expected_hex: str,
+) -> None:
+    assert build_constraint_probe_payload(group, register) == bytes.fromhex(expected_hex)
 
 
 @pytest.mark.parametrize(

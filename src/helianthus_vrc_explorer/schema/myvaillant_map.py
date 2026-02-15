@@ -9,6 +9,7 @@ from pathlib import Path
 class MyvaillantRegisterName:
     leaf: str
     ebusd_name: str | None = None
+    register_class: str | None = None
 
     def resolved_ebusd_name(self, *, group: int, instance: int, register: int) -> str | None:
         template = (self.ebusd_name or "").strip()
@@ -49,11 +50,12 @@ class MyvaillantRegisterMap:
 
     File format (CSV with header):
 
-        group,instance,register,leaf,ebusd_name
-        0x03,0x01,0x0016,name,Zone{zone}Name
+        group,instance,register,leaf,ebusd_name,register_class
+        0x03,0x01,0x0016,name,Zone{zone}Name,state
 
     `instance` may be `*` to match all instances in the group.
     `ebusd_name` is optional and may use `{hc}`/`{zone}` placeholders.
+    `register_class` is optional and may be `config`, `config_limits`, or `state`.
     """
 
     def __init__(
@@ -82,10 +84,17 @@ class MyvaillantRegisterMap:
                 if not (gg_raw and ii_raw and rr_raw and leaf):
                     continue
                 ebusd_name = (row.get("ebusd_name") or "").strip() or None
+                register_class = (row.get("register_class") or "").strip().lower() or None
+                if register_class not in {None, "config", "config_limits", "state"}:
+                    register_class = None
 
                 gg = _parse_hex_u8(gg_raw)
                 rr = _parse_hex_u16(rr_raw)
-                entry = MyvaillantRegisterName(leaf=leaf, ebusd_name=ebusd_name)
+                entry = MyvaillantRegisterName(
+                    leaf=leaf,
+                    ebusd_name=ebusd_name,
+                    register_class=register_class,
+                )
 
                 if ii_raw == "*":
                     wildcard_instance.setdefault((gg, rr), entry)

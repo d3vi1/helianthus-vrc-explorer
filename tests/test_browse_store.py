@@ -24,6 +24,7 @@ def _sample_artifact() -> dict[str, object]:
                             },
                             "0x0002": {
                                 "value": 2.0,
+                                "value_display": "HEATING_OR_COOLING (HEATING)",
                                 "raw_hex": "0102",
                                 "tt_kind": "parameter_limit",
                                 "read_opcode": "0x06",
@@ -54,6 +55,7 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
     assert by_register["0x0003"].tab == "state"
     assert by_register["0x0001"].name == "0x0001"
     assert by_register["0x0002"].name == "limit_value"
+    assert by_register["0x0002"].value_text == "HEATING_OR_COOLING (HEATING)"
     assert by_register["0x0003"].name == "0x0003"
     assert by_register["0x0001"].myvaillant_name == ""
     assert by_register["0x0001"].ebusd_name == "regulator_param_1"
@@ -85,3 +87,30 @@ def test_browse_store_filters_rows_for_tree_selection() -> None:
     assert len(store.rows_for_selection(category_node, tab="config")) == 1
     assert len(store.rows_for_selection(group_node, tab="config_limits")) == 1
     assert len(store.rows_for_selection(instance_node, tab="state")) == 1
+
+
+def test_browse_store_prefers_register_class_over_tt_kind_for_tab() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0021": {
+                                "value": 37,
+                                "raw_hex": "25",
+                                "tt_kind": "parameter_limit",
+                                "register_class": "state",
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    }
+    store = BrowseStore.from_artifact(artifact)
+    row = store.rows[0]
+    assert row.register_key == "0x0021"
+    assert row.tab == "state"

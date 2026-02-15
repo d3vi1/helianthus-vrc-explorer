@@ -25,7 +25,7 @@ class GroupConfig(TypedDict):
 GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
     0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x00FF},
     0x01: {"desc": 3.0, "name": "Hot Water Circuit", "ii_max": 0x00, "rr_max": 0x1F},
-    0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x21},
+    0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x25},
     0x03: {"desc": 1.0, "name": "Zones", "ii_max": 0x0A, "rr_max": 0x2F},
     0x04: {"desc": 6.0, "name": "Solar Circuit", "ii_max": 0x00, "rr_max": 0x0F},
     0x05: {"desc": 1.0, "name": "Hot Water Cylinder", "ii_max": 0x0A, "rr_max": 0x0F},

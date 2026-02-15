@@ -900,7 +900,12 @@ __ARTIFACT_JSON__
 
             const rawHex = typeof entry.raw_hex === "string" ? entry.raw_hex : "";
             const valueBytes = rawHex ? bytesFromHex(rawHex) : null;
-            const decoded = selectedType && valueBytes ? parseTypedValue(selectedType, valueBytes) : { value: entry.value, error: null };
+            const displayValue = (typeof entry.value_display === "string" && entry.value_display.length)
+              ? entry.value_display
+              : entry.value;
+            const decoded = selectedType && valueBytes
+              ? parseTypedValue(selectedType, valueBytes)
+              : { value: displayValue, error: null };
 
             const valueTxt = formatValue(decoded.value);
             const valueEl = document.createElement("div");
@@ -930,6 +935,13 @@ __ARTIFACT_JSON__
             if (entry.reply_hex) tipParts.push(`reply_hex=${entry.reply_hex}`);
             if (entry.type) tipParts.push(`original_type=${entry.type}`);
             if (typeof entry.value !== "undefined") tipParts.push(`original_value=${formatValue(entry.value)}`);
+            if (entry.enum_raw_name) tipParts.push(`enum_raw_name=${entry.enum_raw_name}`);
+            if (entry.enum_resolved_name) tipParts.push(`enum_resolved_name=${entry.enum_resolved_name}`);
+            if (entry.constraint_type) tipParts.push(`constraint_type=${entry.constraint_type}`);
+            if (typeof entry.constraint_min !== "undefined") tipParts.push(`constraint_min=${formatValue(entry.constraint_min)}`);
+            if (typeof entry.constraint_max !== "undefined") tipParts.push(`constraint_max=${formatValue(entry.constraint_max)}`);
+            if (typeof entry.constraint_step !== "undefined") tipParts.push(`constraint_step=${formatValue(entry.constraint_step)}`);
+            if (entry.constraint_tt) tipParts.push(`constraint_tt=${entry.constraint_tt}`);
             if (tipParts.length) td.title = tipParts.join("\\n");
 
             tr.appendChild(td);
