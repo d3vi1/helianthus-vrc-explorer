@@ -28,7 +28,11 @@ def _safe_int_hex(value: str) -> int:
         return 0
 
 
-def _fmt_value(value: object | None) -> str:
+def _fmt_value(entry: dict[str, Any]) -> str:
+    value_display = entry.get("value_display")
+    if isinstance(value_display, str) and value_display.strip():
+        return value_display
+    value = entry.get("value")
     if value is None:
         return "null"
     if isinstance(value, float):
@@ -62,6 +66,14 @@ def _category_for_group(group_key: str, group_name: str) -> tuple[str, str]:
 
 
 def _tab_from_entry(entry: dict[str, Any]) -> BrowseTab:
+    register_class = str(entry.get("register_class") or "").strip().lower()
+    if register_class == "config":
+        return "config"
+    if register_class in {"config_limits", "limits"}:
+        return "config_limits"
+    if register_class == "state":
+        return "state"
+
     tt_kind = entry.get("tt_kind")
     if tt_kind == "parameter_config":
         return "config"
@@ -205,7 +217,7 @@ class BrowseStore:
                         if isinstance(entry.get("read_opcode"), str)
                         else None,
                     )
-                    value_text = _fmt_value(entry.get("value"))
+                    value_text = _fmt_value(entry)
                     raw_hex = str(entry.get("raw_hex") or "")
                     path = f"{category_label}/{group_name}/{instance_key}/{name}"
                     row_id = f"{group_key}:{instance_key}:{register_key}"

@@ -29,6 +29,7 @@ python -m helianthus_vrc_explorer scan \
 Key scan UX flags:
 - `--planner-ui auto|textual|classic`
 - `--preset conservative|recommended|aggressive|custom`
+- `--probe-constraints` (optional opcode `0x01` GG/RR probe; off by default)
 - `--no-tips`
 - `--trace-file /path/to/trace.log`
 - `--ebusd-csv-path /path/to/15.720.csv`
@@ -56,6 +57,7 @@ python -m helianthus_vrc_explorer browse \
 ## Features
 - Session preface with regulator identity and transport endpoint.
 - Phased scanner progress: Group Discovery, Instance Discovery, Register Scan.
+- Optional phased `0x01` constraint probing (`Constraint Probe`) when explicitly enabled.
 - Interactive planner (`textual` or classic) with presets and per-group overrides.
 - Register decoding with raw payload retention and TT/metadata annotations in JSON.
 - Auto-generated HTML report alongside JSON scan output.

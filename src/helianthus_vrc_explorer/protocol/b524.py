@@ -27,7 +27,7 @@ class B524UnknownOpcodeError(B524IdParseError):
 type RegisterOpcode = Literal[0x02, 0x06]
 type TimerOpcode = Literal[0x03, 0x04]
 type DirectoryOpcode = Literal[0x00]
-type MetadataOpcode = Literal[0x01]
+type ConstraintOpcode = Literal[0x01]
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,12 +43,12 @@ class B524DirectorySelector:
 
 
 @dataclass(frozen=True, slots=True)
-class B524MetadataSelector:
-    """B524 metadata probe selector (`01 <GG> <II>`)."""
+class B524ConstraintSelector:
+    """B524 constraint selector (`01 <GG> <RR>`)."""
 
-    opcode: MetadataOpcode
+    opcode: ConstraintOpcode
     group: int
-    instance: int
+    register: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,13 +94,13 @@ class B524TimerSelector:
 
 
 type B524IdSelector = (
-    B524DirectorySelector | B524RegisterSelector | B524TimerSelector | B524MetadataSelector
+    B524DirectorySelector | B524RegisterSelector | B524TimerSelector | B524ConstraintSelector
 )
 
 _REGISTER_SELECTOR_LEN: Final[int] = 6
 _TIMER_SELECTOR_LEN: Final[int] = 5
 _DIRECTORY_SELECTOR_LEN: Final[int] = 3
-_METADATA_SELECTOR_LEN: Final[int] = 3
+_CONSTRAINT_SELECTOR_LEN: Final[int] = 3
 
 
 def parse_b524_id(id_hex: str) -> B524IdSelector:
@@ -112,6 +112,7 @@ def parse_b524_id(id_hex: str) -> B524IdSelector:
     - 0x02 / 0x06: register selectors (6 bytes)
     - 0x03 / 0x04: timer selectors (5 bytes)
     - 0x00: directory probe selector (3 bytes, not expected in CSV)
+    - 0x01: constraint selector (3 bytes: opcode, group, register)
 
     Examples (from `AGENTS.md`):
     - ``b524,020003001600`` -> opcode=0x02, optype=0x00, group=0x03, instance=0x00, register=0x0016
@@ -198,15 +199,15 @@ def parse_b524_id(id_hex: str) -> B524IdSelector:
             )
 
         case 0x01:
-            if len(payload) != _METADATA_SELECTOR_LEN:
+            if len(payload) != _CONSTRAINT_SELECTOR_LEN:
                 raise B524IdLengthError(
-                    f"Opcode 0x{opcode:02X} expects {_METADATA_SELECTOR_LEN} bytes, "
+                    f"Opcode 0x{opcode:02X} expects {_CONSTRAINT_SELECTOR_LEN} bytes, "
                     f"got {len(payload)}"
                 )
-            return B524MetadataSelector(
+            return B524ConstraintSelector(
                 opcode=0x01,
                 group=payload[1],
-                instance=payload[2],
+                register=payload[2],
             )
 
         case _:
@@ -243,22 +244,22 @@ def build_directory_probe_payload(group: int) -> bytes:
     return bytes((0x00, group, 0x00))
 
 
-def build_metadata_probe_payload(group: int, instance: int) -> bytes:
-    """Build a raw B524 metadata probe payload.
+def build_constraint_probe_payload(group: int, register: int) -> bytes:
+    """Build a raw B524 constraint dictionary probe payload.
 
     Payload structure:
 
-        <opcode> <GG> <II>
+        <opcode> <GG> <RR>
 
     Where:
     - opcode: 0x01
     - GG: group
-    - II: instance
+    - RR: register id (u8)
     """
 
     _validate_u8("group", group)
-    _validate_u8("instance", instance)
-    return bytes((0x01, group, instance))
+    _validate_u8("register", register)
+    return bytes((0x01, group, register))
 
 
 def build_register_read_payload(

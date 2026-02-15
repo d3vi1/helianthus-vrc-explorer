@@ -591,6 +591,14 @@ def scan(
         "--no-tips",
         help="Hide scan header tips in interactive terminal mode.",
     ),
+    probe_constraints: bool = typer.Option(  # noqa: B008
+        False,
+        "--probe-constraints/--no-probe-constraints",
+        help=(
+            "Probe B524 opcode 0x01 constraint dictionary (GG/RR). "
+            "Disabled by default because some BASV2 setups return noisy/unreliable replies."
+        ),
+    ),
 ) -> None:
     """Scan a VRC regulator using B524 (GetExtendedRegisters)."""
     requested_dst = dst.strip().lower()
@@ -712,6 +720,7 @@ def scan(
                             console=console,
                             planner_ui=cast(PlannerUiMode, planner_ui_value),
                             planner_preset=cast(PlannerPreset, preset_value),
+                            probe_constraints=probe_constraints,
                         )
                 break
             except (TransportError, TransportTimeout) as exc:

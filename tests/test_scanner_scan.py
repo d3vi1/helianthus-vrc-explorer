@@ -40,28 +40,29 @@ class InterruptingTransport(TransportInterface):
         return self._inner.send(dst, payload)
 
 
-class MetadataAwareTransport(TransportInterface):
+class ConstraintAwareTransport(TransportInterface):
     def __init__(
         self,
         inner: TransportInterface,
         *,
-        metadata: dict[int, tuple[int, int]] | None = None,
+        constraints: dict[tuple[int, int], bytes] | None = None,
     ) -> None:
         self._inner = inner
-        self._metadata = metadata or {}
-        self.metadata_requests: list[tuple[int, int]] = []
+        self._constraints = constraints or {}
+        self.constraint_requests: list[tuple[int, int]] = []
+        self.register_reads: list[tuple[int, int, int]] | None = getattr(
+            inner, "register_reads", None
+        )
 
     def send(self, dst: int, payload: bytes) -> bytes:
         if payload and payload[0] == 0x01 and len(payload) == 3:
             group = payload[1]
-            instance = payload[2]
-            self.metadata_requests.append((group, instance))
-            rr_max, ii_max = self._metadata[group]
-            return (
-                bytes((0x01, group, 0x00, 0x00))
-                + rr_max.to_bytes(2, byteorder="little")
-                + ii_max.to_bytes(2, byteorder="little")
-            )
+            register = payload[2]
+            self.constraint_requests.append((group, register))
+            if (group, register) in self._constraints:
+                return self._constraints[(group, register)]
+            # Unsupported/absent constraint entries return status-only no-data.
+            return b"\x00"
         return self._inner.send(dst, payload)
 
 
@@ -76,6 +77,8 @@ def _write_fixture_group_02(tmp_path: Path) -> Path:
                         "registers": {
                             # Presence probe (UIN)
                             "0x0002": {"raw_hex": "0100"},
+                            # Room influence type (UCH enum)
+                            "0x0003": {"raw_hex": "02"},
                             # Sample float32 (EXP) value
                             "0x000f": {"raw_hex": "9a99d93f"},
                         }
@@ -160,6 +163,22 @@ class _NoopObserver(ScanObserver):
         return _cm()
 
 
+class _RecordingObserver(_NoopObserver):
+    def __init__(self) -> None:
+        self.phase_starts: list[tuple[str, int]] = []
+        self.phase_advances: list[tuple[str, int]] = []
+        self.phase_finishes: list[str] = []
+
+    def phase_start(self, phase: str, *, total: int) -> None:
+        self.phase_starts.append((phase, total))
+
+    def phase_advance(self, phase: str, *, advance: int = 1) -> None:
+        self.phase_advances.append((phase, advance))
+
+    def phase_finish(self, phase: str) -> None:
+        self.phase_finishes.append(phase)
+
+
 def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> None:
     transport = RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path)))
 
@@ -177,8 +196,14 @@ def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> Non
     registers = instance_00["registers"]
     assert registers["0x0002"]["type"] == "UIN"
     assert registers["0x0002"]["value"] == 1
+    assert registers["0x0002"]["enum_raw_name"] == "HEATING_OR_COOLING"
+    assert registers["0x0002"]["enum_resolved_name"] == "HEATING"
+    assert registers["0x0002"]["value_display"] == "HEATING_OR_COOLING (HEATING)"
     assert registers["0x0002"]["raw_hex"] == "0100"
     assert registers["0x0002"]["error"] is None
+    assert registers["0x0003"]["enum_raw_name"] == "EXTENDED"
+    assert registers["0x0003"]["enum_resolved_name"] == "EXTENDED"
+    assert registers["0x0003"]["value_display"] == "EXTENDED (EXTENDED)"
 
     assert registers["0x000f"]["type"] == "EXP"
     assert registers["0x000f"]["value"] == pytest.approx(1.7, abs=1e-6)
@@ -193,13 +218,77 @@ def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> Non
     scanned_registers = {
         rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
     }
-    assert scanned_registers == set(range(0x21 + 1))
+    assert scanned_registers == set(range(0x25 + 1))
 
 
-def test_scan_b524_uses_metadata_for_group_bounds(tmp_path: Path) -> None:
-    transport = MetadataAwareTransport(
+def test_scan_b524_collects_constraint_dictionary_entries(tmp_path: Path) -> None:
+    transport = ConstraintAwareTransport(
         RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path))),
-        metadata={0x02: (0x0002, 0x0002)},
+        constraints={
+            # TT=0x09 (u16 range): min=0 max=4 step=1 for GG=0x02 RR=0x02.
+            (0x02, 0x02): bytes.fromhex("09020200000004000100"),
+        },
+    )
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+        probe_constraints=True,
+    )
+
+    plan = artifact["meta"]["scan_plan"]["groups"]["0x02"]
+    assert plan["rr_max"] == "0x0025"
+    assert plan["instances"] == [f"0x{ii:02x}" for ii in range(0x0A + 1)]
+    assert (0x02, 0x02) in transport.constraint_requests
+    bounds = artifact["meta"]["group_metadata_bounds"]["0x02"]
+    assert bounds["rr_max"] == "0x0025"
+    assert bounds["ii_max"] == "0x0a"
+    assert bounds["source"] == "profile"
+    constraints = artifact["meta"]["constraint_dictionary"]["0x02"]["0x02"]
+    assert constraints["tt"] == "0x09"
+    assert constraints["type"] == "u16_range"
+    assert constraints["min"] == 0
+    assert constraints["max"] == 4
+    assert constraints["step"] == 1
+    assert transport.register_reads is not None
+    scanned_registers = {
+        rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
+    }
+    assert scanned_registers == set(range(0x0025 + 1))
+
+
+def test_scan_b524_probe_constraints_has_dedicated_progress_phase(tmp_path: Path) -> None:
+    transport = ConstraintAwareTransport(
+        RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path))),
+        constraints={(0x02, 0x02): bytes.fromhex("09020200000004000100")},
+    )
+    observer = _RecordingObserver()
+
+    scan_b524(
+        transport,
+        dst=0x15,
+        observer=observer,
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+        probe_constraints=True,
+    )
+
+    started = {name: total for (name, total) in observer.phase_starts}
+    assert "constraint_probe" in started
+    assert started["constraint_probe"] > 0
+    assert any(phase == "constraint_probe" for (phase, _advance) in observer.phase_advances)
+    assert "constraint_probe" in observer.phase_finishes
+
+
+def test_scan_b524_skips_constraint_dictionary_by_default(tmp_path: Path) -> None:
+    transport = ConstraintAwareTransport(
+        RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path))),
+        constraints={
+            (0x02, 0x02): bytes.fromhex("09020200000004000100"),
+        },
     )
 
     artifact = scan_b524(
@@ -210,32 +299,13 @@ def test_scan_b524_uses_metadata_for_group_bounds(tmp_path: Path) -> None:
         planner_ui="classic",
     )
 
-    plan = artifact["meta"]["scan_plan"]["groups"]["0x02"]
-    assert plan["rr_max"] == "0x0002"
-    assert plan["instances"] == ["0x00"]
-    assert transport.metadata_requests == [(0x02, 0x01)]
-    bounds = artifact["meta"]["group_metadata_bounds"]["0x02"]
-    assert bounds["rr_max"] == "0x0002"
-    assert bounds["ii_max"] == "0x02"
-    assert bounds["source"] == "metadata"
-    scanned_registers = {
-        rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
-    }
-    assert scanned_registers == set(range(0x0002 + 1))
+    assert transport.constraint_requests == []
+    assert artifact["meta"]["constraint_probe_enabled"] is False
+    assert artifact["meta"]["constraint_dictionary"] == {}
 
 
-def test_scan_b524_falls_back_to_config_when_metadata_fails(monkeypatch, tmp_path: Path) -> None:
-    import sys
-
-    import helianthus_vrc_explorer.scanner.scan as scan_mod
-
+def test_scan_b524_group_bounds_come_from_profile_defaults(tmp_path: Path) -> None:
     transport = RecordingTransport(DummyTransport(_write_fixture_group_02(tmp_path)))
-
-    def fake_infer_metadata(*_args, **_kwargs) -> tuple[None, None, str]:
-        return (None, None, "metadata transport error")
-
-    monkeypatch.setattr(scan_mod, "_infer_metadata_range", fake_infer_metadata)
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
 
     artifact = scan_b524(
         transport,
@@ -244,10 +314,9 @@ def test_scan_b524_falls_back_to_config_when_metadata_fails(monkeypatch, tmp_pat
     )
 
     plan = artifact["meta"]["scan_plan"]["groups"]["0x02"]
-    assert plan["rr_max"] == "0x0021"
+    assert plan["rr_max"] == "0x0025"
     bounds = artifact["meta"]["group_metadata_bounds"]["0x02"]
-    assert bounds["source"] == "fallback"
-    assert bounds["error"] == "metadata transport error"
+    assert bounds["source"] == "profile"
 
 
 def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path: Path) -> None:

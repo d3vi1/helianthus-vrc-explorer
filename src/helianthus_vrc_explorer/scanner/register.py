@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Final, TypedDict
+from typing import Final, NotRequired, TypedDict
 
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
@@ -32,6 +32,16 @@ class RegisterEntry(TypedDict):
     type: str | None
     value: object | None
     error: str | None
+    # Optional constraint dictionary annotation sourced from opcode 0x01 (01 GG RR).
+    constraint_tt: NotRequired[str]
+    constraint_type: NotRequired[str]
+    constraint_min: NotRequired[int | float | str]
+    constraint_max: NotRequired[int | float | str]
+    constraint_step: NotRequired[int | float]
+    register_class: NotRequired[str]
+    enum_raw_name: NotRequired[str]
+    enum_resolved_name: NotRequired[str]
+    value_display: NotRequired[str]
 
 
 def opcode_for_group(group: int) -> RegisterOpcode:

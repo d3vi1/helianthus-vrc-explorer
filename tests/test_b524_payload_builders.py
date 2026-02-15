@@ -1,8 +1,8 @@
 import pytest
 
 from helianthus_vrc_explorer.protocol.b524 import (
+    build_constraint_probe_payload,
     build_directory_probe_payload,
-    build_metadata_probe_payload,
     build_register_read_payload,
 )
 
@@ -46,18 +46,18 @@ def test_build_directory_probe_payload_range_validation(group: int) -> None:
 
 
 @pytest.mark.parametrize(
-    ("group", "instance", "expected_hex"),
+    ("group", "register", "expected_hex"),
     [
         (0x00, 0x00, "010000"),
         (0x0A, 0x01, "010a01"),
     ],
 )
-def test_build_metadata_probe_payload(
+def test_build_constraint_probe_payload(
     group: int,
-    instance: int,
+    register: int,
     expected_hex: str,
 ) -> None:
-    assert build_metadata_probe_payload(group, instance) == bytes.fromhex(expected_hex)
+    assert build_constraint_probe_payload(group, register) == bytes.fromhex(expected_hex)
 
 
 @pytest.mark.parametrize(
