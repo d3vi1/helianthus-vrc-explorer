@@ -29,7 +29,7 @@ from .scanner.register import is_instance_present
 from .scanner.scan import PlannerUiMode, default_output_filename, scan_vrc
 from .schema.ebusd_csv import EbusdCsvSchema
 from .schema.myvaillant_map import MyvaillantRegisterMap
-from .transport.base import TransportError, TransportTimeout
+from .transport.base import TransportCommandNotEnabled, TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 from .ui.browse_textual import run_browse_from_artifact
 from .ui.html_report import render_html_report
@@ -256,6 +256,8 @@ def _probe_scan_identity(
     try:
         payload = transport.send_proto(dst, 0x07, 0x04, b"")
         ident = parse_scan_identification(payload)
+    except TransportCommandNotEnabled:
+        raise
     except Exception:
         return identity
 
@@ -272,6 +274,8 @@ def _probe_scan_identity(
             transport.send_proto(dst, 0xB5, 0x09, bytes((qq,))) for qq in (0x24, 0x25, 0x26, 0x27)
         ]
         scan_id = parse_vaillant_scan_id_chunks(chunks)
+    except TransportCommandNotEnabled:
+        raise
     except Exception:
         return identity
 
@@ -420,6 +424,8 @@ def _probe_group_descriptor(
     for _ in range(2):
         try:
             response = transport.send(dst, payload)
+        except TransportCommandNotEnabled:
+            raise
         except (TransportError, TransportTimeout):
             continue
         if len(response) < 4:
@@ -441,6 +447,8 @@ def _probe_scan_identification(
     for _ in range(attempts):
         try:
             payload = transport.send_proto(dst, 0x07, 0x04, b"")
+        except TransportCommandNotEnabled:
+            raise
         except (TransportError, TransportTimeout):
             continue
         try:
@@ -456,8 +464,12 @@ def _resolve_scan_destination(transport: EbusdTcpTransport, *, dst: str) -> int:
         return _parse_u8_address(dst)
 
     # Best-effort bus wake-up. Some ebusd setups ignore this and that's fine.
-    with contextlib.suppress(TransportError, TransportTimeout):
+    try:
         transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
+    except TransportCommandNotEnabled:
+        raise
+    except (TransportError, TransportTimeout):
+        pass
 
     addresses = parse_ebusd_info_target_addresses(transport.command_lines("info", read_all=True))
     if not addresses:
@@ -723,6 +735,13 @@ def scan(
                             probe_constraints=probe_constraints,
                         )
                 break
+            except TransportCommandNotEnabled as exc:
+                typer.echo(
+                    "ebusd returned `ERR: command not enabled`. "
+                    "Restart ebusd with `--enablehex` and retry.",
+                    err=True,
+                )
+                raise typer.Exit(2) from exc
             except (TransportError, TransportTimeout) as exc:
                 if (
                     not opened_session
@@ -801,107 +820,125 @@ def discover(
     """Discover eBUS devices via QueryExistence broadcast and per-address scan (0704)."""
 
     transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, trace_path=trace_file))
-    with transport.session():
-        # 1) QueryExistence (broadcast). This is best-effort: some ebusd setups will simply
-        # respond with a textual status (e.g. "done broadcast").
-        with contextlib.suppress(TransportError, TransportTimeout):
-            transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
-
-        info_lines = transport.command_lines("info", read_all=True)
-        addresses = parse_ebusd_info_target_addresses(info_lines)
-        if not addresses:
-            typer.echo("No target addresses found in ebusd info output.", err=True)
-            raise typer.Exit(2)
-
-        devices: dict[int, dict[str, object]] = {}
-        for addr in addresses:
-            ident = _probe_scan_identification(transport, dst=addr)
-            if ident is None:
-                continue
-
-            entry: dict[str, object] = {
-                "manufacturer": ident.manufacturer,
-                "device_id": ident.device_id,
-                "sw": ident.sw,
-                "hw": ident.hw,
-            }
-
-            if ident.manufacturer == 0xB5:
-                try:
-                    chunks = [
-                        transport.send_proto(addr, 0xB5, 0x09, bytes((qq,)))
-                        for qq in (0x24, 0x25, 0x26, 0x27)
-                    ]
-                    scan_id = parse_vaillant_scan_id_chunks(chunks)
-                    entry["model_number"] = scan_id.model_number
-                    entry["serial_number"] = scan_id.serial_number
-                except Exception:
-                    pass
-
-            devices[addr] = entry
-
-        if not devices:
-            typer.echo("No devices responded to scan (0704).", err=True)
-            raise typer.Exit(2)
-
-        for addr in sorted(devices):
-            entry = devices[addr]
-            manufacturer_obj = entry.get("manufacturer")
-            manufacturer = (
-                manufacturer_obj
-                if isinstance(manufacturer_obj, int) and not isinstance(manufacturer_obj, bool)
-                else 0
-            )
-            device_id = str(entry.get("device_id") or "").strip()
-            sw = str(entry.get("sw") or "")
-            hw = str(entry.get("hw") or "")
-            model_number = entry.get("model_number")
-            serial_number = entry.get("serial_number")
-
-            line = (
-                f"addr=0x{addr:02X} mf=0x{manufacturer:02X} id={device_id or '?'} "
-                f"sw={sw or '????'} hw={hw or '????'}"
-            )
-            if isinstance(model_number, str) and isinstance(serial_number, str):
-                line += f" model={model_number} serial={serial_number}"
-            typer.echo(line)
-
-        # 4) If a Vaillant device is present at 0x15, run B524 group/instance discovery.
-        vrc = devices.get(0x15)
-        mf_obj = vrc.get("manufacturer") if isinstance(vrc, dict) else None
-        if isinstance(mf_obj, int) and not isinstance(mf_obj, bool) and mf_obj == 0xB5:
+    try:
+        with transport.session():
+            # 1) QueryExistence (broadcast). This is best-effort: some ebusd setups will simply
+            # respond with a textual status (e.g. "done broadcast").
             try:
-                groups = classify_groups(discover_groups(transport, dst=0x15))
-            except Exception as exc:
-                typer.echo(f"VRC@0x15 B524 discovery failed: {exc}", err=True)
-                raise typer.Exit(1) from exc
+                transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
+            except TransportCommandNotEnabled:
+                raise
+            except (TransportError, TransportTimeout):
+                pass
 
-            typer.echo("VRC@0x15 B524 instances per group:")
-            for group in groups:
-                config = GROUP_CONFIG.get(group.group)
-                if group.descriptor == 1.0 and config is not None:
-                    ii_max = int(config["ii_max"])
-                    present = 0
-                    for ii in range(0x00, ii_max + 1):
-                        try:
-                            if is_instance_present(
-                                transport,
-                                dst=0x15,
-                                group=group.group,
-                                instance=ii,
-                            ):
-                                present += 1
-                        except Exception:
-                            continue
-                    typer.echo(
-                        f"GG=0x{group.group:02X} name={group.name} desc={group.descriptor:g} "
-                        f"instances={present}/{ii_max + 1}"
-                    )
-                else:
-                    typer.echo(
-                        f"GG=0x{group.group:02X} name={group.name} desc={group.descriptor:g} "
-                        "instances=1"
-                    )
+            info_lines = transport.command_lines("info", read_all=True)
+            addresses = parse_ebusd_info_target_addresses(info_lines)
+            if not addresses:
+                typer.echo("No target addresses found in ebusd info output.", err=True)
+                raise typer.Exit(2)
+
+            devices: dict[int, dict[str, object]] = {}
+            for addr in addresses:
+                ident = _probe_scan_identification(transport, dst=addr)
+                if ident is None:
+                    continue
+
+                entry: dict[str, object] = {
+                    "manufacturer": ident.manufacturer,
+                    "device_id": ident.device_id,
+                    "sw": ident.sw,
+                    "hw": ident.hw,
+                }
+
+                if ident.manufacturer == 0xB5:
+                    try:
+                        chunks = [
+                            transport.send_proto(addr, 0xB5, 0x09, bytes((qq,)))
+                            for qq in (0x24, 0x25, 0x26, 0x27)
+                        ]
+                        scan_id = parse_vaillant_scan_id_chunks(chunks)
+                        entry["model_number"] = scan_id.model_number
+                        entry["serial_number"] = scan_id.serial_number
+                    except TransportCommandNotEnabled:
+                        raise
+                    except Exception:
+                        pass
+
+                devices[addr] = entry
+
+            if not devices:
+                typer.echo("No devices responded to scan (0704).", err=True)
+                raise typer.Exit(2)
+
+            for addr in sorted(devices):
+                entry = devices[addr]
+                manufacturer_obj = entry.get("manufacturer")
+                manufacturer = (
+                    manufacturer_obj
+                    if isinstance(manufacturer_obj, int) and not isinstance(manufacturer_obj, bool)
+                    else 0
+                )
+                device_id = str(entry.get("device_id") or "").strip()
+                sw = str(entry.get("sw") or "")
+                hw = str(entry.get("hw") or "")
+                model_number = entry.get("model_number")
+                serial_number = entry.get("serial_number")
+
+                line = (
+                    f"addr=0x{addr:02X} mf=0x{manufacturer:02X} id={device_id or '?'} "
+                    f"sw={sw or '????'} hw={hw or '????'}"
+                )
+                if isinstance(model_number, str) and isinstance(serial_number, str):
+                    line += f" model={model_number} serial={serial_number}"
+                typer.echo(line)
+
+            # 4) If a Vaillant device is present at 0x15, run B524 group/instance discovery.
+            vrc = devices.get(0x15)
+            mf_obj = vrc.get("manufacturer") if isinstance(vrc, dict) else None
+            if isinstance(mf_obj, int) and not isinstance(mf_obj, bool) and mf_obj == 0xB5:
+                try:
+                    groups = classify_groups(discover_groups(transport, dst=0x15))
+                except TransportCommandNotEnabled:
+                    raise
+                except Exception as exc:
+                    typer.echo(f"VRC@0x15 B524 discovery failed: {exc}", err=True)
+                    raise typer.Exit(1) from exc
+
+                typer.echo("VRC@0x15 B524 instances per group:")
+                for group in groups:
+                    config = GROUP_CONFIG.get(group.group)
+                    if group.descriptor == 1.0 and config is not None:
+                        ii_max = int(config["ii_max"])
+                        present = 0
+                        for ii in range(0x00, ii_max + 1):
+                            try:
+                                if is_instance_present(
+                                    transport,
+                                    dst=0x15,
+                                    group=group.group,
+                                    instance=ii,
+                                ):
+                                    present += 1
+                            except TransportCommandNotEnabled:
+                                raise
+                            except Exception:
+                                continue
+                        typer.echo(
+                            f"GG=0x{group.group:02X} name={group.name} desc={group.descriptor:g} "
+                            f"instances={present}/{ii_max + 1}"
+                        )
+                    else:
+                        typer.echo(
+                            f"GG=0x{group.group:02X} name={group.name} desc={group.descriptor:g} "
+                            "instances=1"
+                        )
+    except TransportCommandNotEnabled as exc:
+        typer.echo(
+            "ebusd returned `ERR: command not enabled`. "
+            "Restart ebusd with `--enablehex` and retry.",
+            err=True,
+        )
+        raise typer.Exit(2) from exc
 
 
 @app.command()

@@ -12,7 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from .base import TransportError, TransportInterface, TransportTimeout
+from .base import (
+    TransportCommandNotEnabled,
+    TransportError,
+    TransportInterface,
+    TransportTimeout,
+)
 
 
 @dataclass(frozen=True)
@@ -118,6 +123,8 @@ def _parse_ebusd_response_lines(lines: Sequence[str]) -> bytes:
 
         if line.lower().startswith("err"):
             lowered = line.lower()
+            if "command not enabled" in lowered:
+                raise TransportCommandNotEnabled(line)
             if "timeout" in lowered or "timed out" in lowered or "no answer" in lowered:
                 raise TransportTimeout(line)
             raise TransportError(line)
@@ -156,6 +163,8 @@ def _parse_ebusd_info_lines(lines: Sequence[str]) -> None:
             continue
         if line.lower().startswith("err"):
             lowered = line.lower()
+            if "command not enabled" in lowered:
+                raise TransportCommandNotEnabled(line)
             if "timeout" in lowered or "timed out" in lowered or "no answer" in lowered:
                 raise TransportTimeout(line)
             raise TransportError(line)

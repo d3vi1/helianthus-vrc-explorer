@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import Final, TypedDict
 
 from ..protocol.b524 import build_directory_probe_payload
-from ..transport.base import TransportError, TransportInterface, TransportTimeout
+from ..transport.base import (
+    TransportCommandNotEnabled,
+    TransportError,
+    TransportInterface,
+    TransportTimeout,
+)
 from .observer import ScanObserver
 
 logger = logging.getLogger(__name__)
@@ -92,6 +97,8 @@ def discover_groups(
             # NaN streak.
             continue
         except TransportError as exc:
+            if isinstance(exc, TransportCommandNotEnabled):
+                raise
             logger.warning("Directory probe transport error for GG=0x%02X: %s", gg, exc)
             if observer is not None:
                 observer.log(

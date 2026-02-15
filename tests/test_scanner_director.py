@@ -13,6 +13,7 @@ from helianthus_vrc_explorer.scanner.director import (
     discover_groups,
 )
 from helianthus_vrc_explorer.transport.base import (
+    TransportCommandNotEnabled,
     TransportError,
     TransportInterface,
     TransportTimeout,
@@ -83,6 +84,11 @@ class FlakyDirectoryTransport(TransportInterface):
         return self._inner.send(dst, payload)
 
 
+class FatalDirectoryTransport(TransportInterface):
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        raise TransportCommandNotEnabled("ERR: command not enabled")
+
+
 def test_discover_groups_does_not_terminate_on_transient_transport_failures(tmp_path: Path) -> None:
     # Terminator (NaN) starts at GG=0x08.
     fixture_path = _write_directory_fixture(tmp_path)
@@ -115,3 +121,8 @@ def test_classify_groups_warns_on_descriptor_mismatch(
 
 def test_group_00_rr_max_is_0x00ff() -> None:
     assert GROUP_CONFIG[0x00]["rr_max"] == 0x00FF
+
+
+def test_discover_groups_command_not_enabled_is_fatal() -> None:
+    with pytest.raises(TransportCommandNotEnabled):
+        discover_groups(FatalDirectoryTransport(), dst=0x15)

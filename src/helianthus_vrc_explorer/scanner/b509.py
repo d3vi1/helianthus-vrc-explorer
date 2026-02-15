@@ -7,7 +7,7 @@ from typing import Any, Protocol, TypedDict
 from ..protocol.b509 import build_b509_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
 from ..schema.ebusd_csv import EbusdCsvSchema
-from ..transport.base import TransportError, TransportTimeout
+from ..transport.base import TransportCommandNotEnabled, TransportError, TransportTimeout
 from .observer import ScanObserver
 from .plan import parse_int_token
 
@@ -172,6 +172,8 @@ def scan_b509(
                 except TransportTimeout:
                     error = "timeout"
                 except TransportError as exc:
+                    if isinstance(exc, TransportCommandNotEnabled):
+                        raise
                     error = f"transport_error: {exc}"
 
                 read_count += 1

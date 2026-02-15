@@ -6,7 +6,13 @@ from typing import Final, NotRequired, TypedDict
 
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
-from ..transport.base import TransportError, TransportInterface, TransportTimeout, emit_trace_label
+from ..transport.base import (
+    TransportCommandNotEnabled,
+    TransportError,
+    TransportInterface,
+    TransportTimeout,
+    emit_trace_label,
+)
 from .observer import ScanObserver
 
 logger = logging.getLogger(__name__)
@@ -216,6 +222,8 @@ def read_register(
             "error": "timeout",
         }
     except TransportError as exc:
+        if isinstance(exc, TransportCommandNotEnabled):
+            raise
         return {
             "read_opcode": read_opcode,
             "reply_hex": None,
