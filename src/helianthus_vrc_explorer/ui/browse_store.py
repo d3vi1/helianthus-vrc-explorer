@@ -6,20 +6,6 @@ from typing import Any
 
 from .browse_models import BrowseTab, RegisterAddress, RegisterRow, TreeNodeRef
 
-_CATEGORY_NAMES: dict[int, tuple[str, str]] = {
-    0x00: ("regulator", "Regulator"),
-    0x01: ("hot_water", "Hot Water"),
-    0x02: ("heating", "Heating"),
-    0x03: ("zones", "Zones"),
-    0x04: ("heating", "Heating"),
-    0x05: ("hot_water", "Hot Water"),
-    0x06: ("heating", "Heating"),
-    0x07: ("heating", "Heating"),
-    0x09: ("rooms", "Rooms"),
-    0x0A: ("rooms", "Rooms"),
-    0x0C: ("rooms", "Rooms"),
-}
-
 
 def _safe_int_hex(value: str) -> int:
     try:
@@ -50,21 +36,6 @@ def _parse_timestamp(meta: dict[str, Any]) -> datetime | None:
         return None
 
 
-def _category_for_group(group_key: str, group_name: str) -> tuple[str, str]:
-    gg = _safe_int_hex(group_key)
-    mapped = _CATEGORY_NAMES.get(gg)
-    if mapped is not None:
-        return mapped
-    low_name = group_name.lower()
-    if "water" in low_name:
-        return ("hot_water", "Hot Water")
-    if "zone" in low_name or "room" in low_name:
-        return ("rooms", "Rooms")
-    if "heat" in low_name:
-        return ("heating", "Heating")
-    return ("other", "Other")
-
-
 def _tab_from_entry(entry: dict[str, Any]) -> BrowseTab:
     register_class = str(entry.get("register_class") or "").strip().lower()
     if register_class == "config":
@@ -88,11 +59,79 @@ def _access_for_tab(tab: BrowseTab) -> str:
     return "R/W?"
 
 
-def _address_label(
-    group_key: str, instance_key: str, register_key: str, read_opcode: str | None
+def _fmt_group_label(group_key: str, group_name: str) -> str:
+    return f"{group_name} ({group_key})"
+
+
+def _instance_display_base(*, group_key: str, group_name: str) -> str:
+    mapping: dict[int, str] = {
+        0x02: "Heating Circuit",
+        0x03: "Zone",
+        0x05: "Cylinder",
+        0x09: "Room Sensor",
+        0x0A: "Room State",
+    }
+    gg = _safe_int_hex(group_key)
+    if gg in mapping:
+        return mapping[gg]
+    # Best-effort singularization for unknown groups.
+    text = group_name.strip()
+    if text.endswith("s") and len(text) > 1:
+        text = text[:-1]
+    return text or "Instance"
+
+
+def _instance_label(
+    *,
+    group_key: str,
+    group_name: str,
+    instance_key: str,
+    instance_obj: dict[str, Any],
 ) -> str:
-    op_txt = f" {read_opcode}" if read_opcode else ""
-    return f"{group_key}/{instance_key}/{register_key}{op_txt}"
+    # Prefer a user-visible name if present (e.g. Zones: RR=0x0016 name).
+    registers = instance_obj.get("registers")
+    if isinstance(registers, dict):
+        for wanted in ("name", "name_prefix", "name_suffix"):
+            for entry in registers.values():
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("myvaillant_name") or "").strip() != wanted:
+                    continue
+                value = entry.get("value")
+                if isinstance(value, str) and value.strip():
+                    return f"{value.strip()} ({instance_key})"
+
+    base = _instance_display_base(group_key=group_key, group_name=group_name)
+    # Human-friendly numbering: show 1-based index, but always keep the instance ID too.
+    ii = _safe_int_hex(instance_key)
+    return f"{base} {ii + 1} ({instance_key})"
+
+
+def _row_sort_key(row: RegisterRow) -> tuple[int, int, int, int]:
+    proto_weight = 0 if row.protocol == "b524" else 1
+    if row.protocol == "b524":
+        return (
+            proto_weight,
+            _safe_int_hex(row.group_key or "0"),
+            _safe_int_hex(row.instance_key or "0"),
+            _safe_int_hex(row.register_key),
+        )
+    return (proto_weight, 0, 0, _safe_int_hex(row.register_key))
+
+
+def _parse_range_key(range_key: str) -> tuple[int, int] | None:
+    raw = range_key.strip()
+    if ".." not in raw:
+        return None
+    start_s, end_s = raw.split("..", 1)
+    try:
+        start = int(start_s.strip(), 0)
+        end = int(end_s.strip(), 0)
+    except ValueError:
+        return None
+    if start > end:
+        start, end = end, start
+    return (start, end)
 
 
 @dataclass(slots=True)
@@ -134,40 +173,34 @@ class BrowseStore:
                 _row_by_id={},
             )
 
-        category_seen: set[str] = set()
-        group_seen: set[str] = set()
-        instance_seen: set[tuple[str, str]] = set()
+        tree_nodes.append(
+            TreeNodeRef(
+                node_id="proto:b524",
+                label="B524",
+                level="protocol",
+                protocol="b524",
+            )
+        )
 
         for group_key in sorted((k for k in groups if isinstance(k, str)), key=_safe_int_hex):
             group_obj = groups.get(group_key)
             if not isinstance(group_obj, dict):
                 continue
             group_name = str(group_obj.get("name") or "Unknown")
-            category_key, category_label = _category_for_group(group_key, group_name)
-
-            if category_key not in category_seen:
-                tree_nodes.append(
-                    TreeNodeRef(
-                        node_id=f"cat:{category_key}",
-                        label=category_label,
-                        level="category",
-                        category_key=category_key,
-                    )
+            descriptor_type = group_obj.get("descriptor_type")
+            gg = _safe_int_hex(group_key)
+            is_instanced = (
+                isinstance(descriptor_type, (int, float)) and float(descriptor_type) == 1.0
+            ) or (gg in {0x02, 0x03, 0x09, 0x0A, 0x0C})
+            tree_nodes.append(
+                TreeNodeRef(
+                    node_id=f"b524:group:{group_key}",
+                    label=_fmt_group_label(group_key, group_name),
+                    level="group",
+                    protocol="b524",
+                    group_key=group_key,
                 )
-                category_seen.add(category_key)
-
-            group_node_id = f"group:{group_key}"
-            if group_node_id not in group_seen:
-                tree_nodes.append(
-                    TreeNodeRef(
-                        node_id=group_node_id,
-                        label=f"{group_key} {group_name}",
-                        level="group",
-                        category_key=category_key,
-                        group_key=group_key,
-                    )
-                )
-                group_seen.add(group_node_id)
+            )
 
             instances = group_obj.get("instances")
             if not isinstance(instances, dict):
@@ -179,18 +212,23 @@ class BrowseStore:
                 instance_obj = instances.get(instance_key)
                 if not isinstance(instance_obj, dict):
                     continue
-                if (group_key, instance_key) not in instance_seen:
+                # For instanced groups, list instances as the leaf nodes (do not expand to RR).
+                if is_instanced:
                     tree_nodes.append(
                         TreeNodeRef(
-                            node_id=f"inst:{group_key}:{instance_key}",
-                            label=f"{instance_key}",
+                            node_id=f"b524:inst:{group_key}:{instance_key}",
+                            label=_instance_label(
+                                group_key=group_key,
+                                group_name=group_name,
+                                instance_key=instance_key,
+                                instance_obj=instance_obj,
+                            ),
                             level="instance",
-                            category_key=category_key,
+                            protocol="b524",
                             group_key=group_key,
                             instance_key=instance_key,
                         )
                     )
-                    instance_seen.add((group_key, instance_key))
 
                 registers = instance_obj.get("registers")
                 if not isinstance(registers, dict):
@@ -205,11 +243,10 @@ class BrowseStore:
 
                     myvaillant_name = str(entry.get("myvaillant_name") or "").strip()
                     ebusd_name = str(entry.get("ebusd_name") or "").strip()
-                    # Keep tree register labels strictly on myVaillant terms.
-                    # If unknown, fall back to RR only (not ebusd naming).
                     name = myvaillant_name or register_key
                     tab = _tab_from_entry(entry)
                     address = RegisterAddress(
+                        protocol="b524",
                         group_key=group_key,
                         instance_key=instance_key,
                         register_key=register_key,
@@ -219,12 +256,11 @@ class BrowseStore:
                     )
                     value_text = _fmt_value(entry)
                     raw_hex = str(entry.get("raw_hex") or "")
-                    path = f"{category_label}/{group_name}/{instance_key}/{name}"
+                    path = f"B524/{group_name}/{instance_key}/{name}"
                     row_id = f"{group_key}:{instance_key}:{register_key}"
                     row = RegisterRow(
                         row_id=row_id,
-                        category_key=category_key,
-                        category_label=category_label,
+                        protocol="b524",
                         group_key=group_key,
                         group_name=group_name,
                         instance_key=instance_key,
@@ -247,12 +283,7 @@ class BrowseStore:
                                 path.lower(),
                                 myvaillant_name.lower(),
                                 ebusd_name.lower(),
-                                _address_label(
-                                    group_key,
-                                    instance_key,
-                                    register_key,
-                                    address.read_opcode,
-                                ).lower(),
+                                address.label.lower(),
                                 value_text.lower(),
                                 raw_hex.lower(),
                                 tab.lower(),
@@ -261,28 +292,100 @@ class BrowseStore:
                     )
                     rows.append(row)
                     row_by_id[row_id] = row
-                    register_label = (
-                        register_key if name == register_key else f"{register_key} {name}"
-                    )
+
+        b509_dump = artifact.get("b509_dump")
+        if isinstance(b509_dump, dict):
+            proto_node = TreeNodeRef(
+                node_id="proto:b509",
+                label="B509",
+                level="protocol",
+                protocol="b509",
+            )
+            tree_nodes.append(proto_node)
+
+            # Tree: B509 -> ranges (leaf nodes, no per-register expansion).
+            meta_obj = b509_dump.get("meta")
+            ranges = meta_obj.get("ranges") if isinstance(meta_obj, dict) else None
+            if isinstance(ranges, list):
+                for range_key in ranges:
+                    if not isinstance(range_key, str) or not range_key.strip():
+                        continue
                     tree_nodes.append(
                         TreeNodeRef(
-                            node_id=f"reg:{group_key}:{instance_key}:{register_key}",
-                            label=register_label,
-                            level="register",
-                            category_key=category_key,
-                            group_key=group_key,
-                            instance_key=instance_key,
-                            register_key=register_key,
+                            node_id=f"b509:range:{range_key.strip()}",
+                            label=range_key.strip(),
+                            level="range",
+                            protocol="b509",
+                            range_key=range_key.strip(),
                         )
                     )
 
-        rows.sort(
-            key=lambda r: (
-                _safe_int_hex(r.group_key),
-                _safe_int_hex(r.instance_key),
-                _safe_int_hex(r.register_key),
-            )
-        )
+            # Rows: include all dumped B509 registers (default in State tab).
+            devices = b509_dump.get("devices")
+            dst_key = dst_txt.lower()
+            if isinstance(devices, dict):
+                device_obj = devices.get(dst_key) or devices.get(dst_txt)
+                if isinstance(device_obj, dict):
+                    registers_obj = device_obj.get("registers")
+                    if isinstance(registers_obj, dict):
+                        for addr_key in sorted(
+                            (k for k in registers_obj if isinstance(k, str)),
+                            key=_safe_int_hex,
+                        ):
+                            entry = registers_obj.get(addr_key)
+                            if not isinstance(entry, dict):
+                                continue
+                            ebusd_name = str(entry.get("ebusd_name") or "").strip()
+                            myvaillant_name = str(entry.get("myvaillant_name") or "").strip()
+                            name = ebusd_name or addr_key
+                            op = entry.get("op") if isinstance(entry.get("op"), str) else None
+                            address = RegisterAddress(
+                                protocol="b509",
+                                group_key=None,
+                                instance_key=None,
+                                register_key=addr_key,
+                                read_opcode=op,
+                            )
+                            value_text = _fmt_value(entry)
+                            raw_hex = str(entry.get("raw_hex") or "")
+                            path = f"B509/{addr_key}/{name}"
+                            row_id = f"b509:{addr_key}"
+                            row = RegisterRow(
+                                row_id=row_id,
+                                protocol="b509",
+                                group_key=None,
+                                group_name="B509",
+                                instance_key=None,
+                                register_key=addr_key,
+                                name=name,
+                                myvaillant_name=myvaillant_name,
+                                ebusd_name=ebusd_name,
+                                path=path,
+                                tab="state",
+                                address=address,
+                                value_text=value_text,
+                                raw_hex=raw_hex,
+                                unit="n/a",
+                                access_flags="R",
+                                last_update_text=last_update_text,
+                                age_text=age_text,
+                                change_indicator="-",
+                                search_blob=" ".join(
+                                    [
+                                        path.lower(),
+                                        myvaillant_name.lower(),
+                                        ebusd_name.lower(),
+                                        address.label.lower(),
+                                        value_text.lower(),
+                                        raw_hex.lower(),
+                                        "state",
+                                    ]
+                                ),
+                            )
+                            rows.append(row)
+                            row_by_id[row_id] = row
+
+        rows.sort(key=_row_sort_key)
         return cls(
             device_label=device_label,
             rows=rows,
@@ -297,31 +400,35 @@ class BrowseStore:
         selected = [row for row in self.rows if row.tab == tab]
         if node is None or node.level == "root":
             return selected
-        if node.level == "category" and node.category_key is not None:
-            return [row for row in selected if row.category_key == node.category_key]
-        if node.level == "group" and node.group_key is not None:
-            return [row for row in selected if row.group_key == node.group_key]
-        if (
-            node.level == "instance"
-            and node.group_key is not None
-            and node.instance_key is not None
-        ):
+        if node.level == "protocol" and node.protocol is not None:
+            return [row for row in selected if row.protocol == node.protocol]
+        if node.level == "group" and node.protocol == "b524" and node.group_key is not None:
             return [
                 row
                 for row in selected
-                if row.group_key == node.group_key and row.instance_key == node.instance_key
+                if row.protocol == "b524" and row.group_key == node.group_key
             ]
         if (
-            node.level == "register"
+            node.level == "instance"
+            and node.protocol == "b524"
             and node.group_key is not None
             and node.instance_key is not None
-            and node.register_key is not None
         ):
             return [
                 row
                 for row in selected
-                if row.group_key == node.group_key
+                if row.protocol == "b524"
+                and row.group_key == node.group_key
                 and row.instance_key == node.instance_key
-                and row.register_key == node.register_key
+            ]
+        if node.level == "range" and node.protocol == "b509" and node.range_key is not None:
+            parsed = _parse_range_key(node.range_key)
+            if parsed is None:
+                return [row for row in selected if row.protocol == "b509"]
+            start, end = parsed
+            return [
+                row
+                for row in selected
+                if row.protocol == "b509" and start <= _safe_int_hex(row.register_key) <= end
             ]
         return selected
