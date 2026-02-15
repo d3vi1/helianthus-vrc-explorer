@@ -12,6 +12,14 @@ class TransportTimeout(TransportError):
     """Raised when a transport request times out."""
 
 
+class TransportCommandNotEnabled(TransportError):
+    """Raised when ebusd rejects a command because it is not enabled.
+
+    Most commonly this happens when the `hex` command is disabled and ebusd is not
+    started with `--enablehex`.
+    """
+
+
 class TransportInterface(ABC):
     """Transport interface for sending B524 payloads and receiving raw responses."""
 

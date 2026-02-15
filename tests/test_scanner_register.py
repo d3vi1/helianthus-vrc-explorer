@@ -4,6 +4,7 @@ import pytest
 
 from helianthus_vrc_explorer.scanner.register import is_instance_present, read_register
 from helianthus_vrc_explorer.transport.base import (
+    TransportCommandNotEnabled,
     TransportError,
     TransportInterface,
     TransportTimeout,
@@ -78,6 +79,21 @@ def test_read_register_timeout_returns_timeout_entry_without_local_retry(
     assert entry["raw_hex"] is None
 
 
+def test_read_register_command_not_enabled_is_fatal() -> None:
+    transport = _AlwaysCommandNotEnabledTransport()
+
+    with pytest.raises(TransportCommandNotEnabled):
+        read_register(
+            transport,
+            0x15,
+            0x02,
+            group=0x02,
+            instance=0x00,
+            register=0x0002,
+            type_hint="UIN",
+        )
+
+
 class _AlwaysDecodeErrorTransport(TransportInterface):
     def __init__(self) -> None:
         self.calls: int = 0
@@ -95,6 +111,11 @@ class _AlwaysTransportErrorTransport(TransportInterface):
     def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
         self.calls += 1
         raise TransportError("nope")
+
+
+class _AlwaysCommandNotEnabledTransport(TransportInterface):
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        raise TransportCommandNotEnabled("ERR: command not enabled")
 
 
 class _StatusOnlyTransport(TransportInterface):

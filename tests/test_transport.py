@@ -11,6 +11,7 @@ from queue import Queue
 import pytest
 
 from helianthus_vrc_explorer.transport.base import (
+    TransportCommandNotEnabled,
     TransportError,
     TransportTimeout,
     emit_trace_label,
@@ -168,6 +169,11 @@ def test_parse_ebusd_response_lines_returns_first_hex_payload_line() -> None:
 def test_parse_ebusd_response_lines_timeout_errors_raise_transport_timeout(line: str) -> None:
     with pytest.raises(TransportTimeout, match=r"ERR:"):
         _parse_ebusd_response_lines([line])
+
+
+def test_parse_ebusd_response_lines_command_not_enabled_raises() -> None:
+    with pytest.raises(TransportCommandNotEnabled, match=r"command not enabled"):
+        _parse_ebusd_response_lines(["ERR: command not enabled"])
 
 
 def test_transport_send_parses_multiline_response_and_ignores_trailing_err() -> None:

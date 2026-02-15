@@ -17,7 +17,12 @@ from rich.console import Console
 from ..protocol.b524 import RegisterOpcode, build_constraint_probe_payload
 from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
-from ..transport.base import TransportError, TransportInterface, emit_trace_label
+from ..transport.base import (
+    TransportCommandNotEnabled,
+    TransportError,
+    TransportInterface,
+    emit_trace_label,
+)
 from ..transport.instrumented import CountingTransport
 from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, prompt_scan_plan
 from .b509 import scan_b509
@@ -176,7 +181,9 @@ def _probe_group_constraints(
             payload = build_constraint_probe_payload(group=group, register=rr)
             try:
                 response = transport.send(dst, payload)
-            except TransportError:
+            except TransportError as exc:
+                if isinstance(exc, TransportCommandNotEnabled):
+                    raise
                 continue
             except Exception:
                 continue

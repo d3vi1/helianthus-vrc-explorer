@@ -171,6 +171,42 @@ def test_scan_custom_transport_failure_does_not_prompt_retry(
     assert prompt_called["value"] is False
 
 
+def test_scan_command_not_enabled_exits_with_enablehex_hint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    class _OkTransport:
+        @contextmanager
+        def session(self):
+            yield self
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = settings
+        _ = trace_file
+        return _OkTransport()
+
+    @contextmanager
+    def _fake_observer(*_args, **_kwargs):
+        yield None
+
+    from helianthus_vrc_explorer.transport.base import TransportCommandNotEnabled
+
+    def _fake_scan_vrc(*_args, **_kwargs):
+        raise TransportCommandNotEnabled("ERR: command not enabled")
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_probe_scan_identity", lambda _transport, *, dst: {})
+    monkeypatch.setattr(cli_mod, "make_scan_observer", _fake_observer)
+    monkeypatch.setattr(cli_mod, "scan_vrc", _fake_scan_vrc)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", "--dst", "0x15", "--output-dir", str(tmp_path)])
+    assert result.exit_code == 2
+    assert "--enablehex" in result.stderr
+
+
 def test_discover_command_is_present() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["discover", "--help"])
