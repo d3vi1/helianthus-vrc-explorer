@@ -36,6 +36,7 @@ def _run_help(*argv: str) -> str:
     env["COLUMNS"] = "120"
     env["LINES"] = "60"
     env["TERM"] = "xterm-256color"
+    env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(_repo_root() / "src") + os.pathsep + env.get("PYTHONPATH", "")
 
     cmd = [sys.executable, "-m", "helianthus_vrc_explorer", *argv, "--help"]
@@ -49,7 +50,11 @@ def _run_help(*argv: str) -> str:
     )
     if res.returncode != 0:
         raise SystemExit(f"help command failed: {' '.join(cmd)}\n{res.stdout}")
-    return res.stdout.rstrip() + "\n"
+    # Normalize line endings + trim right-padding whitespace (Rich often pads to terminal width,
+    # and exact padding can vary by platform/terminal environment).
+    text = res.stdout.replace("\r\n", "\n")
+    lines = [line.rstrip() for line in text.splitlines()]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def get_help_map() -> dict[str, str]:

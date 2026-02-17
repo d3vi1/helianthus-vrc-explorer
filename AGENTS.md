@@ -536,9 +536,9 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 <!-- BEGIN CLI HELP:root -->
 
 ```text
-                                                                                                                        
- Usage: python -m helianthus_vrc_explorer [OPTIONS] COMMAND [ARGS]...                                                   
-                                                                                                                        
+
+ Usage: python -m helianthus_vrc_explorer [OPTIONS] COMMAND [ARGS]...
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ --version            Print version and exit.                                                                         │
 │ --help     -h        Show this message and exit.                                                                     │
@@ -555,11 +555,11 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 <!-- BEGIN CLI HELP:scan -->
 
 ```text
-                                                                                                                        
- Usage: python -m helianthus_vrc_explorer scan [OPTIONS]                                                                
-                                                                                                                        
- Scan a VRC regulator using B524 (GetExtendedRegisters).                                                                
-                                                                                                                        
+
+ Usage: python -m helianthus_vrc_explorer scan [OPTIONS]
+
+ Scan a VRC regulator using B524 (GetExtendedRegisters).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ --dst                                                TEXT     Destination eBUS address (e.g. 0x15) or auto           │
 │                                                               (default).                                             │
@@ -603,11 +603,11 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 <!-- BEGIN CLI HELP:browse -->
 
 ```text
-                                                                                                                        
- Usage: python -m helianthus_vrc_explorer browse [OPTIONS]                                                              
-                                                                                                                        
- Browse scan results in fullscreen Textual UI (file mode).                                                              
-                                                                                                                        
+
+ Usage: python -m helianthus_vrc_explorer browse [OPTIONS]
+
+ Browse scan results in fullscreen Textual UI (file mode).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ --file                 PATH  Path to an existing scan JSON artifact (default browse mode).                           │
 │ --live                       Live mode (planned). In P0, only --file mode is implemented.                            │
@@ -623,11 +623,11 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 <!-- BEGIN CLI HELP:discover -->
 
 ```text
-                                                                                                                        
- Usage: python -m helianthus_vrc_explorer discover [OPTIONS]                                                            
-                                                                                                                        
- Discover eBUS devices via QueryExistence broadcast and per-address scan (0704).                                        
-                                                                                                                        
+
+ Usage: python -m helianthus_vrc_explorer discover [OPTIONS]
+
+ Discover eBUS devices via QueryExistence broadcast and per-address scan (0704).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ --host                TEXT     ebusd host (TCP). [default: 127.0.0.1]                                                │
 │ --port                INTEGER  ebusd port (TCP). [default: 8888]                                                     │
