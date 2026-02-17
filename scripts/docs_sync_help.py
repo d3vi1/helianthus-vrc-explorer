@@ -31,9 +31,11 @@ def _repo_root() -> Path:
 def _run_help(*argv: str) -> str:
     env = os.environ.copy()
     # Make output stable across environments (CI, local, different terminals).
-    env["COLUMNS"] = env.get("COLUMNS", "120")
-    env["LINES"] = env.get("LINES", "60")
-    env["TERM"] = env.get("TERM", "xterm-256color")
+    # IMPORTANT: do not respect existing COLUMNS/LINES/TERM, as CI may set them and
+    # that can change wrapping and box layout in Typer/Rich help output.
+    env["COLUMNS"] = "120"
+    env["LINES"] = "60"
+    env["TERM"] = "xterm-256color"
     env["PYTHONPATH"] = str(_repo_root() / "src") + os.pathsep + env.get("PYTHONPATH", "")
 
     cmd = [sys.executable, "-m", "helianthus_vrc_explorer", *argv, "--help"]
