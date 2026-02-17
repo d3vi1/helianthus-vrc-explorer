@@ -1,4 +1,8 @@
 ebus_model,friendly_name
+43000,VRC 430/430f calorMATIC Regulator
+47000,VRC 470/470f calorMATIC Regulator
+62000,VRC 620 auroMATIC Cascade Regulator
+63000,VRC 630 calorMATIC Cascade Regulator
 72000,Wired 720-series Regulator Controller Revision 0
 BASS0,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision 1 (implied)
 BASS2,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision *2*
