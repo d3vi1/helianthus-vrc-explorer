@@ -73,11 +73,13 @@ python -m helianthus_vrc_explorer browse \
 ### Write Safety
 By default the tool is **read-only**.
 
-Writes are only possible when:
-- you pass `--allow-write`, and
-- you confirm each write in an interactive confirmation dialog (old value -> new value -> confirm).
+`scan` is always read-only.
 
-Misconfigured writes can affect physical heating behavior. Use write mode only if you understand the target register.
+`browse --allow-write` enables edit actions in the fullscreen UI, and requires per-write confirmation
+(old value -> new value -> confirm).
+
+In `browse --file` mode, edits do **not** write to the device (they only update the UI view). Live
+device writes are planned.
 
 ## Features
 - Session preface with regulator identity and transport endpoint.

@@ -349,6 +349,7 @@ More examples proving weekday encoding:
     Opcode | Family Name       | Payload Len | Structure                         | Status
     -------|-------------------|-------------|-----------------------------------|----------
     0x00   | Directory Probe   | 3           | 00 <GG> 00                        | CONFIRMED
+    0x01   | Constraint Probe  | 3           | 01 <GG> <RR>                      | EXPERIMENTAL
     0x02   | Local Registers   | 6 (+val)    | 02 <RW> <GG> <II> <RR_LO> <RR_HI> | CONFIRMED
     0x06   | Remote Registers  | 6 (+val)    | 06 <RW> <GG> <II> <RR_LO> <RR_HI> | CONFIRMED
     0x03   | Timer Read        | 5           | 03 <SEL1> <SEL2> <SEL3> <WD>      | CONFIRMED
@@ -358,6 +359,17 @@ More examples proving weekday encoding:
 - `<RW>` = optype (0x00=read, 0x01=write) for families 0x02/0x06
 - `<WD>` = weekday (0x00..0x06)
 - Timer families (0x03/0x04) do NOT use optype byte
+
+**Opcode 0x01 (Constraint Probe):**
+- Request payload: `01 <GG> <RR>` (RR is a u8 selector, not the u16 RR used by register reads).
+- Observed response header: `<TT> <GG> <RR> 00 ...`
+- This probe is **off by default** because some BASV2 setups return noisy/unreliable replies.
+
+Observed TT tags (decoded today):
+- `0x06` (u8 range): `06 GG RR 00 MIN MAX STEP`
+- `0x09` (u16 range, LE): `09 GG RR 00 MINlo MINhi MAXlo MAXhi STEPlo STEPhi`
+- `0x0F` (float32 range, LE): `0F GG RR 00 MIN(f32le) MAX(f32le) STEP(f32le)`
+- `0x0C` (date range): `0C GG RR 00 MIN(d,m,y) MAX(d,m,y) STEP(u16le) 00`
 
 ---
 
@@ -374,7 +386,7 @@ More examples proving weekday encoding:
    - Family 0x02/0x06: 6 bytes (opcode + optype + GG + II + RR)
    - Family 0x03/0x04: 5 bytes (opcode + selector_tuple + weekday)
 
-3. **Register scans (Phase D) only apply to families 0x02 and 0x06:**
+3. **Register scans only apply to families 0x02 and 0x06:**
    - Iterate over (GG, II, RR) for discovered instances
    - Use opcode 0x02 for local VRC registers
    - Use opcode 0x06 for remote sensor registers (GG=0x09, 0x0A typical)
@@ -430,9 +442,9 @@ def parse_b524_id(id_hex: str) -> dict:
 **Known groups (hardcoded reference, validated against CSV):**
 
     GROUP_CONFIG = {
-        0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x01FF},
+        0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x00FF},
         0x01: {"desc": 3.0, "name": "Hot Water Circuit", "ii_max": 0x00, "rr_max": 0x1F},
-        0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x21},
+        0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x25},
         0x03: {"desc": 1.0, "name": "Zones", "ii_max": 0x0A, "rr_max": 0x2F},
         0x04: {"desc": 6.0, "name": "Solar Circuit", "ii_max": 0x00, "rr_max": 0x0F},
         0x05: {"desc": 1.0, "name": "Hot Water Cylinder", "ii_max": 0x0A, "rr_max": 0x0F},
@@ -445,7 +457,7 @@ def parse_b524_id(id_hex: str) -> dict:
 
     Group  | Opcode Family | Notes
     -------|---------------|-----------------------------------------------
-    0x00   | 0x02 (local)  | Regulator parameters (singleton; extended RR space)
+    0x00   | 0x02 (local)  | Regulator parameters (singleton)
     0x01   | 0x02 (local)  | Singleton (no instances)
     0x02   | 0x02 (local)  | Heating circuits (instanced)
     0x03   | 0x02 (local)  | Zones (instanced)
@@ -514,77 +526,165 @@ Extract enums from `divisor/values` column:
 
 ### CLI Interface
 
-**Main command:**
+The CLI is canonicalized via `--help` output. This prevents drift between:
+- README (user docs)
+- AGENTS.md (engineering spec)
+- the actual Typer CLI implementation
 
-    python -m helianthus_vrc_explorer scan [OPTIONS]
+CI enforces this via `python scripts/check_docs_sync.py`.
 
-**Options:**
+<!-- BEGIN CLI HELP:root -->
 
-    --dst ADDRESS               Destination address (default: 0x15, or parsed from --scan-line)
-    --host HOST                 ebusd TCP host (default: 127.0.0.1)
-    --port PORT                 ebusd TCP port (default: 8888)
-    --scan-line TEXT            ebusd scan line (file path if starts with @)
-    --dry-run                   Use DummyTransport with fixtures
-    --verbose                   Log raw hex to scan_<timestamp>.log
-    --output-dir PATH           Output directory (default: ./out)
-    --csv-dir PATH              Override CSV schema directory (default: auto-download)
+```text
+                                                                                                                        
+ Usage: python -m helianthus_vrc_explorer [OPTIONS] COMMAND [ARGS]...                                                   
+                                                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --version            Print version and exit.                                                                         │
+│ --help     -h        Show this message and exit.                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ scan      Scan a VRC regulator using B524 (GetExtendedRegisters).                                                    │
+│ discover  Discover eBUS devices via QueryExistence broadcast and per-address scan (0704).                            │
+│ browse    Browse scan results in fullscreen Textual UI (file mode).                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
 
-**Example:**
+<!-- END CLI HELP:root -->
 
-    python -m helianthus_vrc_explorer scan \
-      --dst 0x15 \
-      --host 127.0.0.1 \
-      --port 8888 \
-      --scan-line @scan.txt
+<!-- BEGIN CLI HELP:scan -->
 
-**Scan line format (ebusd output):**
+```text
+                                                                                                                        
+ Usage: python -m helianthus_vrc_explorer scan [OPTIONS]                                                                
+                                                                                                                        
+ Scan a VRC regulator using B524 (GetExtendedRegisters).                                                                
+                                                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --dst                                                TEXT     Destination eBUS address (e.g. 0x15) or auto           │
+│                                                               (default).                                             │
+│                                                               [default: auto]                                        │
+│ --host                                               TEXT     ebusd host (TCP). [default: 127.0.0.1]                 │
+│ --port                                               INTEGER  ebusd port (TCP). [default: 8888]                      │
+│ --dry-run                                                     Replay a scan fixture using DummyTransport (no device  │
+│                                                               I/O).                                                  │
+│ --output-dir                                         PATH     Directory to write the scan JSON artifact to.          │
+│                                                               [default: .]                                           │
+│ --ebusd-csv-path                                     PATH     Optional ebusd configuration CSV (e.g. 15.720.csv)     │
+│                                                               used to annotate register names.                       │
+│                                                               [env var: HELIA_EBUSD_CSV_PATH]                        │
+│ --myvaillant-map-path                                PATH     Optional myVaillant-equivalence mapping CSV used to    │
+│                                                               annotate register leaf names.                          │
+│                                                               [env var: HELIA_MYVAILLANT_MAP_PATH]                   │
+│ --trace-file                                         PATH     Write an ebusd request/response trace log to this      │
+│                                                               file.                                                  │
+│                                                               [env var: HELIA_EBUSD_TRACE_PATH]                      │
+│ --b509-range                                         TEXT     B509 register range to dump (repeatable), format:      │
+│                                                               0x0000..0x00FF. If omitted, defaults to                │
+│                                                               0x0000..0x00FF.                                        │
+│ --planner-ui                                         TEXT     Interactive planner mode: auto, textual, or classic.   │
+│                                                               [default: auto]                                        │
+│ --preset                                             TEXT     Planner preset: conservative, recommended, aggressive, │
+│                                                               or custom.                                             │
+│                                                               [default: recommended]                                 │
+│ --no-tips                                                     Hide scan header tips in interactive terminal mode.    │
+│ --redact                                                      Redact device identity fields (e.g. serial number) in  │
+│                                                               console output.                                        │
+│ --probe-constraints        --no-probe-constraints             Probe B524 opcode 0x01 constraint dictionary (GG/RR).  │
+│                                                               Disabled by default because some BASV2 setups return   │
+│                                                               noisy/unreliable replies.                              │
+│                                                               [default: no-probe-constraints]                        │
+│ --help                 -h                                     Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
 
-    15;Vaillant;BASV2;0507;1704;0020262148;VRC 720f/2;<SERIAL_NUMBER_REDACTED>
+<!-- END CLI HELP:scan -->
 
-Parse fields:
-1. Address (15 -> 0x15)
-2. Manufacturer (Vaillant)
-3. eBUS Model (BASV2)
-4. Software version (0507)
-5. Hardware version (1704)
-6. Model number (0020262148)
-7. Marketing name (VRC 720f/2)
-8. Serial number (<SERIAL_NUMBER_REDACTED>)
+<!-- BEGIN CLI HELP:browse -->
 
-**If --scan-line not provided:** Attempt to fetch from ebusd via `scan` command, or display "Unknown" in header.
+```text
+                                                                                                                        
+ Usage: python -m helianthus_vrc_explorer browse [OPTIONS]                                                              
+                                                                                                                        
+ Browse scan results in fullscreen Textual UI (file mode).                                                              
+                                                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --file                 PATH  Path to an existing scan JSON artifact (default browse mode).                           │
+│ --live                       Live mode (planned). In P0, only --file mode is implemented.                            │
+│ --device               TEXT  Device identifier for --live mode (planned).                                            │
+│ --allow-write                Enable write/edit actions in browse UI (safe mode + confirmation). Note: --file mode    │
+│                              edits do not write to the device.                                                       │
+│ --help         -h            Show this message and exit.                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+<!-- END CLI HELP:browse -->
+
+<!-- BEGIN CLI HELP:discover -->
+
+```text
+                                                                                                                        
+ Usage: python -m helianthus_vrc_explorer discover [OPTIONS]                                                            
+                                                                                                                        
+ Discover eBUS devices via QueryExistence broadcast and per-address scan (0704).                                        
+                                                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --host                TEXT     ebusd host (TCP). [default: 127.0.0.1]                                                │
+│ --port                INTEGER  ebusd port (TCP). [default: 8888]                                                     │
+│ --trace-file          PATH     Write an ebusd request/response trace log to this file.                               │
+│                                [env var: HELIA_EBUSD_TRACE_PATH]                                                     │
+│ --help        -h               Show this message and exit.                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+<!-- END CLI HELP:discover -->
 
 ### Terminal UI
 
-**Header (printed once at start):**
+**Session preface (printed once at start in TTY mode):**
 
-    Scanning VRC type Regulator using GetExtendedRegisters (Vaillant B5 24) at address 15h:
-    eBUS Model: BASV2
-    Vaillant Model: 0020262148 (VRC 720f/2)
-    SN: <SERIAL_NUMBER_REDACTED>
-    SW: 0507
-    HW: 1704
+    helianthus-vrc-explorer v0.1.0
+    Scanning VRC Regulator (B524) at address 0x15
+    Device:        Wireless 720-series Regulator BAse Station Vaillant-branded Revision 2 (BASV2)
+    Model:         Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148
+    Serial:        <SERIAL_NUMBER_REDACTED>
+    Firmware:      SW 0507 / HW 1704
+    ebusd:         127.0.0.1:8888
+    Started:       2026-02-17 15:24:12Z
 
 **Live status area (using rich.live.Live):**
 
-    [Discovering groups...]           <- penultimate line (normal color)
-    Probing GG=0x03 -> Type 1.0       <- last line (dim gray)
+    Read GG=0x02 II=0x03 RR=0x001C     <- last line (updates periodically; no scrollback spam)
 
 **Progress bars (rich.progress.Progress):**
 
-    Phase A: Group Discovery    #################### 100% (13/13)
-    Phase B: Instance Scan      #########-----------  45% (9/20)
-    Phase C: Register Dump      ##------------------  12% (127/1024)
+    Group Discovery    ━━━━━━━━━━━━ 19/19     0:00:06
+    Constraint Probe   ━━━━━━━━━━━━ 120/120   0:00:02   (only if --probe-constraints)
+    Instance Discovery ━━━━━━━━━━━━ 66/66     0:00:39
+    Register Scan      ━━━━━━━━━━━━ 431/2482  0:03:51
+    B509 Dump          ━━━━━━━━━━━━ 256/256   0:00:10   (default range 0x0000..0x00FF)
+
+**Canonical scan phases (user-visible):**
+- Group Discovery
+- Constraint Probe (optional; only with `--probe-constraints`)
+- Instance Discovery
+- Register Scan
+- B509 Dump (post-scan; range configurable via `--b509-range`)
+
+**Sub-steps (not separate progress phases):**
+- Group Classification (naming + descriptor mismatch warnings)
+- Planner (preset + optional interactive overrides)
 
 **Scrollback output (stable milestones only):**
 
-    Found 7 groups:
-      Group 0x01 - Singleton (Type 3) - Regulator Parameters
-      Group 0x02 - Instanced (Type 1) - Heating Circuits (8 slots / 2 present / 2 active)
-      Group 0x03 - Instanced (Type 1) - Zones (10 slots / 2 present / 2 active)
-      Group 0x04 - Instanced (Type 6) - Solar Circuit (recognized as Type 6)
-      Group 0x09 - Instanced (Type 1) - RoomState (48 slots / 1 present)
-      Group 0x0A - Instanced (Type 1) - RoomSensors (48 slots / 8 present)
-      Terminator at GG=0x0D (NaN)
+    ✓ Discovered group GG=0x00 desc=3.0
+    ✓ Discovered group GG=0x01 desc=3.0
+    ✓ Discovered group GG=0x02 desc=1.0
+    ...
+    ⚠ Descriptor mismatch for GG=0x04: expected 6.0, got 5.0
+    ⚠ Found 2 unknown groups (0x06, 0x07); skipped by default (enable in planner).
+    ✓ GG=0x02 Heating Circuits: 3/11 present, RR_max=0x0025 (38 registers/instance)
+    ✓ GG=0x03 Zones: 2/11 present, RR_max=0x002F (48 registers/instance)
 
 **Final output:**
 
@@ -593,12 +693,26 @@ Parse fields:
 
 **Non-TTY mode (CI/CD):**
 
-Detect via `sys.stdout.isatty()`. If false, output JSON lines:
+Detect via `sys.stdout.isatty()`. If false:
+- the rich live UI is disabled (Null observer),
+- a small preface + summary are printed to stderr,
+- stdout prints the JSON artifact path only (stable for scripting).
 
-    {"event":"group_found","group":"0x02","desc":1.0,"name":"Heating Circuits"}
-    {"event":"instance_present","group":"0x02","instance":"0x00"}
-    {"event":"register_read","group":"0x02","instance":"0x00","register":"0x0F","value":1.7}
-    {"event":"scan_complete","duration":127.4,"file":"./out/b524_scan_0x15_2026-02-06T194424Z.json"}
+### Browse UI (fullscreen Textual)
+
+The project includes a fullscreen Textual browser for scan artifacts:
+- Launch directly: `python -m helianthus_vrc_explorer browse --file <artifact.json>`
+- Post-scan default (TTY): the browse UI opens automatically after scan; press `q` to exit back to the summary.
+
+Core UX:
+- Left tree: B524 groups + instances (instance labels prefer discovered names when available).
+- Right panel: tabs `Config`, `Config-Limits`, `State`.
+- Search: `/` (scoped to current focus), `n/N` next/prev match.
+- Watch: `w` toggle watch on selected row; `r` set poll interval; `p` pin/unpin.
+- Safe edit: `--allow-write` enables edit actions with confirmation dialogs.
+
+Notes:
+- P0 uses `--file` mode only (offline artifact). `--live` is planned.
 
 ### JSON Output
 
@@ -678,15 +792,18 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 ### Error Handling
 
-**Timeout handling:**
-1. Retry once after 1s delay
-2. If still timeout -> log to `errors.json`, mark register as timeout in main JSON
-3. Continue scanning (do not abort)
+**Transport setup (startup failures):**
+- If connecting to the **default** transport (`tcp://127.0.0.1:8888`) fails in an interactive TTY,
+  the scan command opens a retry dialog so the user can edit protocol/host/port and retry or cancel.
+- In non-interactive environments (or when a non-default endpoint is requested), fail fast.
 
-**Invalid response:**
-- Log raw hex + expected format to `errors.json`
-- Mark as `"decode_error"` in JSON
-- Continue scanning
+**ebusd command gating:**
+- If ebusd returns `ERR: command not enabled`, the tool exits with an instruction to restart ebusd
+  with `--enablehex` (do not continue scanning).
+
+**Timeouts / invalid responses during scan:**
+- Errors are recorded inline per-entry (`error` field) and scanning continues (best-effort).
+- Partial scans are valid: Ctrl+C results in `meta.incomplete=true` with a reason string.
 
 **Signal handling:**
 - SIGINT (Ctrl+C) -> graceful shutdown, save partial JSON with `incomplete: true`
@@ -847,14 +964,16 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
     dependencies = [
         "typer>=0.9.0",
         "rich>=13.0.0",
+        "textual>=0.82.0",
         "httpx>=0.24.0",
     ]
 
     [project.optional-dependencies]
     dev = [
-        "pytest>=7.0.0",
-        "pytest-cov>=4.0.0",
-        "ruff>=0.1.0",
+        "pillow>=10.0.0",
+        "pytest>=8.0.0",
+        "pytest-cov>=5.0.0",
+        "ruff>=0.6.0",
         "mypy>=1.5.0",
     ]
 
@@ -1000,7 +1119,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 ## SCAN ALGORITHM
 
-### Phase A: Group Discovery
+### Phase: Group Discovery
 
 **Objective:** Identify all register groups (GG) supported by the device.
 
@@ -1026,12 +1145,13 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 **Output:**
 
     Found 7 groups:
-      Group 0x01 - Singleton (Type 3) - Regulator Parameters
+      Group 0x00 - Singleton (Type 3) - Regulator Parameters
+      Group 0x01 - Singleton (Type 3) - Hot Water Circuit
       Group 0x02 - Instanced (Type 1) - Heating Circuits
       ...
       Terminator at GG=0x0D (NaN)
 
-### Phase B: Group Classification
+### Sub-step: Group Classification (no progress bar)
 
 **Objective:** Map discovered groups to known names and warn about unknown types.
 
@@ -1047,7 +1167,17 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
                 warn(f"Found group in unknown format type 6.0: GG={hex(GG)}")
             print(f"Group {hex(GG)} - Unknown (Type {descriptor})")
 
-### Phase C: Instance Discovery
+### Phase: Constraint Probe (optional)
+
+**Objective:** Probe the B524 constraint dictionary (`01 GG RR`) to discover min/max/step domains.
+
+**Trigger:** Only when the user explicitly passes `--probe-constraints`.
+
+**Notes / Caveats:**
+- Some BASV2 setups return noisy/unreliable replies for opcode `0x01`; this is why it is off by default.
+- Only a subset of response type tags (TT) are currently supported (u8/u16/f32/date ranges).
+
+### Phase: Instance Discovery
 
 **Objective:** For instanced groups (desc==1.0), identify which instance slots are populated.
 
@@ -1060,41 +1190,31 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
     ii_max = GROUP_CONFIG[GG]["ii_max"]
     present_instances = []
 
-    # Determine opcode based on group
-    opcode = 0x06 if GG in {0x09, 0x0A, 0x0C} else 0x02
-
     for II in range(0x00, ii_max + 1):
-        if is_instance_present(GG, II, opcode):
+        if is_instance_present(transport, dst=0x15, group=GG, instance=II):
             present_instances.append(II)
 
     print(f"Group {hex(GG)}: {len(present_instances)} present / {ii_max + 1} slots")
 
 **Presence detection logic:**
 
-    def is_instance_present(GG, II, opcode):
-        """Probe instance using appropriate opcode (0x02 or 0x06)."""
-        if GG == 0x02:  # Heating Circuits
-            value = read_register(opcode, GG, II, 0x0002)
-            return value not in {0x0000, 0xFFFF, None}
-
-        elif GG == 0x03:  # Zones
-            value = read_register(opcode, GG, II, 0x001C)
-            return value != 0xFF
-
-        elif GG in {0x09, 0x0A}:  # Sensors (always use opcode 0x06)
-            val1 = read_register(0x06, GG, II, 0x0007)
-            val2 = read_register(0x06, GG, II, 0x000F)
-            return val1 is not None or val2 is not None
-
-        elif GG == 0x0C:  # Unknown (always use opcode 0x06)
-            for RR in {0x0002, 0x0007, 0x000F, 0x0016}:
-                if read_register(0x06, GG, II, RR) is not None:
-                    return True
-            return False
+Presence is determined by group-specific heuristics in `src/helianthus_vrc_explorer/scanner/register.py`
+(function `is_instance_present`). It uses `tt_kind` + decoded values to avoid false positives
+(e.g. NaN or TT=00 "no data").
 
 **Scan ALL instances 0x00..ii_max** (do not stop at gaps, they are legitimate holes).
 
-### Phase D: Register Scan
+### Sub-step: Planner (preset + interactive overrides)
+
+**Objective:** Build a scan plan (enabled groups, instances, RR_max overrides) from a preset, then
+optionally allow the user to tweak the plan interactively (TTY only).
+
+**Trigger:**
+- Always applies (preset builds defaults).
+- Interactive planner opens based on `--planner-ui` and TTY detection.
+- During Register Scan, `p` can reopen the planner to replan remaining work.
+
+### Phase: Register Scan
 
 **Objective:** Read all registers within defined ranges for each present instance.
 
@@ -1127,6 +1247,14 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 **Do NOT spam scrollback with every register read.** Only update live status line.
 
+### Phase: B509 Dump (post-scan)
+
+**Objective:** Dump a small range of B509 registers (proto `send_proto(dst, 0xB5, 0x09, ...)`) for
+supplementary identity/config coverage.
+
+**Defaults:** If the B524 scan completes, the tool performs a B509 dump for `0x0000..0x00FF`.
+Override/extend via repeatable `--b509-range 0x0000..0x00FF` flags.
+
 ### Final Summary
 
 **Print to scrollback:**
@@ -1152,48 +1280,38 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 **Command:**
 
-    python -m helianthus_vrc_explorer scan --dst 0x15 --scan-line @scan.txt
+    python -m helianthus_vrc_explorer scan \
+      --planner-ui auto \
+      --preset recommended
 
 **Terminal output:**
 
-    Scanning VRC type Regulator using GetExtendedRegisters (Vaillant B5 24) at address 15h:
-    eBUS Model: BASV2
-    Vaillant Model: 0020262148 (VRC 720f/2)
-    SN: <SERIAL_NUMBER_REDACTED>
-    SW: 0507
-    HW: 1704
+    Auto-selected dst=0x15 (compatible B524 target).
+    ╭──────────────────────────────────────────────────────────────────────────────╮
+    │ helianthus-vrc-explorer v0.1.0                                               │
+    │ Scanning VRC Regulator (B524) at address 0x15                                │
+    │ ──────────────────────────────────────────────────────────────────────────── │
+    │ Device:        BASV2                                                         │
+    │ Model:         Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148              │
+    │ Serial:        <SERIAL_NUMBER_REDACTED>                                      │
+    │ Firmware:      SW 0507 / HW 1704                                             │
+    │ ebusd:         127.0.0.1:8888                                                │
+    │ Started:       2026-02-17 15:24:12Z                                          │
+    ╰──────────────────────────────────────────────────────────────────────────────╯
+    Planner: auto (preset=recommended)
+    ✓ Starting scan dst=0x15
+    ✓ Discovered group GG=0x00 desc=3.0
+    ✓ Discovered group GG=0x01 desc=3.0
+    ✓ Discovered group GG=0x02 desc=1.0
+    ...
+    ✓ GG=0x02 Heating Circuits: 3/11 present, RR_max=0x0025 (38 registers/instance)
+    ✓ GG=0x03 Zones: 2/11 present, RR_max=0x002F (48 registers/instance)
+    Group Discovery    ━━━━━━━━━━━━ 19/19     0:00:06
+    Instance Discovery ━━━━━━━━━━━━ 66/66     0:00:39
+    Register Scan      ━━━━━━━━━━━━ 431/2482  0:03:51 Read GG=0x02 II=0x03 RR=0x001C
 
-    Phase A: Group Discovery    #################### 100% (13/13)
-
-    Found 7 groups:
-      Group 0x01 - Singleton (Type 3) - Regulator Parameters
-      Group 0x02 - Instanced (Type 1) - Heating Circuits
-      Group 0x03 - Instanced (Type 1) - Zones
-      Group 0x04 - Instanced (Type 6) - Solar Circuit (recognized as Type 6)
-      Group 0x09 - Instanced (Type 1) - RoomState
-      Group 0x0A - Instanced (Type 1) - RoomSensors
-      Group 0x0C - Instanced (Type 1) - Unrecognized
-      Terminator at GG=0x0D (NaN)
-
-    Phase B: Instance Scan      #################### 100% (127/127)
-
-    Group 0x02 - Heating Circuits: 2 present / 8 slots
-    Group 0x03 - Zones: 2 present / 10 slots
-    Group 0x09 - RoomState: 1 present / 48 slots
-    Group 0x0A - RoomSensors: 8 present / 48 slots
-
-    Phase C: Register Dump      #################### 100% (1024/1024)
-
-    Scan Summary:
-    -------------
-    Total groups discovered: 7
-    Total instances scanned: 127
-    Total registers read: 1,024
-    Timeouts: 3
-    Decode errors: 0
-
-    Scan completed in 127.4s
-    Wrote JSON: ./out/b524_scan_0x15_2026-02-06T194424Z.json
+    (In interactive terminals, the fullscreen browse UI opens automatically after scan.
+    Press `q` to exit browse and return to the summary.)
 
 **Generated JSON (excerpt):**
 
@@ -1281,7 +1399,7 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 6. **Scan ALL instances 0x00..ii_max** - do not stop at gaps
 7. **NaN terminator stops discovery on the first NaN** - do not keep probing
 8. **Live UI updates only last line** - do not spam scrollback
-9. **Non-TTY mode outputs JSON lines** - detect via sys.stdout.isatty()
+9. **Non-TTY mode is script-friendly** - rich live UI is disabled; stdout prints the artifact path only
 10. **Partial scans are valid** - save with incomplete: true on Ctrl+C
 11. **Unknown enums are NOT errors** - keep numeric value + UNKNOWN_0xXX
 12. **Data files are edited via separate PRs** - never mix code + CSV changes
