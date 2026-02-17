@@ -603,6 +603,11 @@ def scan(
         "--no-tips",
         help="Hide scan header tips in interactive terminal mode.",
     ),
+    redact: bool = typer.Option(  # noqa: B008
+        False,
+        "--redact",
+        help="Redact device identity fields (e.g. serial number) in console output.",
+    ),
     probe_constraints: bool = typer.Option(  # noqa: B008
         False,
         "--probe-constraints/--no-probe-constraints",
@@ -706,6 +711,8 @@ def scan(
                     subtitle_lines = [f"Planner: {planner_ui_value} (preset={preset_value})"]
 
                     identity = _probe_scan_identity(transport, dst=dst_u8)
+                    if redact:
+                        identity["serial"] = "<SERIAL_NUMBER_REDACTED>"
                     preface = _build_scan_session_preface(
                         dst=dst_u8,
                         endpoint=f"{transport_settings.host}:{transport_settings.port}",

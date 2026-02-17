@@ -23,11 +23,12 @@ SPEEDUP=10
 OUTPUT_SECONDS=""
 OUTPUT_DIR="artifacts/readme"
 FONT_PATH=""
-COLS=120
-ROWS=34
+COLS=140
+ROWS=42
 FPS=20
 POSTER_PERCENT=40
-CAPTURE_CMD="PYTHONPATH=src \"${PYTHON_BIN}\" -m helianthus_vrc_explorer scan --dst 0x15 --host 127.0.0.1 --port 8888 --planner-ui textual --preset recommended --output-dir artifacts/from-ha"
+FONT_SIZE=16
+CAPTURE_CMD="PYTHONPATH=src \"${PYTHON_BIN}\" -m helianthus_vrc_explorer scan --host 127.0.0.1 --port 8888 --planner-ui auto --preset recommended --redact --output-dir artifacts/from-ha"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -67,13 +68,17 @@ while [[ $# -gt 0 ]]; do
       POSTER_PERCENT="$2"
       shift 2
       ;;
+    --font-size)
+      FONT_SIZE="$2"
+      shift 2
+      ;;
     --command)
       CAPTURE_CMD="$2"
       shift 2
       ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 [--capture-seconds 300] [--speedup 10] [--output-seconds 30] [--cols 120] [--rows 34] [--fps 20] [--poster-percent 40] [--output-dir artifacts/readme] [--font-path /path.ttf] [--command \"...\"]" >&2
+      echo "Usage: $0 [--capture-seconds 300] [--speedup 10] [--output-seconds 30] [--cols 140] [--rows 42] [--fps 20] [--poster-percent 40] [--font-size 16] [--output-dir artifacts/readme] [--font-path /path.ttf] [--command \"...\"]" >&2
       exit 2
       ;;
   esac
@@ -165,6 +170,7 @@ agg_cmd=(
   --fps-cap "$FPS"
   --cols "$COLS"
   --rows "$ROWS"
+  --font-size "$FONT_SIZE"
   --font-family "Anonymous Pro,JetBrains Mono,Fira Code,SF Mono,Menlo,Consolas"
   "$CAST_PATH"
   "$GIF_PATH"
