@@ -3,16 +3,27 @@ ebus_model,friendly_name
 47000,VRC 470/470f calorMATIC Regulator
 62000,VRC 620 auroMATIC Cascade Regulator
 63000,VRC 630 calorMATIC Cascade Regulator
+70000,Wired 700-series multiMATIC Regulator Controller, Vaillant Branded
+700f0,Wireless 700-series multiMATIC Regulator Base Station, Vaillant Branded
 72000,Wired 720-series Regulator Controller Revision 0
-BASS0,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision 1 (implied)
-BASS2,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision *2*
-BASS3,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision *3*
+BASS0,Wireless 700/720-series Regulator *BA*se *S*tation *S*aunier Duval-branded (Exacontrol E7RC / MiPro Sense f) Revision 1 (implied)
+BASS2,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded (MiPro Sense f) Revision *2*
+BASS3,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded (MiPro Sense f) Revision *3*
 BASV0,Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision 1 (implied)
 BASV2,Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *2*
 BASV3,Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *3*
+E7C00,Wired 700-series Exacontrol E7C Regulator Controller, Saunier Duval Branded
+BASR0,Wireless 380-series Regulator *BA*se *S*tation Generic-branded Revision 1 (implied)
+BASR2,Wireless 380-series Regulator *BA*se *S*tation Generic-branded Revision *2*
+CTLR0,Wired 380-series Regulator *C*on*T*ro*L*ler Generic-branded Revision 1 (implied)
+CTLR2,Wired 380-series Regulator *C*on*T*ro*L*ler Generic-branded Revision *2*
 CTLS0,Wired 720-series Regulator *C*on*T*ro*L*ler *S*aunier Duval-branded Revision 1 (implied)
 CTLS2,Wired 720-series Regulator *C*on*T*ro*L*ler *S*aunier Duval-branded Revision *2*
 CTLS3,Wired 720-series Regulator *C*on*T*ro*L*ler *S*aunier Duval-branded Revision *3*
 CTLV0,Wired 720-series Regulator *C*on*T*ro*L*ler *V*aillant-branded Revision 1 (implied)
 CTLV2,Wired 720-series Regulator *C*on*T*ro*L*ler *V*aillant-branded Revision *2*
 CTLV3,Wired 720-series Regulator *C*on*T*ro*L*ler *V*aillant-branded Revision *3*
+EMM00,Wired 710-series sensoDIRECT Regulator (NETX2/NETX3 or Heater UI dependent, no VR9x support)
+NETX2,sensoNET VR 920/921 WiFi/LAN Gateway (Generation 2) - Optional Regulator
+NETX3,myVAILLANT VR 940 WiFi Gateway (Generation 3) - Optional Regulator
+VAI00,vSMART/eRELAX WiFi Regulator Gateway (Generation 1)
