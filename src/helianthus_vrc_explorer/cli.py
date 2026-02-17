@@ -968,10 +968,13 @@ def browse(
     allow_write: bool = typer.Option(  # noqa: B008
         False,
         "--allow-write",
-        help="Enable write/edit actions in browse UI (P2, planned).",
+        help=(
+            "Enable write/edit actions in browse UI (safe mode + confirmation). "
+            "Note: --file mode edits do not write to the device."
+        ),
     ),
 ) -> None:
-    """Browse scan results in fullscreen Textual UI (P0: file mode)."""
+    """Browse scan results in fullscreen Textual UI (file mode)."""
 
     _ = device
     if live:
