@@ -8,7 +8,10 @@ def test_ebus_model_name_map_contains_basv2() -> None:
     csv_path = Path(__file__).resolve().parents[1] / "data" / "ebus_model_names.csv"
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         rows = {str(row.get("ebus_model") or "").strip(): row for row in csv.DictReader(handle)}
-    assert rows["BASV2"]["friendly_name"] == "Bus Application Software Version 2"
+    assert (
+        rows["BASV2"]["friendly_name"]
+        == "Wireless 720-series Regulator Base Station Vaillant-branded Revision 2"
+    )
 
 
 def test_packaged_ebus_model_name_map_stays_in_sync_with_repo_copy() -> None:
