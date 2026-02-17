@@ -340,7 +340,8 @@ def test_default_dry_run_fixture_is_bundled() -> None:
 def test_default_ebus_model_name_map_includes_basv2() -> None:
     names = _load_ebus_model_name_map()
     assert (
-        names["BASV2"] == "Wireless 720-series Regulator Base Station Vaillant-branded Revision 2"
+        names["BASV2"]
+        == "Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *2*"
     )
 
 
@@ -466,7 +467,7 @@ def test_probe_scan_identity_formats_basv2_friendly_name() -> None:
     identity = _probe_scan_identity(_FakeTransportBasv(), dst=0x15)  # type: ignore[arg-type]
     assert (
         identity["device"]
-        == "Wireless 720-series Regulator Base Station Vaillant-branded Revision 2 (BASV2)"
+        == "Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *2* (BASV2)"
     )
     assert identity["model"] == "Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148"
     assert identity["serial"] == "21213400202621480000000001N7"

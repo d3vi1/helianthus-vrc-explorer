@@ -1,8 +1,14 @@
 ebus_model,friendly_name
-BASS2,Wireless 720-series Regulator Base Station Saunier Duval-branded Revision 2
-BASV2,Wireless 720-series Regulator Base Station Vaillant-branded Revision 2
-BASV3,Wireless 720-series Regulator Base Station Vaillant-branded Revision 3
-CTLV2,Wired 720-series Regulator Vaillant-branded Revision 2
-CTLV3,Wired 720-series Regulator Vaillant-branded Revision 3
-CTLS2,Wired 720-series Regulator Saunier Duval-branded Revision 2
-CTLS3,Wired 720-series Regulator Saunier Duval-branded Revision 3
+72000,Wired 720-series Regulator Controller Revision 0
+BASS0,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision 1 (implied)
+BASS2,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision *2*
+BASS3,Wireless 720-series Regulator *BA*se *S*tation *S*aunier Duval-branded Revision *3*
+BASV0,Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision 1 (implied)
+BASV2,Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *2*
+BASV3,Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *3*
+CTLS0,Wired 720-series Regulator *C*on*T*ro*L*ler *S*aunier Duval-branded Revision 1 (implied)
+CTLS2,Wired 720-series Regulator *C*on*T*ro*L*ler *S*aunier Duval-branded Revision *2*
+CTLS3,Wired 720-series Regulator *C*on*T*ro*L*ler *S*aunier Duval-branded Revision *3*
+CTLV0,Wired 720-series Regulator *C*on*T*ro*L*ler *V*aillant-branded Revision 1 (implied)
+CTLV2,Wired 720-series Regulator *C*on*T*ro*L*ler *V*aillant-branded Revision *2*
+CTLV3,Wired 720-series Regulator *C*on*T*ro*L*ler *V*aillant-branded Revision *3*

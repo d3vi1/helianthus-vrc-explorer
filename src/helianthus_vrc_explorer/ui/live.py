@@ -55,12 +55,35 @@ class ScanSessionPreface:
     rows: tuple[tuple[str, str], ...]
 
 
+def _render_star_bold(text: str) -> Text:
+    """Render `*like this*` segments as bold, stripping the `*` markers.
+
+    We keep the underlying CSV values human-editable without forcing Rich markup.
+    """
+
+    out = Text()
+    cursor = 0
+    while True:
+        start = text.find("*", cursor)
+        if start < 0:
+            out.append(text[cursor:])
+            break
+        end = text.find("*", start + 1)
+        if end < 0:
+            out.append(text[cursor:])
+            break
+        out.append(text[cursor:start])
+        out.append(text[start + 1 : end], style="bold")
+        cursor = end + 1
+    return out
+
+
 def _render_session_preface(preface: ScanSessionPreface) -> Panel:
     rows = Table.grid(expand=True)
     rows.add_column(style="bold")
     rows.add_column()
     for label, value in preface.rows:
-        rows.add_row(f"{label}:", value)
+        rows.add_row(f"{label}:", _render_star_bold(value))
 
     body = Group(
         Text(preface.app_line, style="bold"),
