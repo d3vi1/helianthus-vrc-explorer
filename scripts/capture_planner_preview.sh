@@ -23,8 +23,8 @@ SPEEDUP=1
 OUTPUT_SECONDS=""
 OUTPUT_DIR="artifacts/readme"
 FONT_PATH=""
-COLS=120
-ROWS=34
+COLS=140
+ROWS=42
 FPS=20
 POSTER_PERCENT=45
 FONT_SIZE=16
@@ -78,7 +78,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 [--capture-seconds 25] [--speedup 1] [--output-seconds 25] [--cols 120] [--rows 34] [--fps 20] [--poster-percent 45] [--font-size 16] [--output-dir artifacts/readme] [--font-path /path.ttf] [--command \"...\"]" >&2
+      echo "Usage: $0 [--capture-seconds 25] [--speedup 1] [--output-seconds 25] [--cols 140] [--rows 42] [--fps 20] [--poster-percent 45] [--font-size 16] [--output-dir artifacts/readme] [--font-path /path.ttf] [--command \"...\"]" >&2
       exit 2
       ;;
   esac

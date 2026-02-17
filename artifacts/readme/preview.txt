@@ -1,29 +1,40 @@
-───────────────── helianthus-vrc-explorer scan (B524) dst=0x15 ─────────────────
-Started: 2026-02-11 19:12:31Z
-ebusd: 127.0.0.1:8888
+Auto-selected dst=0x15 (compatible B524 target).
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ helianthus-vrc-explorer v0.1.0                                                                                                           │
+│ Scanning VRC Regulator (B524) at address 0x15                                                                                            │
+│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ Device:        Wireless 720-series Regulator BAse Station Vaillant-branded Revision 2 (BASV2)                                            │
+│ Model:         Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148                                                                          │
+│ Serial:        <SERIAL_NUMBER_REDACTED>                                                                                                  │
+│ Firmware:      SW 0507 / HW 1704                                                                                                         │
+│ ebusd:         127.0.0.1:8888                                                                                                            │
+│ Started:       2026-02-17 15:24:12Z                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 Planner: auto (preset=recommended)
+Tip: set `--trace-file` to capture ebusd request/response exchanges.
+Tip: press `p` during Register Scan to open the scan planner.
 ✓ Starting scan dst=0x15
 ✓ Discovered group GG=0x00 desc=3.0
 ✓ Discovered group GG=0x01 desc=3.0
 ✓ Discovered group GG=0x02 desc=1.0
 ✓ Discovered group GG=0x03 desc=1.0
-✓ Discovered group GG=0x04 desc=6.0
-✓ Discovered group GG=0x05 desc=1.0
+✓ Discovered group GG=0x04 desc=5.0
 ✓ Discovered group GG=0x06 desc=1.0
 ✓ Discovered group GG=0x07 desc=1.0
 ✓ Discovered group GG=0x09 desc=1.0
 ✓ Discovered group GG=0x0A desc=1.0
-✓ Discovered group GG=0x0C desc=1.0
 ✓ Directory terminator at GG=0x12 (NaN)
+Descriptor mismatch for GG=0x04: expected 6.0, got 5.0
+⚠ Descriptor mismatch for GG=0x04: expected 6.0, got 5.0
 ⚠ Found 2 unknown groups (0x06, 0x07); skipped by default (enable in planner).
-✓ Discovered 11 groups
-✓ GG=0x02 Heating Circuits: 4/11 present, RR_max=0x0021 (34 registers/instance)
+⚠ Found new descriptor class(es): 5. Continue scan, then report with artifact JSON/HTML.
+✓ Discovered 9 groups
+✓ Deriving scan coverage defaults from known profiles
+✓ Skipping opcode 0x01 constraint probe (using static annotations).
+✓ GG=0x02 Heating Circuits: 3/11 present, RR_max=0x0025 (38 registers/instance)
 ✓ GG=0x03 Zones: 2/11 present, RR_max=0x002F (48 registers/instance)
-✓ GG=0x05 Hot Water Cylinder: 11/11 present, RR_max=0x000F (16
-registers/instance)
 ✓ GG=0x09 RoomSensors: 1/11 present, RR_max=0x002F (48 registers/instance)
 ✓ GG=0x0A RoomState: 1/11 present, RR_max=0x003F (64 registers/instance)
-✓ GG=0x0C Unrecognized: 1/11 present, RR_max=0x003F (64 registers/instance)
-Group Discovery    ━━━━━━━━━━━━ 19/19     0:00:27
-Instance Discovery ━━━━━━━━━━━━ 66/66     0:02:42
-Register Scan      ━━━━━━━━━━━━   68/3574 0:01:54 Read GG=0x00 II=0x00 RR=0x0043
+Group Discovery    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 19/19     0:00:06
+Instance Discovery ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 66/66     0:00:39
+Register Scan      ━━━━━━━━━━━━╸                                                             431/2482 0:03:51 Read GG=0x02 II=0x03 RR=0x001C

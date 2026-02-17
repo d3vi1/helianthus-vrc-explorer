@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/d3vi1/helianthus-vrc-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/d3vi1/helianthus-vrc-explorer/actions/workflows/ci.yml)
 
-Helianthus VRC Explorer is a professional CLI tool for scanning Vaillant VRC heating regulators via eBUS (B5 24 / B524 GetExtendedRegisters). It focuses on safe, read-oriented discovery and produces a high-quality JSON artifact.
+Helianthus VRC Explorer is a professional CLI tool for scanning **Vaillant VRC-series heating regulators/controllers** (e.g. VRC 700/720) via eBUS (B5 24 / B524 GetExtendedRegisters). It focuses on safe, read-oriented discovery and produces a high-quality JSON artifact.
+
+This repository has **no relation to VRChat**.
 
 ## Goals
 - Scan VRC regulators using the B524 protocol family (groups, instances, registers).
@@ -15,11 +17,24 @@ Helianthus VRC Explorer is a professional CLI tool for scanning Vaillant VRC hea
 - Shipping a full Home Assistant integration from this repository.
 - Writing to devices by default. Any write/control functionality must be explicit and reviewed.
 
+## Prerequisites
+You need a working eBUS stack before this tool can talk to a regulator:
+
+`Vaillant VRC regulator on eBUS` -> `eBUS adapter` -> `ebusd daemon` -> `helianthus-vrc-explorer`
+
+Minimum setup:
+- A supported eBUS-to-host adapter (hardware), wired to your eBUS.
+- `ebusd` installed, running, and reachable over TCP (defaults to `127.0.0.1:8888`).
+- `ebusd` must have the `hex` command enabled (`--enablehex`), since this tool uses raw telegram exchange.
+- Network reachability from the machine running this tool to the `ebusd` TCP endpoint.
+
+## Who Is This For?
+- Home automation users and integrators who already have `ebusd` working and want a **safe, read-first** register explorer.
+- Contributors reverse-engineering Vaillant VRC-series behavior and building mappings/decoders from real scans.
+
 ## Quick start
 ```bash
 python -m helianthus_vrc_explorer scan \
-  --host 127.0.0.1 \
-  --port 8888 \
   --planner-ui auto \
   --preset recommended
 ```
@@ -31,9 +46,10 @@ Key scan UX flags:
 - `--preset conservative|recommended|aggressive|custom`
 - `--probe-constraints` (optional opcode `0x01` GG/RR probe; off by default)
 - `--no-tips`
+- `--redact` (redact identity fields like serial number from console output)
 - `--trace-file /path/to/trace.log`
-- `--ebusd-csv-path /path/to/15.720.csv`
-- `--myvaillant-map-path /path/to/myvaillant_register_map.csv`
+- `--ebusd-csv-path /path/to/15.720.csv` (optional enrichment: adds eBUSd register names)
+- `--myvaillant-map-path /path/to/myvaillant_register_map.csv` (optional enrichment: adds myVaillant-style leaf names)
 
 If startup fails on default transport (`tcp://127.0.0.1:8888`) in an interactive TTY, scan opens a retry dialog so you can adjust protocol/host/port and retry or cancel.
 
@@ -54,6 +70,15 @@ python -m helianthus_vrc_explorer browse \
   --allow-write
 ```
 
+### Write Safety
+By default the tool is **read-only**.
+
+Writes are only possible when:
+- you pass `--allow-write`, and
+- you confirm each write in an interactive confirmation dialog (old value -> new value -> confirm).
+
+Misconfigured writes can affect physical heating behavior. Use write mode only if you understand the target register.
+
 ## Features
 - Session preface with regulator identity and transport endpoint.
 - Phased scanner progress: Group Discovery, Instance Discovery, Register Scan.
@@ -64,6 +89,13 @@ python -m helianthus_vrc_explorer browse \
 - Fullscreen register browser with tree navigation by category/group/instance/register.
 - Tabbed register views: `Config`, `Config-Limits`, `State`.
 - Watch/pin/rate controls and safe write workflow (`--allow-write` + confirmation).
+
+## Data Enrichment Sources (Optional)
+This tool can enrich raw scan output with human-readable names:
+- **myVaillant map** (`--myvaillant-map-path`): a small curated CSV mapping `(GG,II,RR)` to myVaillant-style leaf names.
+  - Default: bundled in this repo as `data/myvaillant_register_map.csv` (also packaged under `src/helianthus_vrc_explorer/data/`).
+- **eBUSd CSV schema** (`--ebusd-csv-path`): adds register names from an eBUSd configuration CSV (e.g. `15.720.csv`).
+  - Source: typically taken from an `ebusd-configuration` checkout (not bundled here).
 
 ## Scan UI Preview
 <picture>
@@ -100,6 +132,7 @@ Capture first 5 minutes of autorun, sped up 10x (300s -> 30s):
 Preview script options (all three capture scripts):
 - `--output-seconds 45` override final animation duration.
 - `--cols 132 --rows 40` tune terminal geometry.
+- `--font-size 18` control render font size (pixels).
 - `--poster-percent 40` choose which moment becomes `<name>.png`.
 - `--command "python -m helianthus_vrc_explorer ..."` capture a different run.
 - `--font-path "/path/to/Anonymous Pro.ttf"` force font selection.
