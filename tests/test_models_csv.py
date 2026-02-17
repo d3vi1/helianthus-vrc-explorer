@@ -47,3 +47,9 @@ def test_generate_models_csv_matches_repo_file(tmp_path: Path) -> None:
     expected = (_repo_root() / "data" / "models.csv").read_text(encoding="utf-8")
     actual = out_path.read_text(encoding="utf-8")
     assert actual == expected
+
+
+def test_packaged_models_csv_stays_in_sync_with_repo_copy() -> None:
+    repo_csv = _repo_root() / "data" / "models.csv"
+    packaged_csv = _repo_root() / "src" / "helianthus_vrc_explorer" / "data" / "models.csv"
+    assert packaged_csv.read_text(encoding="utf-8") == repo_csv.read_text(encoding="utf-8")
