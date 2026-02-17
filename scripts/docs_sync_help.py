@@ -23,6 +23,8 @@ _SECTIONS: tuple[HelpSection, ...] = (
     HelpSection("discover", ("discover",)),
 )
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -53,6 +55,9 @@ def _run_help(*argv: str) -> str:
     # Normalize line endings + trim right-padding whitespace (Rich often pads to terminal width,
     # and exact padding can vary by platform/terminal environment).
     text = res.stdout.replace("\r\n", "\n")
+    # In CI, Typer/Rich may emit ANSI SGR sequences even when stdout is captured. Strip them so
+    # the embedded help blocks are stable and readable in markdown.
+    text = _ANSI_ESCAPE_RE.sub("", text)
     lines = [line.rstrip() for line in text.splitlines()]
     return "\n".join(lines).rstrip() + "\n"
 
