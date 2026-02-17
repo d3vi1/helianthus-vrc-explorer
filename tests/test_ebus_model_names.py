@@ -10,7 +10,7 @@ def test_ebus_model_name_map_contains_basv2() -> None:
         rows = {str(row.get("ebus_model") or "").strip(): row for row in csv.DictReader(handle)}
     assert (
         rows["BASV2"]["friendly_name"]
-        == "Wireless 720-series Regulator Base Station Vaillant-branded Revision 2"
+        == "Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *2*"
     )
 
 
