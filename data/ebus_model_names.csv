@@ -1,2 +1,8 @@
 ebus_model,friendly_name
-BASV2,Bus Application Software Version 2
+BASS2,Wireless 720-series Regulator Base Station Saunier Duval-branded Revision 2
+BASV2,Wireless 720-series Regulator Base Station Vaillant-branded Revision 2
+BASV3,Wireless 720-series Regulator Base Station Vaillant-branded Revision 3
+CTLV2,Wired 720-series Regulator Vaillant-branded Revision 2
+CTLV3,Wired 720-series Regulator Vaillant-branded Revision 3
+CTLS2,Wired 720-series Regulator Saunier Duval-branded Revision 2
+CTLS3,Wired 720-series Regulator Saunier Duval-branded Revision 3
