@@ -98,6 +98,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.check:
         sys.stderr.write("AGENTS.md is out of sync with CLI --help output.\n")
+        # Print a small diff to make CI failures actionable.
+        import difflib
+
+        diff = difflib.unified_diff(
+            original.splitlines(True),
+            rendered.splitlines(True),
+            fromfile=str(agents_path),
+            tofile=f"{agents_path} (generated)",
+        )
+        for idx, line in enumerate(diff):
+            if idx >= 200:
+                sys.stderr.write("... (diff truncated)\n")
+                break
+            sys.stderr.write(line)
         return 1
     agents_path.write_text(rendered, encoding="utf-8")
     return 0
