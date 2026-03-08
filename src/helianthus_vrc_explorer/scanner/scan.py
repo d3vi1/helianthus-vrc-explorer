@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from rich.console import Console
 
@@ -74,7 +74,7 @@ def _primary_opcode(group: int) -> RegisterOpcode:
 
 
 def _opcode_label(opcode: int) -> str:
-    labels = {
+    labels: dict[int, str] = {
         _LOCAL_REGISTER_OPCODE: "local",
         _REMOTE_REGISTER_OPCODE: "remote",
     }
@@ -220,7 +220,7 @@ def _probe_present_instances(
     *,
     dst: int,
     group: int,
-    opcode: int,
+    opcode: RegisterOpcode,
     ii_max: int,
     observer: ScanObserver | None,
 ) -> tuple[int, ...]:
@@ -861,6 +861,7 @@ def scan_b524(
         for group in classified:
             meta = metadata_map[group.group]
             if group.group in {0x09, 0x0A}:
+                shared_present: tuple[int, ...]
                 shared_ii_max = _ii_max_for_opcode(
                     group=group.group,
                     default_ii_max=meta.ii_max,
@@ -1240,7 +1241,7 @@ def scan_b524(
                 # reply in the artifact.
                 opcodes_to_try: tuple[RegisterOpcode, ...]
                 if task.group in GROUP_CONFIG:
-                    opcodes_to_try = (task.opcode,)
+                    opcodes_to_try = (cast(RegisterOpcode, task.opcode),)
                 else:
                     opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
 

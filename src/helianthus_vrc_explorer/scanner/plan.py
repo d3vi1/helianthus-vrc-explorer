@@ -4,6 +4,8 @@ import string
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from ..protocol.b524 import RegisterOpcode
+
 _HEX_DIGITS = set(string.hexdigits)
 PlanKey = tuple[int, int]
 
@@ -125,7 +127,7 @@ def format_plan_key(key: PlanKey) -> str:
 @dataclass(frozen=True, slots=True)
 class GroupScanPlan:
     group: int
-    opcode: int
+    opcode: RegisterOpcode
     rr_max: int
     instances: tuple[int, ...]
 
@@ -140,7 +142,7 @@ class GroupScanPlan:
 @dataclass(frozen=True, slots=True, order=True)
 class RegisterTask:
     group: int
-    opcode: int
+    opcode: RegisterOpcode
     instance: int
     register: int
 

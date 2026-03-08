@@ -9,6 +9,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from ..protocol.b524 import RegisterOpcode
 from ..scanner.plan import (
     GroupScanPlan,
     PlanKey,
@@ -24,7 +25,7 @@ from ..scanner.plan import (
 @dataclass(frozen=True, slots=True)
 class PlannerGroup:
     group: int
-    opcode: int
+    opcode: RegisterOpcode
     name: str
     descriptor: float
     known: bool
@@ -132,17 +133,17 @@ def _build_default_plan(
         if selected:
             return selected
 
-    selected: dict[PlanKey, GroupScanPlan] = {}
+    defaults: dict[PlanKey, GroupScanPlan] = {}
     for g in eligible.values():
         if not g.known:
             continue
-        selected[g.key] = GroupScanPlan(
+        defaults[g.key] = GroupScanPlan(
             group=g.group,
             opcode=g.opcode,
             rr_max=g.rr_max,
             instances=((0x00,) if g.ii_max is None else g.present_instances),
         )
-    return selected
+    return defaults
 
 
 def _instances_for_preset(group: PlannerGroup, preset: PlannerPreset) -> tuple[int, ...]:
