@@ -53,6 +53,12 @@ def test_encode_fw_roundtrips() -> None:
     assert parse_typed_value("FW", data) == "08.05.00"
 
 
+@pytest.mark.parametrize("value", ["8.05.00", "08.5.00", "08.05", "08.05.000", "ab.05.00"])
+def test_encode_fw_rejects_non_canonical_strings(value: str) -> None:
+    with pytest.raises(ValueEncodeError, match=r"FW expects MM\.mm\.pp"):
+        encode_typed_value("FW", value)
+
+
 def test_encode_hex_enforces_length() -> None:
     assert encode_typed_value("HEX:2", "0x3412").hex() == "3412"
     with pytest.raises(ValueEncodeError):
