@@ -29,26 +29,30 @@ def test_prompt_scan_plan_disables_unknown_groups_by_default(monkeypatch) -> Non
     groups = [
         PlannerGroup(
             group=0x02,
+            opcode=0x02,
             name="Heating Circuits",
             descriptor=1.0,
             known=True,
             ii_max=0x0A,
             rr_max=0x21,
+            rr_max_full=0x21,
             present_instances=(0x00,),
         ),
         PlannerGroup(
             group=0x69,
+            opcode=0x02,
             name="Unknown",
             descriptor=1.0,
             known=False,
             ii_max=0x0A,
             rr_max=0x30,
+            rr_max_full=0x30,
             present_instances=tuple(range(0x0A + 1)),
         ),
     ]
 
     plan = prompt_scan_plan(console, groups, request_rate_rps=None, default_plan=None)
-    assert sorted(plan.keys()) == [0x02]
+    assert sorted(plan.keys()) == [(0x02, 0x02)]
 
 
 def test_prompt_scan_plan_accepts_lowercase_yes_and_aggressive_preset(monkeypatch) -> None:
@@ -71,18 +75,20 @@ def test_prompt_scan_plan_accepts_lowercase_yes_and_aggressive_preset(monkeypatc
     groups = [
         PlannerGroup(
             group=0x69,
+            opcode=0x02,
             name="Unknown",
             descriptor=1.0,
             known=False,
             ii_max=0x0A,
             rr_max=0x30,
+            rr_max_full=0x30,
             present_instances=tuple(range(0x0A + 1)),
         )
     ]
 
     plan = prompt_scan_plan(console, groups, request_rate_rps=None, default_plan=None)
     assert plan == {
-        0x69: GroupScanPlan(
+        (0x69, 0x02): GroupScanPlan(
             group=0x69,
             opcode=0x02,
             rr_max=0x30,
@@ -95,24 +101,28 @@ def test_build_plan_from_preset_recommended_skips_unknown_groups() -> None:
     groups = [
         PlannerGroup(
             group=0x02,
+            opcode=0x02,
             name="Heating Circuits",
             descriptor=1.0,
             known=True,
             ii_max=0x0A,
             rr_max=0x21,
+            rr_max_full=0x21,
             present_instances=(0x00, 0x01),
         ),
         PlannerGroup(
             group=0x69,
+            opcode=0x02,
             name="Unknown",
             descriptor=1.0,
             known=False,
             ii_max=0x0A,
             rr_max=0x30,
+            rr_max_full=0x30,
             present_instances=tuple(range(0x0A + 1)),
         ),
     ]
 
     plan = build_plan_from_preset(groups, preset="recommended")
-    assert sorted(plan.keys()) == [0x02]
-    assert plan[0x02].instances == tuple(range(0x0A + 1))
+    assert sorted(plan.keys()) == [(0x02, 0x02)]
+    assert plan[(0x02, 0x02)].instances == tuple(range(0x0A + 1))

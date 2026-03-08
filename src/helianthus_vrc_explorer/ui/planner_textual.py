@@ -4,13 +4,13 @@ from dataclasses import dataclass
 
 from ..scanner.plan import (
     GroupScanPlan,
+    PlanKey,
     estimate_eta_seconds,
     estimate_register_requests,
     format_int_set,
     parse_int_set,
     parse_int_token,
 )
-from ..scanner.register import opcode_for_group
 from .planner import PlannerGroup, PlannerPreset, _format_seconds, build_plan_from_preset
 
 
@@ -57,28 +57,28 @@ def _parse_instances_spec(spec: str, *, group: PlannerGroup) -> tuple[int, ...]:
 
 
 def _estimate_footer(
-    states: dict[int, _EditableGroup],
+    states: dict[PlanKey, _EditableGroup],
     *,
     request_rate_rps: float | None,
 ) -> str:
     plan = {
-        gg: GroupScanPlan(
-            group=gg,
-            opcode=opcode_for_group(gg),
-            rr_max=st.rr_max,
-            instances=st.instances,
+        key: GroupScanPlan(
+            group=state.group.group,
+            opcode=state.group.opcode,
+            rr_max=state.rr_max,
+            instances=state.instances,
         )
-        for (gg, st) in states.items()
-        if st.enabled
+        for (key, state) in states.items()
+        if state.enabled
     }
     requests = estimate_register_requests(plan)
     eta_s = estimate_eta_seconds(requests=requests, request_rate_rps=request_rate_rps)
     eta_txt = _format_seconds(eta_s) if eta_s is not None else "n/a"
     rate_txt = f"{request_rate_rps:.2f}" if request_rate_rps is not None else "n/a"
-    enabled_groups = sum(1 for st in states.values() if st.enabled)
+    enabled_groups = sum(1 for state in states.values() if state.enabled)
     return (
         f"Plan: {requests} requests | ETA: {eta_txt} @ {rate_txt} req/s | "
-        f"{enabled_groups} groups selected"
+        f"{enabled_groups} plan entries selected"
     )
 
 
@@ -86,9 +86,9 @@ def run_textual_scan_plan(
     groups: list[PlannerGroup],
     *,
     request_rate_rps: float | None,
-    default_plan: dict[int, GroupScanPlan] | None = None,
+    default_plan: dict[PlanKey, GroupScanPlan] | None = None,
     default_preset: PlannerPreset = "recommended",
-) -> dict[int, GroupScanPlan] | None:
+) -> dict[PlanKey, GroupScanPlan] | None:
     """Open a Textual planner and return selected plan (None when cancelled).
 
     This function imports Textual lazily so non-interactive environments remain lightweight.
@@ -150,7 +150,7 @@ def run_textual_scan_plan(
             # users can confirm edits without relying on screen-level bindings.
             self.dismiss(event.value.strip())
 
-    class _PlannerApp(App[dict[int, GroupScanPlan] | None]):
+    class _PlannerApp(App[dict[PlanKey, GroupScanPlan] | None]):
         BINDINGS = [
             Binding("space", "toggle_enabled", "Toggle"),
             Binding("tab", "focus_next", "Next"),
@@ -185,24 +185,24 @@ def run_textual_scan_plan(
 
         def __init__(self) -> None:
             super().__init__()
-            self._groups = sorted(groups, key=lambda g: g.group)
+            self._groups = sorted(groups, key=lambda group: (group.group, group.opcode))
             preset_plan = build_plan_from_preset(self._groups, preset=default_preset)
             initial_plan = default_plan if default_plan is not None else preset_plan
-            self._states: dict[int, _EditableGroup] = {}
-            self._row_groups: list[int] = []
-            self._editing_group: int | None = None
+            self._states: dict[PlanKey, _EditableGroup] = {}
+            self._row_groups: list[PlanKey] = []
+            self._editing_group: PlanKey | None = None
             for group in self._groups:
-                group_plan = initial_plan.get(group.group)
+                group_plan = initial_plan.get(group.key)
                 if group_plan is None:
                     instances = (0x00,) if group.ii_max is None else group.present_instances
-                    self._states[group.group] = _EditableGroup(
+                    self._states[group.key] = _EditableGroup(
                         group=group,
                         enabled=False,
                         rr_max=group.rr_max,
                         instances=instances,
                     )
                 else:
-                    self._states[group.group] = _EditableGroup(
+                    self._states[group.key] = _EditableGroup(
                         group=group,
                         enabled=True,
                         rr_max=group_plan.rr_max,
@@ -232,7 +232,7 @@ def run_textual_scan_plan(
                 _estimate_footer(self._states, request_rate_rps=request_rate_rps)
             )
 
-        def _focused_group(self) -> int | None:
+        def _focused_group(self) -> PlanKey | None:
             table = self.query_one(DataTable)
             if not self._row_groups:
                 return None
@@ -247,9 +247,9 @@ def run_textual_scan_plan(
             table.clear(columns=False)
             self._row_groups = []
             for group in self._groups:
-                state = self._states[group.group]
+                state = self._states[group.key]
                 mark = "✓" if state.enabled else " "
-                name = group.name if group.known else f"{group.name} (experimental)"
+                name = group.display_name if group.known else f"{group.display_name} (experimental)"
                 table.add_row(
                     mark,
                     f"0x{group.group:02X}",
@@ -258,7 +258,7 @@ def run_textual_scan_plan(
                     _format_instances(group, state.instances, enabled=state.enabled),
                     f"0x{state.rr_max:04X}",
                 )
-                self._row_groups.append(group.group)
+                self._row_groups.append(group.key)
             if self._row_groups:
                 table.move_cursor(row=min(current, len(self._row_groups) - 1))
             self._set_status()
@@ -269,8 +269,8 @@ def run_textual_scan_plan(
         def _apply_preset(self, preset: PlannerPreset) -> None:
             preset_plan = build_plan_from_preset(self._groups, preset=preset)
             for group in self._groups:
-                state = self._states[group.group]
-                planned = preset_plan.get(group.group)
+                state = self._states[group.key]
+                planned = preset_plan.get(group.key)
                 if planned is None:
                     state.enabled = False
                     continue
@@ -298,7 +298,8 @@ def run_textual_scan_plan(
                 return
             self._states[self._editing_group].rr_max = rr_max
             self._refresh_table()
-            self._set_help(f"Updated RR_max for 0x{self._editing_group:02X}")
+            edited_group = self._states[self._editing_group].group
+            self._set_help(f"Updated RR_max for {edited_group.prompt_label}")
             self._editing_group = None
             self._focus_table()
 
@@ -322,7 +323,7 @@ def run_textual_scan_plan(
                 return
             self._states[self._editing_group].instances = instances
             self._refresh_table()
-            self._set_help(f"Updated instances for 0x{self._editing_group:02X}")
+            self._set_help(f"Updated instances for {group.prompt_label}")
             self._editing_group = None
             self._focus_table()
 
@@ -344,23 +345,24 @@ def run_textual_scan_plan(
                 self.action_edit_rr_max()
 
         def action_toggle_enabled(self) -> None:
-            gg = self._focused_group()
-            if gg is None:
+            key = self._focused_group()
+            if key is None:
                 return
-            self._states[gg].enabled = not self._states[gg].enabled
+            self._states[key].enabled = not self._states[key].enabled
             self._refresh_table()
 
         def action_edit_rr_max(self) -> None:
             if len(self.screen_stack) > 1:
                 return
-            gg = self._focused_group()
-            if gg is None:
+            key = self._focused_group()
+            if key is None:
                 return
-            self._editing_group = gg
-            current = self._states[gg].rr_max
+            self._editing_group = key
+            current = self._states[key].rr_max
+            planner_group = self._states[key].group
             self.push_screen(
                 _InputDialog(
-                    title=f"RR_max for 0x{gg:02X}",
+                    title=f"RR_max for {planner_group.prompt_label}",
                     value=f"0x{current:04X}",
                     hint="Hex or decimal. Enter=save Esc=cancel",
                 ),
@@ -374,19 +376,19 @@ def run_textual_scan_plan(
         def action_edit_instances(self) -> None:
             if len(self.screen_stack) > 1:
                 return
-            gg = self._focused_group()
-            if gg is None:
+            key = self._focused_group()
+            if key is None:
                 return
-            group = self._states[gg].group
+            group = self._states[key].group
             if group.ii_max is None:
                 self._set_help("Group is singleton; no instance selection")
                 return
-            self._editing_group = gg
-            current = self._states[gg].instances
+            self._editing_group = key
+            current = self._states[key].instances
             default_value = format_int_set(list(current)) if current else "none"
             self.push_screen(
                 _InputDialog(
-                    title=f"Instances for 0x{gg:02X}",
+                    title=f"Instances for {group.prompt_label}",
                     value=default_value,
                     hint="Use present|all|none|0-10",
                 ),
@@ -407,14 +409,14 @@ def run_textual_scan_plan(
 
         def action_save(self) -> None:
             plan = {
-                gg: GroupScanPlan(
-                    group=gg,
-                    opcode=opcode_for_group(gg),
-                    rr_max=st.rr_max,
-                    instances=st.instances,
+                key: GroupScanPlan(
+                    group=state.group.group,
+                    opcode=state.group.opcode,
+                    rr_max=state.rr_max,
+                    instances=state.instances,
                 )
-                for (gg, st) in sorted(self._states.items())
-                if st.enabled
+                for (key, state) in sorted(self._states.items())
+                if state.enabled
             }
             self.exit(plan)
 
