@@ -102,8 +102,8 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
             namespaces = group_obj.get("namespaces", {})
             if not isinstance(namespaces, dict):
                 namespaces = {}
-            instances_total = 0
-            instances_present = 0
+            instance_ids_total: set[str] = set()
+            instance_ids_present: set[str] = set()
             for namespace_key, namespace_obj in namespaces.items():
                 if not isinstance(namespace_key, str) or not isinstance(namespace_obj, dict):
                     continue
@@ -117,12 +117,13 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                 namespace_instances = namespace_obj.get("instances", {})
                 if not isinstance(namespace_instances, dict):
                     continue
-                instances_total += len(namespace_instances)
-                for instance_obj in namespace_instances.values():
+                for instance_key, instance_obj in namespace_instances.items():
+                    if isinstance(instance_key, str):
+                        instance_ids_total.add(instance_key)
                     if not isinstance(instance_obj, dict):
                         continue
-                    if instance_obj.get("present") is True:
-                        instances_present += 1
+                    if instance_obj.get("present") is True and isinstance(instance_key, str):
+                        instance_ids_present.add(instance_key)
                     registers = instance_obj.get("registers", {})
                     if not isinstance(registers, dict):
                         continue
@@ -134,6 +135,8 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                         if entry.get("error") is not None:
                             registers_errors += 1
                 namespace_registers[namespace_label] = namespace_count
+            instances_total = len(instance_ids_total)
+            instances_present = len(instance_ids_present)
         else:
             for instance_obj in instances.values():
                 if not isinstance(instance_obj, dict):

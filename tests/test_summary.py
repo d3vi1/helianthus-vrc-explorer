@@ -82,3 +82,5 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
     assert "namespaces local=2, remote=1" in text
     assert "flags_access volatile_ro=0, stable_ro=2, technical_rw=0, user_rw=1" in text
     assert "local=1, remote=1" in text
+    assert "Radio Sensors VRC7xx" in text
+    assert "2/2" not in text
