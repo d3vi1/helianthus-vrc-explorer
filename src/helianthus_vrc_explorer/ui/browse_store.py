@@ -189,7 +189,10 @@ class BrowseStore:
             if not isinstance(group_obj, dict):
                 continue
             group_name = str(group_obj.get("name") or "Unknown")
-            descriptor_type = group_obj.get("descriptor_type")
+            descriptor_type = group_obj.get(
+                "descriptor_observed",
+                group_obj.get("descriptor_type"),
+            )
             gg = _safe_int_hex(group_key)
             is_instanced = (
                 isinstance(descriptor_type, (int, float)) and float(descriptor_type) == 1.0

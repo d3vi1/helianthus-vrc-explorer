@@ -360,7 +360,7 @@ __ARTIFACT_JSON__
 
       function getGroupObject(groupObj) {
         if (!groupObj || typeof groupObj !== "object") return { name: "Unknown", instances: {} };
-        // New schema: { name, descriptor_type, instances: { "0x00": { present, registers: {...} } } }
+        // New schema: { name, descriptor_observed, instances: { "0x00": { present, registers: {...} } } }
         if (groupObj.instances && typeof groupObj.instances === "object") return groupObj;
         // Legacy-ish: groupObj might itself be an instances map.
         return { name: "Unknown", instances: groupObj };

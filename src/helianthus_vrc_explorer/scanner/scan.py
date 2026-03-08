@@ -43,12 +43,20 @@ def _hex_u16(value: int) -> str:
 _LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
 _REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
 _UNKNOWN_GROUP_DEFAULT_RR_MAX = 0x0030
-_UNKNOWN_GROUP_DEFAULT_II_MAX = 0x0A
+_UNKNOWN_GROUP_DEFAULT_II_MAX = 0x00
 
 PlannerUiMode = Literal["auto", "textual", "classic"]
 _KNOWN_DESCRIPTOR_TYPES = frozenset(
     float(desc) for config in GROUP_CONFIG.values() if (desc := config.get("desc")) is not None
 )
+
+
+def _is_instanced_group(ii_max: int | None) -> bool:
+    return ii_max is not None and ii_max > 0
+
+
+def _planner_ii_max(ii_max: int | None) -> int | None:
+    return ii_max if _is_instanced_group(ii_max) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,7 +520,7 @@ def scan_b524(
     Implements the Phase A/B/C/D algorithm described in `AGENTS.md`:
     - Phase A: group discovery via directory probes
     - Phase B: group classification via GROUP_CONFIG
-    - Phase C: instance discovery for desc==1.0 groups using per-group heuristics
+    - Phase C: instance discovery for groups whose configured ii_max is > 0
     - Phase D: register scan RR=0..rr_max for each present instance
 
     Partial scans are supported: Ctrl+C yields `meta.incomplete=true`.
@@ -621,12 +629,7 @@ def scan_b524(
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             rr_max = int(config["rr_max"]) if config is not None else _UNKNOWN_GROUP_DEFAULT_RR_MAX
-            if config is not None and group.descriptor == 1.0:
-                ii_max = int(config["ii_max"])
-            elif config is not None:
-                ii_max = None
-            else:
-                ii_max = _UNKNOWN_GROUP_DEFAULT_II_MAX if group.descriptor == 1.0 else None
+            ii_max = int(config["ii_max"]) if config is not None else _UNKNOWN_GROUP_DEFAULT_II_MAX
 
             source = "profile" if config is not None else "fallback"
             metadata_map[group.group] = GroupMetadata(
@@ -670,11 +673,11 @@ def scan_b524(
                 level="info",
             )
 
-        # Phase C: instance discovery (desc==1.0 groups only).
+        # Phase C: instance discovery (groups with ii_max > 0 only).
         instance_total = 0
         for group in classified:
-            if group.descriptor == 1.0:
-                meta = metadata_map[group.group]
+            meta = metadata_map[group.group]
+            if _is_instanced_group(meta.ii_max):
                 assert meta.ii_max is not None
                 instance_total += meta.ii_max + 1
         if observer is not None:
@@ -683,7 +686,10 @@ def scan_b524(
         instance_discovery_start = time.perf_counter()
         instance_discovery_start_calls = counting_transport.counters.send_calls
         for group in classified:
-            if group.descriptor == 1.0:
+            meta = metadata_map[group.group]
+            ii_max = meta.ii_max
+            rr_max = meta.rr_max
+            if _is_instanced_group(ii_max):
                 emit_trace_label(
                     transport,
                     f"Identifying instances in group 0x{group.group:02X}",
@@ -691,23 +697,16 @@ def scan_b524(
             group_key = _hex_u8(group.group)
             group_obj: dict[str, Any] = {
                 "name": group.name,
-                "descriptor_type": group.descriptor,
+                "descriptor_observed": group.descriptor,
                 "instances": {},
             }
             artifact["groups"][group_key] = group_obj
 
-            config = GROUP_CONFIG.get(group.group)
-            if config is None:
-                continue
-
-            if group.descriptor != 1.0:
-                # Singleton / Type 6 groups: no instance enumeration; scan II=0x00 later.
+            if not _is_instanced_group(ii_max):
+                # Singleton groups and unknown groups default to II=0x00 only.
                 group_obj["instances"][_hex_u8(0x00)] = {"present": True}
                 continue
 
-            meta = metadata_map[group.group]
-            ii_max = meta.ii_max
-            rr_max = meta.rr_max
             assert ii_max is not None
             present_count = 0
             for ii in range(0x00, ii_max + 1):
@@ -743,15 +742,11 @@ def scan_b524(
         # Interactive scan planner (TTY only): allow users to trim the register scan scope.
         plan: dict[int, GroupScanPlan] = {}
         for group in classified:
-            config = GROUP_CONFIG.get(group.group)
-            if config is None:
-                config_meta = metadata_map[group.group]
-                rr_max = config_meta.rr_max
-            else:
-                rr_max = metadata_map[group.group].rr_max
+            meta = metadata_map[group.group]
+            rr_max = meta.rr_max
 
             group_obj = artifact["groups"][_hex_u8(group.group)]
-            if group.descriptor == 1.0:
+            if _is_instanced_group(meta.ii_max):
                 present_instances_for_plan: list[int] = []
                 for ii_key, ii_obj in group_obj.get("instances", {}).items():
                     if not isinstance(ii_obj, dict):
@@ -793,61 +788,30 @@ def scan_b524(
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             group_meta = metadata_map[group.group]
-
-            if config is None:
-                rr_max_default = group_meta.rr_max
-                ii_max_default = group_meta.ii_max
-                present_instances_default: tuple[int, ...]
-                if group.descriptor == 1.0:
-                    if ii_max_default is None:
-                        ii_max_default = _UNKNOWN_GROUP_DEFAULT_II_MAX
-                    present_instances_default = tuple(range(0x00, ii_max_default + 1))
-                else:
-                    ii_max_default = None
-                    present_instances_default = (0x00,)
-                planner_groups.append(
-                    PlannerGroup(
-                        group=group.group,
-                        name=group.name,
-                        descriptor=group.descriptor,
-                        known=False,
-                        ii_max=ii_max_default,
-                        rr_max=rr_max_default,
-                        present_instances=present_instances_default,
-                    )
-                )
-                continue
-
             group_obj = artifact["groups"][_hex_u8(group.group)]
-            if group.descriptor == 1.0:
-                present_instances_for_planner: list[int] = [
-                    int(ii_key, 0)
-                    for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
-                    if isinstance(ii_obj, dict) and ii_obj.get("present") is True
-                ]
-                planner_groups.append(
-                    PlannerGroup(
-                        group=group.group,
-                        name=group.name,
-                        descriptor=group.descriptor,
-                        known=True,
-                        ii_max=group_meta.ii_max,
-                        rr_max=group_meta.rr_max,
-                        present_instances=tuple(sorted(present_instances_for_planner)),
-                    )
-                )
+            planner_ii_max = _planner_ii_max(group_meta.ii_max)
+            if planner_ii_max is None:
+                present_instances = (0x00,)
             else:
-                planner_groups.append(
-                    PlannerGroup(
-                        group=group.group,
-                        name=group.name,
-                        descriptor=group.descriptor,
-                        known=True,
-                        ii_max=None,
-                        rr_max=group_meta.rr_max,
-                        present_instances=(0x00,),
+                present_instances = tuple(
+                    sorted(
+                        int(ii_key, 0)
+                        for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
+                        if isinstance(ii_obj, dict) and ii_obj.get("present") is True
                     )
                 )
+
+            planner_groups.append(
+                PlannerGroup(
+                    group=group.group,
+                    name=group.name,
+                    descriptor=group.descriptor,
+                    known=config is not None,
+                    ii_max=planner_ii_max,
+                    rr_max=group_meta.rr_max,
+                    present_instances=present_instances,
+                )
+            )
 
         if planner_preset != "custom":
             plan = build_plan_from_preset(
@@ -1096,7 +1060,7 @@ def scan_b524(
                 group_key = _hex_u8(task.group)
                 group_obj = artifact["groups"].setdefault(
                     group_key,
-                    {"name": "Unknown", "descriptor_type": None, "instances": {}},
+                    {"name": "Unknown", "descriptor_observed": None, "instances": {}},
                 )
                 instances_obj = group_obj.setdefault("instances", {})
                 instance_key = _hex_u8(task.instance)

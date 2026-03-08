@@ -210,7 +210,10 @@ def _build_sheets(artifact: dict[str, Any]) -> list[_Sheet]:
 
         rr_keys = _sorted_hex_keys(sorted(rr_key_set))
 
-        descriptor_obj = group_obj.get("descriptor_type")
+        descriptor_obj = group_obj.get(
+            "descriptor_observed",
+            group_obj.get("descriptor_type"),
+        )
         descriptor: float | None
         if isinstance(descriptor_obj, (int, float)) and not isinstance(descriptor_obj, bool):
             descriptor = float(descriptor_obj)
