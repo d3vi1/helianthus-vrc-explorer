@@ -78,12 +78,17 @@ class _B524UnsupportedTransport(TransportInterface):
         raise AssertionError(f"Unexpected payload after unsupported probe: {payload.hex()}")
 
 
-def _write_fixture_group_02(tmp_path: Path) -> Path:
+def _write_fixture_group_02(
+    tmp_path: Path,
+    *,
+    descriptor: float = 1.0,
+    terminator_group: str = "0x05",
+) -> Path:
     fixture = {
-        "meta": {"dummy_transport": {"directory_terminator_group": "0x05"}},
+        "meta": {"dummy_transport": {"directory_terminator_group": terminator_group}},
         "groups": {
             "0x02": {
-                "descriptor_type": 1.0,
+                "descriptor_type": descriptor,
                 "instances": {
                     "0x00": {
                         "registers": {
@@ -100,6 +105,27 @@ def _write_fixture_group_02(tmp_path: Path) -> Path:
         },
     }
     path = tmp_path / "fixture.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
+def _write_fixture_group_00(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x01"}},
+        "groups": {
+            "0x00": {
+                "descriptor_type": 3.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_group_00.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
     return path
 
@@ -200,7 +226,7 @@ def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> Non
     assert artifact["meta"]["incomplete"] is False
 
     group = artifact["groups"]["0x02"]
-    assert group["descriptor_type"] == 1.0
+    assert group["descriptor_observed"] == 1.0
 
     instance_00 = group["instances"]["0x00"]
     assert instance_00["present"] is True
@@ -444,6 +470,38 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
     assert scanned_registers == set(range(0x0002 + 1))
 
 
+def test_scan_instanced_group_zero_descriptor(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        DummyTransport(_write_fixture_group_02(tmp_path, descriptor=0.0, terminator_group="0x03"))
+    )
+
+    artifact = scan_b524(transport, dst=0x15)
+
+    group = artifact["groups"]["0x02"]
+    assert group["descriptor_observed"] == 0.0
+    assert group["instances"]["0x00"]["present"] is True
+    assert group["instances"]["0x01"]["present"] is False
+
+    probed_instances = sorted(
+        {ii for (gg, ii, rr) in transport.register_reads if gg == 0x02 and rr == 0x0002}
+    )
+    assert probed_instances == list(range(0x0A + 1))
+
+
+def test_scan_singleton_group_nonzero_descriptor(tmp_path: Path) -> None:
+    transport = RecordingTransport(DummyTransport(_write_fixture_group_00(tmp_path)))
+
+    artifact = scan_b524(transport, dst=0x15)
+
+    group = artifact["groups"]["0x00"]
+    assert group["descriptor_observed"] == 3.0
+    assert set(group["instances"]) == {"0x00"}
+    assert artifact["meta"]["scan_plan"]["groups"]["0x00"]["instances"] == ["0x00"]
+
+    scanned_instances = {ii for (gg, ii, _rr) in transport.register_reads if gg == 0x00}
+    assert scanned_instances == {0x00}
+
+
 def test_scan_b524_applies_aggressive_preset_to_textual_default_plan(
     monkeypatch,
     tmp_path: Path,
@@ -486,7 +544,7 @@ def test_scan_b524_applies_aggressive_preset_to_textual_default_plan(
     assert 0x69 in default_plan
     group_plan = default_plan[0x69]
     assert group_plan.rr_max == 0x30
-    assert group_plan.instances == tuple(range(0x0A + 1))
+    assert group_plan.instances == (0x00,)
 
 
 def test_scan_b524_applies_preset_in_non_interactive_mode(tmp_path: Path) -> None:
@@ -500,12 +558,25 @@ def test_scan_b524_applies_preset_in_non_interactive_mode(tmp_path: Path) -> Non
     scan_plan = artifact["meta"]["scan_plan"]["groups"]
     assert "0x69" in scan_plan
     assert scan_plan["0x69"]["rr_max"] == "0x0030"
-    assert scan_plan["0x69"]["instances"] == [f"0x{ii:02x}" for ii in range(0x0A + 1)]
+    assert scan_plan["0x69"]["instances"] == ["0x00"]
 
-    # With aggressive preset we scan unknown groups and all instance slots even when not present.
-    scanned_absent_instance = artifact["groups"]["0x69"]["instances"]["0x01"]
-    assert scanned_absent_instance["present"] is False
-    assert "0x0030" in scanned_absent_instance["registers"]
+    group = artifact["groups"]["0x69"]
+    assert set(group["instances"]) == {"0x00"}
+    assert group["instances"]["0x00"]["present"] is True
+
+
+def test_scan_unknown_group_defaults_to_singleton(tmp_path: Path) -> None:
+    artifact = scan_b524(
+        DummyTransport(_write_fixture_unknown_group_69(tmp_path)),
+        dst=0x15,
+        planner_ui="auto",
+        planner_preset="aggressive",
+    )
+
+    group = artifact["groups"]["0x69"]
+    assert group["descriptor_observed"] == 1.0
+    assert set(group["instances"]) == {"0x00"}
+    assert artifact["meta"]["scan_plan"]["groups"]["0x69"]["instances"] == ["0x00"]
 
 
 def test_scan_b524_textual_failure_falls_back_to_classic_in_auto_mode(

@@ -52,7 +52,9 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
         if not isinstance(group_key, str) or not isinstance(group_obj, dict):
             continue
         name = str(group_obj.get("name") or "Unknown")
-        descriptor = float(group_obj.get("descriptor_type") or 0.0)
+        descriptor = float(
+            group_obj.get("descriptor_observed", group_obj.get("descriptor_type")) or 0.0
+        )
 
         instances = group_obj.get("instances", {})
         if not isinstance(instances, dict):
