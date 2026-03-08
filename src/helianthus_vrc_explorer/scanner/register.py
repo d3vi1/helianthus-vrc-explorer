@@ -14,11 +14,9 @@ from ..transport.base import (
     emit_trace_label,
 )
 from .director import GROUP_CONFIG
-from .observer import ScanObserver
 
 logger = logging.getLogger(__name__)
 
-_REMOTE_GROUPS: Final[set[int]] = {0x09, 0x0A, 0x0C}
 _PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100))
 
 
@@ -49,12 +47,6 @@ class RegisterEntry(TypedDict):
     enum_raw_name: NotRequired[str]
     enum_resolved_name: NotRequired[str]
     value_display: NotRequired[str]
-
-
-def opcode_for_group(group: int) -> RegisterOpcode:
-    """Return the B524 register opcode family for a group."""
-
-    return opcodes_for_group(group)[0]
 
 
 def opcodes_for_group(group: int) -> list[RegisterOpcode]:
@@ -336,13 +328,13 @@ def is_instance_present(
     *,
     opcode: RegisterOpcode | None = None,
 ) -> bool:
-    """Presence heuristic for instanced groups (desc==1.0).
+    """Presence heuristic for instanced groups.
 
     Source of truth: `AGENTS.md` (keep in sync).
     """
 
     if opcode is None:
-        opcode = opcode_for_group(group)
+        opcode = opcodes_for_group(group)[0]
 
     if group == 0x02:
         entry = read_register(
@@ -406,27 +398,3 @@ def is_instance_present(
         "No presence heuristic for GG=0x%02X; assuming present for II=0x%02X", group, instance
     )
     return True
-
-
-def scan_registers_for_instance(
-    transport: TransportInterface,
-    dst: int,
-    group: int,
-    instance: int,
-    rr_max: int,
-    *,
-    observer: ScanObserver | None = None,
-) -> dict[str, RegisterEntry]:
-    """Phase D: scan RR=0x0000..rr_max for a (present) instance."""
-
-    opcode = opcode_for_group(group)
-    registers: dict[str, RegisterEntry] = {}
-    for rr in range(0x0000, rr_max + 1):
-        if observer is not None:
-            if rr % 8 == 0:
-                observer.status(f"Read GG=0x{group:02X} II=0x{instance:02X} RR=0x{rr:04X}")
-            observer.phase_advance("register_scan", advance=1)
-        registers[f"0x{rr:04x}"] = read_register(
-            transport, dst, opcode, group=group, instance=instance, register=rr
-        )
-    return registers

@@ -11,24 +11,45 @@ from rich.text import Text
 
 from ..scanner.plan import (
     GroupScanPlan,
+    PlanKey,
     estimate_eta_seconds,
     estimate_register_requests,
     format_int_set,
+    format_plan_key,
     parse_int_set,
     parse_int_token,
 )
-from ..scanner.register import opcode_for_group
 
 
 @dataclass(frozen=True, slots=True)
 class PlannerGroup:
     group: int
+    opcode: int
     name: str
     descriptor: float
     known: bool
     ii_max: int | None
     rr_max: int
+    rr_max_full: int
     present_instances: tuple[int, ...]
+    namespace_label: str | None = None
+    primary: bool = True
+
+    @property
+    def key(self) -> PlanKey:
+        return (self.group, self.opcode)
+
+    @property
+    def display_name(self) -> str:
+        if self.namespace_label is None:
+            return self.name
+        return f"{self.name} ({self.namespace_label})"
+
+    @property
+    def prompt_label(self) -> str:
+        if self.namespace_label is None:
+            return _hex_u8(self.group)
+        return f"{_hex_u8(self.group)} ({self.namespace_label})"
 
 
 PlannerPreset = Literal["conservative", "recommended", "aggressive", "custom"]
@@ -63,7 +84,7 @@ def _format_seconds(seconds: float) -> str:
 def _print_estimate(
     console: Console,
     *,
-    plan: dict[int, GroupScanPlan],
+    plan: dict[PlanKey, GroupScanPlan],
     request_rate_rps: float | None,
     prefix: str = "Estimated register requests",
 ) -> None:
@@ -100,24 +121,24 @@ def _ask_yes_no(console: Console, prompt: str, *, default: bool) -> bool:
 
 
 def _build_default_plan(
-    eligible: dict[int, PlannerGroup],
-    default_plan: dict[int, GroupScanPlan] | None,
-) -> dict[int, GroupScanPlan]:
+    eligible: dict[PlanKey, PlannerGroup],
+    default_plan: dict[PlanKey, GroupScanPlan] | None,
+) -> dict[PlanKey, GroupScanPlan]:
     if default_plan is not None:
-        selected: dict[int, GroupScanPlan] = {}
-        for gg, group_plan in default_plan.items():
-            if gg in eligible:
-                selected[gg] = group_plan
+        selected: dict[PlanKey, GroupScanPlan] = {}
+        for key, group_plan in default_plan.items():
+            if key in eligible:
+                selected[key] = group_plan
         if selected:
             return selected
 
-    selected = {}
+    selected: dict[PlanKey, GroupScanPlan] = {}
     for g in eligible.values():
         if not g.known:
             continue
-        selected[g.group] = GroupScanPlan(
+        selected[g.key] = GroupScanPlan(
             group=g.group,
-            opcode=opcode_for_group(g.group),
+            opcode=g.opcode,
             rr_max=g.rr_max,
             instances=((0x00,) if g.ii_max is None else g.present_instances),
         )
@@ -136,15 +157,17 @@ def build_plan_from_preset(
     groups: list[PlannerGroup],
     *,
     preset: PlannerPreset,
-) -> dict[int, GroupScanPlan]:
-    selected: dict[int, GroupScanPlan] = {}
-    for group in sorted(groups, key=lambda g: g.group):
+) -> dict[PlanKey, GroupScanPlan]:
+    selected: dict[PlanKey, GroupScanPlan] = {}
+    for group in sorted(groups, key=lambda g: (g.group, g.opcode)):
         if preset != "aggressive" and not group.known:
             continue
-        selected[group.group] = GroupScanPlan(
+        if preset == "conservative" and not group.primary:
+            continue
+        selected[group.key] = GroupScanPlan(
             group=group.group,
-            opcode=opcode_for_group(group.group),
-            rr_max=group.rr_max,
+            opcode=group.opcode,
+            rr_max=(group.rr_max_full if preset == "aggressive" else group.rr_max),
             instances=_instances_for_preset(group, preset),
         )
     return selected
@@ -167,29 +190,34 @@ def _render_table(title: str, rows: list[PlannerGroup], *, unknown: bool, consol
             instances = f"0/{g.ii_max + 1} (est.)"
         else:
             instances = f"{len(g.present_instances)}/{g.ii_max + 1}"
-        name = g.name if not unknown else f"{g.name} (experimental)"
+        name = g.display_name if not unknown else f"{g.display_name} (experimental)"
+        rr_max = _hex_u16(g.rr_max_full)
+        if g.rr_max_full != g.rr_max:
+            rr_max = f"{_hex_u16(g.rr_max)} / {rr_max}"
         table.add_row(
             _hex_u8(g.group),
             name,
             f"{g.descriptor:.1f}",
             instances,
-            _hex_u16(g.rr_max),
+            rr_max,
         )
     console.print(table)
 
 
-def _print_plan_breakdown(console: Console, plan: dict[int, GroupScanPlan]) -> None:
+def _print_plan_breakdown(console: Console, plan: dict[PlanKey, GroupScanPlan]) -> None:
     if not plan:
         console.print("[yellow]No groups selected.[/yellow]")
         return
     console.print("[bold]Selected groups[/bold]")
-    for gg in sorted(plan.keys()):
-        group_plan = plan[gg]
+    for key in sorted(plan.keys()):
+        group_plan = plan[key]
         instance_spec = "singleton"
         if len(group_plan.instances) != 1 or group_plan.instances[0] != 0x00:
             instance_spec = format_int_set(list(group_plan.instances))
         console.print(
-            f"  • {_hex_u8(gg)} instances={instance_spec} RR_max={_hex_u16(group_plan.rr_max)}",
+            "  • "
+            f"{format_plan_key(key)} "
+            f"instances={instance_spec} RR_max={_hex_u16(group_plan.rr_max)}",
             style="dim",
         )
 
@@ -232,12 +260,12 @@ def _ask_preset(console: Console, *, default_preset: PlannerPreset) -> PlannerPr
 def _ask_groups_to_scan(
     console: Console,
     *,
-    eligible: dict[int, PlannerGroup],
+    eligible_groups: dict[int, list[PlannerGroup]],
     default_groups: list[int],
 ) -> list[int]:
     default_spec = (
         "all"
-        if default_groups == sorted(eligible.keys())
+        if default_groups == sorted(eligible_groups.keys())
         else (format_int_set(default_groups) or "none")
     )
     while True:
@@ -249,7 +277,7 @@ def _ask_groups_to_scan(
         ).strip()
         lowered = raw.lower()
         if lowered in {"all", "*"}:
-            return sorted(eligible.keys())
+            return sorted(eligible_groups.keys())
         if lowered in {"none", "no"}:
             return []
         try:
@@ -257,7 +285,7 @@ def _ask_groups_to_scan(
         except ValueError as exc:
             console.print(f"[red]Invalid group selection:[/red] {exc}")
             continue
-        unknown = [gg for gg in parsed if gg not in eligible]
+        unknown = [gg for gg in parsed if gg not in eligible_groups]
         if unknown:
             unknown_txt = ", ".join(_hex_u8(gg) for gg in unknown)
             console.print(f"[red]Unknown group(s):[/red] {unknown_txt}")
@@ -284,7 +312,7 @@ def _ask_instances(
 
     while True:
         raw_instances = Prompt.ask(
-            f"{_hex_u8(group.group)} instances ('present', 'all', 'none', or '0-10')",
+            f"{group.prompt_label} instances ('present', 'all', 'none', or '0-10')",
             default=default_mode,
             show_default=True,
             console=console,
@@ -313,17 +341,20 @@ def prompt_scan_plan(
     groups: list[PlannerGroup],
     *,
     request_rate_rps: float | None,
-    default_plan: dict[int, GroupScanPlan] | None = None,
+    default_plan: dict[PlanKey, GroupScanPlan] | None = None,
     default_preset: PlannerPreset = "recommended",
-) -> dict[int, GroupScanPlan]:
+) -> dict[PlanKey, GroupScanPlan]:
     """Prompt for a scan plan in interactive TTY mode.
 
-    Returns a dict mapping GG -> GroupScanPlan.
+    Returns a dict mapping (GG, opcode) -> GroupScanPlan.
     """
 
-    eligible = {g.group: g for g in groups}
+    eligible = {g.key: g for g in groups}
     if not eligible:
         return {}
+    eligible_groups: dict[int, list[PlannerGroup]] = {}
+    for group in groups:
+        eligible_groups.setdefault(group.group, []).append(group)
 
     default_selected_plan = _build_default_plan(eligible, default_plan)
 
@@ -335,8 +366,11 @@ def prompt_scan_plan(
         )
     )
 
-    known_groups = sorted([g for g in groups if g.known], key=lambda x: x.group)
-    unknown_groups = sorted([g for g in groups if not g.known], key=lambda x: x.group)
+    known_groups = sorted([g for g in groups if g.known], key=lambda x: (x.group, x.opcode))
+    unknown_groups = sorted(
+        [g for g in groups if not g.known],
+        key=lambda x: (x.group, x.opcode),
+    )
     _render_table("Known Groups", known_groups, unknown=False, console=console)
     _render_table(
         "Unknown Groups (Disabled By Default)", unknown_groups, unknown=True, console=console
@@ -363,30 +397,36 @@ def prompt_scan_plan(
     if preset == "custom":
         selected_groups = _ask_groups_to_scan(
             console,
-            eligible=eligible,
-            default_groups=sorted(selected_plan.keys()),
+            eligible_groups=eligible_groups,
+            default_groups=sorted({group for (group, _opcode) in selected_plan}),
         )
         selected_plan = {
-            gg: selected_plan.get(
-                gg,
+            planner_group.key: selected_plan.get(
+                planner_group.key,
                 GroupScanPlan(
-                    group=gg,
-                    opcode=opcode_for_group(gg),
-                    rr_max=eligible[gg].rr_max,
+                    group=planner_group.group,
+                    opcode=planner_group.opcode,
+                    rr_max=planner_group.rr_max,
                     instances=(
-                        (0x00,) if eligible[gg].ii_max is None else eligible[gg].present_instances
+                        (0x00,) if planner_group.ii_max is None else planner_group.present_instances
                     ),
                 ),
             )
-            for gg in selected_groups
+            for group in selected_groups
+            for planner_group in sorted(
+                eligible_groups[group],
+                key=lambda item: (item.group, item.opcode),
+            )
         }
 
         if _ask_yes_no(console, "Override RR_max values?", default=False):
-            for gg in sorted(selected_plan.keys()):
-                current = selected_plan[gg]
+            for key in sorted(selected_plan.keys()):
+                current = selected_plan[key]
+                planner_group = eligible[key]
+                group_id, _opcode = key
                 while True:
                     raw_rr_max = Prompt.ask(
-                        f"{_hex_u8(gg)} RR_max",
+                        f"{planner_group.prompt_label} RR_max",
                         default=_hex_u16(current.rr_max),
                         show_default=True,
                         console=console,
@@ -399,8 +439,8 @@ def prompt_scan_plan(
                     if not (0x0000 <= rr_max <= 0xFFFF):
                         console.print("[red]RR_max out of range (0x0000..0xFFFF).[/red]")
                         continue
-                    selected_plan[gg] = GroupScanPlan(
-                        group=gg,
+                    selected_plan[key] = GroupScanPlan(
+                        group=group_id,
                         opcode=current.opcode,
                         rr_max=rr_max,
                         instances=current.instances,
@@ -408,18 +448,19 @@ def prompt_scan_plan(
                     break
 
         if _ask_yes_no(console, "Override instance selection?", default=False):
-            for gg in sorted(selected_plan.keys()):
-                group = eligible[gg]
-                current = selected_plan[gg]
-                if group.ii_max is None:
+            for key in sorted(selected_plan.keys()):
+                planner_group = eligible[key]
+                current = selected_plan[key]
+                group_id, _opcode = key
+                if planner_group.ii_max is None:
                     continue
-                selected_plan[gg] = GroupScanPlan(
-                    group=gg,
+                selected_plan[key] = GroupScanPlan(
+                    group=group_id,
                     opcode=current.opcode,
                     rr_max=current.rr_max,
                     instances=_ask_instances(
                         console,
-                        group=group,
+                        group=planner_group,
                         current_instances=current.instances,
                     ),
                 )

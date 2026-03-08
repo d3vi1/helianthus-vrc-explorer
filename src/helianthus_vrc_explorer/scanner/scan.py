@@ -28,8 +28,14 @@ from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, pr
 from .b509 import scan_b509
 from .director import GROUP_CONFIG, B524UnsupportedError, classify_groups, discover_groups
 from .observer import ScanObserver
-from .plan import GroupScanPlan, RegisterTask, build_work_queue, estimate_register_requests
-from .register import RegisterEntry, is_instance_present, opcode_for_group, read_register
+from .plan import (
+    GroupScanPlan,
+    PlanKey,
+    RegisterTask,
+    build_work_queue,
+    estimate_register_requests,
+)
+from .register import RegisterEntry, is_instance_present, opcodes_for_group, read_register
 
 
 def _hex_u8(value: int) -> str:
@@ -57,6 +63,183 @@ def _is_instanced_group(ii_max: int | None) -> bool:
 
 def _planner_ii_max(ii_max: int | None) -> int | None:
     return ii_max if _is_instanced_group(ii_max) else None
+
+
+def _group_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
+    return tuple(opcodes_for_group(group))
+
+
+def _primary_opcode(group: int) -> RegisterOpcode:
+    return _group_opcodes(group)[0]
+
+
+def _opcode_label(opcode: int) -> str:
+    labels = {
+        _LOCAL_REGISTER_OPCODE: "local",
+        _REMOTE_REGISTER_OPCODE: "remote",
+    }
+    return labels.get(opcode, _hex_u8(opcode))
+
+
+def _is_dual_namespace_group(group: int) -> bool:
+    return len(_group_opcodes(group)) > 1
+
+
+def _rr_max_for_opcode(*, group: int, default_rr_max: int, opcode: int) -> int:
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return default_rr_max
+    overrides = config.get("rr_max_by_opcode")
+    if overrides is None:
+        return default_rr_max
+    return int(overrides.get(opcode, default_rr_max))
+
+
+def _ii_max_for_opcode(*, group: int, default_ii_max: int | None, opcode: int) -> int | None:
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return default_ii_max
+    overrides = config.get("ii_max_by_opcode")
+    if overrides is None:
+        return default_ii_max
+    value = overrides.get(opcode)
+    if value is None:
+        return default_ii_max
+    return int(value)
+
+
+def _plan_key(group: int, opcode: int) -> PlanKey:
+    return (group, opcode)
+
+
+def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, object]:
+    serializable: dict[str, object] = {}
+    for _key, group_plan in sorted(plan.items()):
+        group_key = _hex_u8(group_plan.group)
+        if _is_dual_namespace_group(group_plan.group):
+            group_obj = serializable.setdefault(
+                group_key,
+                {
+                    "dual_namespace": True,
+                    "namespaces": {},
+                },
+            )
+            assert isinstance(group_obj, dict)
+            namespaces = group_obj.setdefault("namespaces", {})
+            assert isinstance(namespaces, dict)
+            namespace_meta = group_plan.to_meta()
+            namespace_meta["label"] = _opcode_label(group_plan.opcode)
+            namespaces[_hex_u8(group_plan.opcode)] = namespace_meta
+            continue
+        serializable[group_key] = group_plan.to_meta()
+    return serializable
+
+
+def _ensure_group_artifact(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    name: str,
+    descriptor_observed: float | None,
+    dual_namespace: bool,
+) -> dict[str, Any]:
+    group_key = _hex_u8(group)
+    default: dict[str, Any] = {
+        "name": name,
+        "descriptor_observed": descriptor_observed,
+        "dual_namespace": dual_namespace,
+    }
+    if dual_namespace:
+        default["namespaces"] = {}
+    else:
+        default["instances"] = {}
+    group_obj = artifact["groups"].setdefault(group_key, default)
+    if dual_namespace:
+        group_obj.setdefault("namespaces", {})
+        group_obj.pop("instances", None)
+    else:
+        group_obj.setdefault("instances", {})
+        group_obj.pop("namespaces", None)
+    group_obj.setdefault("name", name)
+    group_obj.setdefault("descriptor_observed", descriptor_observed)
+    group_obj["dual_namespace"] = dual_namespace
+    return group_obj
+
+
+def _ensure_namespace_artifact(group_obj: dict[str, Any], *, opcode: int) -> dict[str, Any]:
+    namespaces = group_obj.setdefault("namespaces", {})
+    namespace_key = _hex_u8(opcode)
+    namespace_obj = namespaces.setdefault(
+        namespace_key,
+        {
+            "label": _opcode_label(opcode),
+            "instances": {},
+        },
+    )
+    namespace_obj.setdefault("label", _opcode_label(opcode))
+    namespace_obj.setdefault("instances", {})
+    return namespace_obj
+
+
+def _instances_object(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+) -> dict[str, Any]:
+    group_obj = artifact["groups"][_hex_u8(group)]
+    if bool(group_obj.get("dual_namespace")):
+        namespace_obj = _ensure_namespace_artifact(group_obj, opcode=opcode)
+        return namespace_obj.setdefault("instances", {})
+    return group_obj.setdefault("instances", {})
+
+
+def _present_instances_for_opcode(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+) -> tuple[int, ...]:
+    instances_obj = _instances_object(artifact, group=group, opcode=opcode)
+    return tuple(
+        sorted(
+            int(ii_key, 0)
+            for (ii_key, ii_obj) in instances_obj.items()
+            if isinstance(ii_obj, dict) and ii_obj.get("present") is True
+        )
+    )
+
+
+def _mark_present_instances(instances_obj: dict[str, Any], *, instances: tuple[int, ...]) -> None:
+    for instance in instances:
+        instances_obj[_hex_u8(instance)] = {"present": True}
+
+
+def _probe_present_instances(
+    transport: TransportInterface,
+    *,
+    dst: int,
+    group: int,
+    opcode: int,
+    ii_max: int,
+    observer: ScanObserver | None,
+) -> tuple[int, ...]:
+    present_instances: list[int] = []
+    for ii in range(0x00, ii_max + 1):
+        if observer is not None:
+            observer.status(f"Probe presence GG=0x{group:02X} OP={_hex_u8(opcode)} II=0x{ii:02X}")
+        is_present = is_instance_present(
+            transport,
+            dst=dst,
+            group=group,
+            instance=ii,
+            opcode=opcode,
+        )
+        if is_present:
+            present_instances.append(ii)
+        if observer is not None:
+            observer.phase_advance("instance_discovery", advance=1)
+    return tuple(present_instances)
 
 
 @dataclass(frozen=True, slots=True)
@@ -677,9 +860,25 @@ def scan_b524(
         instance_total = 0
         for group in classified:
             meta = metadata_map[group.group]
-            if _is_instanced_group(meta.ii_max):
-                assert meta.ii_max is not None
-                instance_total += meta.ii_max + 1
+            if group.group in {0x09, 0x0A}:
+                shared_ii_max = _ii_max_for_opcode(
+                    group=group.group,
+                    default_ii_max=meta.ii_max,
+                    opcode=_REMOTE_REGISTER_OPCODE,
+                )
+                if _is_instanced_group(shared_ii_max):
+                    assert shared_ii_max is not None
+                    instance_total += shared_ii_max + 1
+                continue
+            for opcode in _group_opcodes(group.group):
+                namespace_ii_max = _ii_max_for_opcode(
+                    group=group.group,
+                    default_ii_max=meta.ii_max,
+                    opcode=opcode,
+                )
+                if _is_instanced_group(namespace_ii_max):
+                    assert namespace_ii_max is not None
+                    instance_total += namespace_ii_max + 1
         if observer is not None:
             observer.phase_start("instance_discovery", total=instance_total or 1)
 
@@ -687,47 +886,89 @@ def scan_b524(
         instance_discovery_start_calls = counting_transport.counters.send_calls
         for group in classified:
             meta = metadata_map[group.group]
-            group_ii_max: int | None = meta.ii_max
             rr_max = meta.rr_max
-            if _is_instanced_group(group_ii_max):
-                emit_trace_label(
-                    transport,
-                    f"Identifying instances in group 0x{group.group:02X}",
-                )
-            group_key = _hex_u8(group.group)
-            group_obj: dict[str, Any] = {
-                "name": group.name,
-                "descriptor_observed": group.descriptor,
-                "instances": {},
-            }
-            artifact["groups"][group_key] = group_obj
+            opcodes = _group_opcodes(group.group)
+            dual_namespace = len(opcodes) > 1
+            _ensure_group_artifact(
+                artifact,
+                group=group.group,
+                name=group.name,
+                descriptor_observed=group.descriptor,
+                dual_namespace=dual_namespace,
+            )
 
-            if not _is_instanced_group(group_ii_max):
-                # Singleton groups and unknown groups default to II=0x00 only.
-                group_obj["instances"][_hex_u8(0x00)] = {"present": True}
+            if group.group in {0x09, 0x0A}:
+                shared_ii_max = _ii_max_for_opcode(
+                    group=group.group,
+                    default_ii_max=meta.ii_max,
+                    opcode=_REMOTE_REGISTER_OPCODE,
+                )
+                if not _is_instanced_group(shared_ii_max):
+                    shared_present = (0x00,)
+                else:
+                    assert shared_ii_max is not None
+                    emit_trace_label(
+                        transport,
+                        "Identifying instances in group "
+                        f"0x{group.group:02X} via shared remote probe",
+                    )
+                    shared_present = _probe_present_instances(
+                        transport,
+                        dst=dst,
+                        group=group.group,
+                        opcode=_REMOTE_REGISTER_OPCODE,
+                        ii_max=shared_ii_max,
+                        observer=observer,
+                    )
+                for opcode in opcodes:
+                    instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
+                    _mark_present_instances(instances_obj, instances=shared_present)
+                if observer is not None:
+                    total_instances = 1 if shared_ii_max is None else shared_ii_max + 1
+                    observer.log(
+                        f"GG=0x{group.group:02X} {group.name}: "
+                        f"{len(shared_present)}/{total_instances} present "
+                        f"(shared across local/remote), "
+                        f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
+                        level="info",
+                    )
                 continue
 
-            assert group_ii_max is not None
-            present_count = 0
-            for ii in range(0x00, group_ii_max + 1):
-                if observer is not None:
-                    observer.status(f"Probe presence GG=0x{group.group:02X} II=0x{ii:02X}")
-                is_present = is_instance_present(
+            namespace_probe_counts: list[str] = []
+            for opcode in opcodes:
+                namespace_ii_max = _ii_max_for_opcode(
+                    group=group.group,
+                    default_ii_max=meta.ii_max,
+                    opcode=opcode,
+                )
+                instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
+                if not _is_instanced_group(namespace_ii_max):
+                    _mark_present_instances(instances_obj, instances=(0x00,))
+                    namespace_probe_counts.append(f"{_opcode_label(opcode)} 1/1")
+                    continue
+
+                assert namespace_ii_max is not None
+                emit_trace_label(
+                    transport,
+                    f"Identifying instances in group 0x{group.group:02X} ({_opcode_label(opcode)})",
+                )
+                present_instances = _probe_present_instances(
                     transport,
                     dst=dst,
                     group=group.group,
-                    instance=ii,
+                    opcode=opcode,
+                    ii_max=namespace_ii_max,
+                    observer=observer,
                 )
-                if is_present:
-                    present_count += 1
-                    group_obj["instances"][_hex_u8(ii)] = {"present": True}
-                if observer is not None:
-                    observer.phase_advance("instance_discovery", advance=1)
+                _mark_present_instances(instances_obj, instances=present_instances)
+                namespace_probe_counts.append(
+                    f"{_opcode_label(opcode)} {len(present_instances)}/{namespace_ii_max + 1}"
+                )
 
             if observer is not None:
                 observer.log(
                     f"GG=0x{group.group:02X} {group.name}: "
-                    f"{present_count}/{group_ii_max + 1} present, "
+                    f"{', '.join(namespace_probe_counts)} present, "
                     f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
                     level="info",
                 )
@@ -740,31 +981,31 @@ def scan_b524(
         )
 
         # Interactive scan planner (TTY only): allow users to trim the register scan scope.
-        plan: dict[int, GroupScanPlan] = {}
+        plan: dict[PlanKey, GroupScanPlan] = {}
         for group in classified:
             meta = metadata_map[group.group]
-            rr_max = meta.rr_max
-
-            group_obj = artifact["groups"][_hex_u8(group.group)]
-            if _is_instanced_group(meta.ii_max):
-                present_instances_for_plan: list[int] = []
-                for ii_key, ii_obj in group_obj.get("instances", {}).items():
-                    if not isinstance(ii_obj, dict):
-                        continue
-                    if ii_obj.get("present") is True:
-                        present_instances_for_plan.append(int(ii_key, 0))
-                plan[group.group] = GroupScanPlan(
+            for opcode in _group_opcodes(group.group):
+                namespace_ii_max = _ii_max_for_opcode(
                     group=group.group,
-                    opcode=opcode_for_group(group.group),
-                    rr_max=rr_max,
-                    instances=tuple(sorted(present_instances_for_plan)),
+                    default_ii_max=meta.ii_max,
+                    opcode=opcode,
                 )
-            else:
-                plan[group.group] = GroupScanPlan(
+                present_instances = _present_instances_for_opcode(
+                    artifact,
                     group=group.group,
-                    opcode=opcode_for_group(group.group),
-                    rr_max=rr_max,
-                    instances=(0x00,),
+                    opcode=opcode,
+                )
+                plan[_plan_key(group.group, opcode)] = GroupScanPlan(
+                    group=group.group,
+                    opcode=opcode,
+                    rr_max=_rr_max_for_opcode(
+                        group=group.group,
+                        default_rr_max=meta.rr_max,
+                        opcode=opcode,
+                    ),
+                    instances=(
+                        (0x00,) if not _is_instanced_group(namespace_ii_max) else present_instances
+                    ),
                 )
 
         measured_requests = group_discovery_requests + instance_discovery_requests
@@ -788,31 +1029,48 @@ def scan_b524(
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             group_meta = metadata_map[group.group]
-            group_obj = artifact["groups"][_hex_u8(group.group)]
-            planner_ii_max = _planner_ii_max(group_meta.ii_max)
-            present_instances: tuple[int, ...]
-            if planner_ii_max is None:
-                present_instances = (0x00,)
-            else:
-                present_instances = tuple(
-                    sorted(
-                        int(ii_key, 0)
-                        for (ii_key, ii_obj) in group_obj.get("instances", {}).items()
-                        if isinstance(ii_obj, dict) and ii_obj.get("present") is True
+            opcodes = _group_opcodes(group.group)
+            primary_opcode = opcodes[0]
+            primary_rr_max = _rr_max_for_opcode(
+                group=group.group,
+                default_rr_max=group_meta.rr_max,
+                opcode=primary_opcode,
+            )
+            dual_namespace = len(opcodes) > 1
+            for opcode in opcodes:
+                planner_ii_max = _planner_ii_max(
+                    _ii_max_for_opcode(
+                        group=group.group,
+                        default_ii_max=group_meta.ii_max,
+                        opcode=opcode,
                     )
                 )
-
-            planner_groups.append(
-                PlannerGroup(
+                present_instances = _present_instances_for_opcode(
+                    artifact,
                     group=group.group,
-                    name=group.name,
-                    descriptor=group.descriptor,
-                    known=config is not None,
-                    ii_max=planner_ii_max,
-                    rr_max=group_meta.rr_max,
-                    present_instances=present_instances,
+                    opcode=opcode,
                 )
-            )
+                if planner_ii_max is None and not present_instances:
+                    present_instances = (0x00,)
+                planner_groups.append(
+                    PlannerGroup(
+                        group=group.group,
+                        opcode=opcode,
+                        name=group.name,
+                        descriptor=group.descriptor,
+                        known=config is not None,
+                        ii_max=planner_ii_max,
+                        rr_max=primary_rr_max,
+                        rr_max_full=_rr_max_for_opcode(
+                            group=group.group,
+                            default_rr_max=group_meta.rr_max,
+                            opcode=opcode,
+                        ),
+                        present_instances=present_instances,
+                        namespace_label=(_opcode_label(opcode) if dual_namespace else None),
+                        primary=(opcode == primary_opcode),
+                    )
+                )
 
         if planner_preset != "custom":
             plan = build_plan_from_preset(
@@ -868,7 +1126,7 @@ def scan_b524(
                     )
 
         artifact["meta"]["scan_plan"] = {
-            "groups": {_hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())},
+            "groups": _scan_plan_meta_groups(plan),
             "estimated_register_requests": estimate_register_requests(plan),
             "measured_request_rate_rps": round(request_rate_rps, 4) if request_rate_rps else None,
         }
@@ -941,9 +1199,7 @@ def scan_b524(
                                 default_plan=plan,
                                 default_preset=planner_preset,
                             )
-                    artifact["meta"]["scan_plan"]["groups"] = {
-                        _hex_u8(gg): gp.to_meta() for (gg, gp) in sorted(plan.items())
-                    }
+                    artifact["meta"]["scan_plan"]["groups"] = _scan_plan_meta_groups(plan)
                     artifact["meta"]["scan_plan"]["estimated_register_requests"] = (
                         estimate_register_requests(plan)
                     )
@@ -984,7 +1240,7 @@ def scan_b524(
                 # reply in the artifact.
                 opcodes_to_try: tuple[RegisterOpcode, ...]
                 if task.group in GROUP_CONFIG:
-                    opcodes_to_try = (opcode_for_group(task.group),)
+                    opcodes_to_try = (task.opcode,)
                 else:
                     opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
 
@@ -1058,12 +1314,20 @@ def scan_b524(
                     entry["constraint_step"] = constraint.step_value
                 done.add(task)
 
-                group_key = _hex_u8(task.group)
-                group_obj = artifact["groups"].setdefault(
-                    group_key,
-                    {"name": "Unknown", "descriptor_observed": None, "instances": {}},
+                _ensure_group_artifact(
+                    artifact,
+                    group=task.group,
+                    name="Unknown",
+                    descriptor_observed=None,
+                    dual_namespace=bool(
+                        task.group in GROUP_CONFIG and _is_dual_namespace_group(task.group)
+                    ),
                 )
-                instances_obj = group_obj.setdefault("instances", {})
+                instances_obj = _instances_object(
+                    artifact,
+                    group=task.group,
+                    opcode=task.opcode,
+                )
                 instance_key = _hex_u8(task.instance)
                 instance_obj = instances_obj.setdefault(instance_key, {"present": False})
                 if isinstance(instance_obj, dict):

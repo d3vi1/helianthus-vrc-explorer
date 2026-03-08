@@ -16,14 +16,15 @@ from helianthus_vrc_explorer.transport.dummy import DummyTransport
 class RecordingTransport(TransportInterface):
     def __init__(self, inner: TransportInterface) -> None:
         self._inner = inner
-        self.register_reads: list[tuple[int, int, int]] = []
+        self.register_reads: list[tuple[int, int, int, int]] = []
 
     def send(self, dst: int, payload: bytes) -> bytes:
         if len(payload) == 6 and payload[0] in {0x02, 0x06} and payload[1] == 0x00:
+            opcode = payload[0]
             group = payload[2]
             instance = payload[3]
             register = int.from_bytes(payload[4:6], byteorder="little", signed=False)
-            self.register_reads.append((group, instance, register))
+            self.register_reads.append((opcode, group, instance, register))
         return self._inner.send(dst, payload)
 
 
@@ -50,7 +51,7 @@ class ConstraintAwareTransport(TransportInterface):
         self._inner = inner
         self._constraints = constraints or {}
         self.constraint_requests: list[tuple[int, int]] = []
-        self.register_reads: list[tuple[int, int, int]] | None = getattr(
+        self.register_reads: list[tuple[int, int, int, int]] | None = getattr(
             inner, "register_reads", None
         )
 
@@ -172,6 +173,27 @@ def _write_fixture_unknown_descriptor(tmp_path: Path) -> Path:
     return path
 
 
+def _write_fixture_group_09(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x0a"}},
+        "groups": {
+            "0x09": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_group_09.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
 class _NoopObserver(ScanObserver):
     def phase_start(self, phase: str, *, total: int) -> None:  # noqa: ARG002
         return
@@ -226,6 +248,7 @@ def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> Non
     assert artifact["meta"]["incomplete"] is False
 
     group = artifact["groups"]["0x02"]
+    assert group["dual_namespace"] is False
     assert group["descriptor_observed"] == 1.0
 
     instance_00 = group["instances"]["0x00"]
@@ -248,13 +271,13 @@ def test_scan_b524_scans_all_instances_and_register_range(tmp_path: Path) -> Non
 
     # Phase B/C: instance discovery must scan all II=0x00..ii_max (no early stop at gaps).
     probed_instances = sorted(
-        {ii for (gg, ii, rr) in transport.register_reads if gg == 0x02 and rr == 0x0002}
+        {ii for (_opcode, gg, ii, rr) in transport.register_reads if gg == 0x02 and rr == 0x0002}
     )
     assert probed_instances == list(range(0x0A + 1))
 
     # Phase D: register scan must cover RR=0x0000..rr_max for present instances.
     scanned_registers = {
-        rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
+        rr for (_opcode, gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
     }
     assert scanned_registers == set(range(0x25 + 1))
 
@@ -323,7 +346,7 @@ def test_scan_b524_collects_constraint_dictionary_entries(tmp_path: Path) -> Non
     assert constraints["step"] == 1
     assert transport.register_reads is not None
     scanned_registers = {
-        rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
+        rr for (_opcode, gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x00
     }
     assert scanned_registers == set(range(0x0025 + 1))
 
@@ -395,7 +418,14 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
     transport = DummyTransport(_write_fixture_unknown_group_69(tmp_path))
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
-        return {0x69: GroupScanPlan(group=0x69, opcode=0x02, rr_max=0x0000, instances=(0x00,))}
+        return {
+            (0x69, 0x02): GroupScanPlan(
+                group=0x69,
+                opcode=0x02,
+                rr_max=0x0000,
+                instances=(0x00,),
+            )
+        }
 
     monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
@@ -435,7 +465,7 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
-            0x02: GroupScanPlan(
+            (0x02, 0x02): GroupScanPlan(
                 group=0x02,
                 opcode=0x02,
                 rr_max=0x0002,
@@ -465,7 +495,7 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
     assert set(absent["registers"].keys()) == {"0x0000", "0x0001", "0x0002"}
 
     scanned_registers = {
-        rr for (gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x01
+        rr for (_opcode, gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x01
     }
     assert scanned_registers == set(range(0x0002 + 1))
 
@@ -478,12 +508,13 @@ def test_scan_instanced_group_zero_descriptor(tmp_path: Path) -> None:
     artifact = scan_b524(transport, dst=0x15)
 
     group = artifact["groups"]["0x02"]
+    assert group["dual_namespace"] is False
     assert group["descriptor_observed"] == 0.0
     assert group["instances"]["0x00"]["present"] is True
     assert group["instances"]["0x01"]["present"] is False
 
     probed_instances = sorted(
-        {ii for (gg, ii, rr) in transport.register_reads if gg == 0x02 and rr == 0x0002}
+        {ii for (_opcode, gg, ii, rr) in transport.register_reads if gg == 0x02 and rr == 0x0002}
     )
     assert probed_instances == list(range(0x0A + 1))
 
@@ -494,12 +525,84 @@ def test_scan_singleton_group_nonzero_descriptor(tmp_path: Path) -> None:
     artifact = scan_b524(transport, dst=0x15)
 
     group = artifact["groups"]["0x00"]
+    assert group["dual_namespace"] is False
     assert group["descriptor_observed"] == 3.0
     assert set(group["instances"]) == {"0x00"}
     assert artifact["meta"]["scan_plan"]["groups"]["0x00"]["instances"] == ["0x00"]
 
-    scanned_instances = {ii for (gg, ii, _rr) in transport.register_reads if gg == 0x00}
+    scanned_instances = {ii for (_opcode, gg, ii, _rr) in transport.register_reads if gg == 0x00}
     assert scanned_instances == {0x00}
+
+
+def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
+    import sys
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    transport = RecordingTransport(DummyTransport(_write_fixture_group_09(tmp_path)))
+
+    def fake_is_instance_present(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        return kwargs["instance"] == 0x00
+
+    def fake_prompt_scan_plan(*_args, **_kwargs):
+        return {
+            (0x09, 0x02): GroupScanPlan(
+                group=0x09,
+                opcode=0x02,
+                rr_max=0x0000,
+                instances=(0x00,),
+            ),
+            (0x09, 0x06): GroupScanPlan(
+                group=0x09,
+                opcode=0x06,
+                rr_max=0x0000,
+                instances=(0x00,),
+            ),
+        }
+
+    monkeypatch.setattr(scan_mod, "is_instance_present", fake_is_instance_present)
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    group = artifact["groups"]["0x09"]
+    assert group["dual_namespace"] is True
+    assert "instances" not in group
+    assert set(group["namespaces"]) == {"0x02", "0x06"}
+
+    local_ns = group["namespaces"]["0x02"]
+    remote_ns = group["namespaces"]["0x06"]
+    assert local_ns["label"] == "local"
+    assert remote_ns["label"] == "remote"
+    assert local_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode"] == "0x02"
+    assert remote_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode"] == "0x06"
+
+    scan_plan = artifact["meta"]["scan_plan"]["groups"]["0x09"]
+    assert scan_plan["dual_namespace"] is True
+    assert set(scan_plan["namespaces"]) == {"0x02", "0x06"}
+
+    scanned_opcodes = {
+        opcode
+        for (opcode, gg, ii, rr) in transport.register_reads
+        if gg == 0x09 and ii == 0x00 and rr == 0x0000
+    }
+    assert scanned_opcodes == {0x02, 0x06}
+
+
+def test_artifact_single_namespace_unchanged(tmp_path: Path) -> None:
+    artifact = scan_b524(DummyTransport(_write_fixture_group_02(tmp_path)), dst=0x15)
+
+    group = artifact["groups"]["0x02"]
+    assert group["dual_namespace"] is False
+    assert "namespaces" not in group
+    assert set(group["instances"]) >= {"0x00"}
 
 
 def test_scan_b524_applies_aggressive_preset_to_textual_default_plan(
@@ -541,8 +644,8 @@ def test_scan_b524_applies_aggressive_preset_to_textual_default_plan(
     assert captured["default_preset"] == "aggressive"
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    assert 0x69 in default_plan
-    group_plan = default_plan[0x69]
+    assert (0x69, 0x02) in default_plan
+    group_plan = default_plan[(0x69, 0x02)]
     assert group_plan.rr_max == 0x30
     assert group_plan.instances == (0x00,)
 
@@ -742,7 +845,14 @@ def test_scan_b524_replan_textual_failure_prompts_classic_immediately(
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         classic_calls["count"] += 1
-        return {0x02: GroupScanPlan(group=0x02, opcode=0x02, rr_max=0x0000, instances=(0x00,))}
+        return {
+            (0x02, 0x02): GroupScanPlan(
+                group=0x02,
+                opcode=0x02,
+                rr_max=0x0000,
+                instances=(0x00,),
+            )
+        }
 
     monkeypatch.setattr(scan_mod, "_PlannerHotkeyReader", _FakeHotkeys)
     monkeypatch.setattr(

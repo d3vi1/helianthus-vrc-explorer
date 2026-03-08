@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 _HEX_DIGITS = set(string.hexdigits)
+PlanKey = tuple[int, int]
 
 
 def parse_int_token(token: str) -> int:
@@ -112,6 +113,15 @@ def _hex_u16(value: int) -> str:
     return f"0x{value:04x}"
 
 
+def make_plan_key(group: int, opcode: int) -> PlanKey:
+    return (group, opcode)
+
+
+def format_plan_key(key: PlanKey) -> str:
+    group, opcode = key
+    return f"{_hex_u8(group)}/{_hex_u8(opcode)}"
+
+
 @dataclass(frozen=True, slots=True)
 class GroupScanPlan:
     group: int
@@ -136,19 +146,23 @@ class RegisterTask:
 
 
 def build_work_queue(
-    plan: dict[int, GroupScanPlan],
+    plan: dict[PlanKey, GroupScanPlan],
     *,
     done: set[RegisterTask],
 ) -> list[RegisterTask]:
     """Build the remaining register-scan task list in deterministic order."""
 
     tasks: list[RegisterTask] = []
-    for gg in sorted(plan.keys()):
-        group_plan = plan[gg]
+    for key in sorted(plan.keys()):
+        group_plan = plan[key]
+        if key != make_plan_key(group_plan.group, group_plan.opcode):
+            raise ValueError(
+                f"Plan key mismatch: key={key!r} entry={(group_plan.group, group_plan.opcode)!r}"
+            )
         for ii in group_plan.instances:
             for rr in range(0x0000, group_plan.rr_max + 1):
                 task = RegisterTask(
-                    group=gg,
+                    group=group_plan.group,
                     opcode=group_plan.opcode,
                     instance=ii,
                     register=rr,
@@ -159,7 +173,7 @@ def build_work_queue(
     return tasks
 
 
-def estimate_register_requests(plan: dict[int, GroupScanPlan]) -> int:
+def estimate_register_requests(plan: dict[PlanKey, GroupScanPlan]) -> int:
     total = 0
     for group_plan in plan.values():
         total += len(group_plan.instances) * (group_plan.rr_max + 1)

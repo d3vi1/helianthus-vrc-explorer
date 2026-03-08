@@ -11,11 +11,13 @@ from helianthus_vrc_explorer.ui.planner_textual import (
 def test_parse_instances_spec_accepts_keywords_and_ranges() -> None:
     group = PlannerGroup(
         group=0x02,
+        opcode=0x02,
         name="Heating Circuits",
         descriptor=1.0,
         known=True,
         ii_max=0x0A,
         rr_max=0x21,
+        rr_max_full=0x21,
         present_instances=(0x00, 0x02, 0x03),
     )
     assert _parse_instances_spec("present", group=group) == (0x00, 0x02, 0x03)
@@ -26,15 +28,17 @@ def test_parse_instances_spec_accepts_keywords_and_ranges() -> None:
 def test_estimate_footer_reports_requests_and_eta() -> None:
     group = PlannerGroup(
         group=0x02,
+        opcode=0x02,
         name="Heating Circuits",
         descriptor=1.0,
         known=True,
         ii_max=0x0A,
         rr_max=0x02,
+        rr_max_full=0x02,
         present_instances=(0x00,),
     )
     states = {
-        0x02: _EditableGroup(
+        (0x02, 0x02): _EditableGroup(
             group=group,
             enabled=True,
             rr_max=0x02,
@@ -44,4 +48,4 @@ def test_estimate_footer_reports_requests_and_eta() -> None:
     footer = _estimate_footer(states, request_rate_rps=2.0)
     assert "Plan: 6 requests" in footer
     assert "ETA:" in footer
-    assert "1 groups selected" in footer
+    assert "1 plan entries selected" in footer

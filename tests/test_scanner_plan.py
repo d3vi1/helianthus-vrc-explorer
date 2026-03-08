@@ -11,7 +11,7 @@ from helianthus_vrc_explorer.scanner.plan import (
     parse_int_set,
     parse_int_token,
 )
-from helianthus_vrc_explorer.ui.planner import _format_seconds
+from helianthus_vrc_explorer.ui.planner import PlannerGroup, _format_seconds, build_plan_from_preset
 
 
 def test_parse_int_token_accepts_decimal_and_hex() -> None:
@@ -41,8 +41,13 @@ def test_parse_int_set_rejects_out_of_range() -> None:
 
 def test_estimate_register_requests() -> None:
     plan = {
-        0x02: GroupScanPlan(group=0x02, opcode=0x02, rr_max=0x0003, instances=(0x00, 0x01)),
-        0x01: GroupScanPlan(group=0x01, opcode=0x02, rr_max=0x0001, instances=(0x00,)),
+        (0x02, 0x02): GroupScanPlan(
+            group=0x02,
+            opcode=0x02,
+            rr_max=0x0003,
+            instances=(0x00, 0x01),
+        ),
+        (0x01, 0x02): GroupScanPlan(group=0x01, opcode=0x02, rr_max=0x0001, instances=(0x00,)),
     }
     # GG=0x02: 2 instances * (3+1) regs = 8
     # GG=0x01: 1 instance * (1+1) regs = 2
@@ -57,7 +62,12 @@ def test_format_int_set_compacts_ranges() -> None:
 
 def test_build_work_queue_skips_done_tasks() -> None:
     plan = {
-        0x02: GroupScanPlan(group=0x02, opcode=0x02, rr_max=0x0002, instances=(0x00,)),
+        (0x02, 0x02): GroupScanPlan(
+            group=0x02,
+            opcode=0x02,
+            rr_max=0x0002,
+            instances=(0x00,),
+        ),
     }
     done = {RegisterTask(group=0x02, opcode=0x02, instance=0x00, register=0x0001)}
     tasks = build_work_queue(plan, done=done)
@@ -70,3 +80,42 @@ def test_build_work_queue_skips_done_tasks() -> None:
 def test_format_seconds_normalizes_boundaries() -> None:
     assert _format_seconds(480.0) == "8m"
     assert _format_seconds(481.0) == "8m 1s"
+
+
+def test_plan_dual_namespace_creates_two_entries() -> None:
+    groups = [
+        PlannerGroup(
+            group=0x09,
+            opcode=0x02,
+            name="Radio Sensors VRC7xx",
+            descriptor=1.0,
+            known=True,
+            ii_max=0x0A,
+            rr_max=0x000F,
+            rr_max_full=0x000F,
+            present_instances=(0x00,),
+            namespace_label="local",
+            primary=True,
+        ),
+        PlannerGroup(
+            group=0x09,
+            opcode=0x06,
+            name="Radio Sensors VRC7xx",
+            descriptor=1.0,
+            known=True,
+            ii_max=0x0A,
+            rr_max=0x000F,
+            rr_max_full=0x0035,
+            present_instances=(0x00,),
+            namespace_label="remote",
+            primary=False,
+        ),
+    ]
+
+    recommended = build_plan_from_preset(groups, preset="recommended")
+    assert sorted(recommended) == [(0x09, 0x02), (0x09, 0x06)]
+    assert recommended[(0x09, 0x02)].rr_max == 0x000F
+    assert recommended[(0x09, 0x06)].rr_max == 0x000F
+
+    aggressive = build_plan_from_preset(groups, preset="aggressive")
+    assert aggressive[(0x09, 0x06)].rr_max == 0x0035
