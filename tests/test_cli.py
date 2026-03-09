@@ -389,8 +389,7 @@ def test_scan_persists_identity_metadata_in_artifact(monkeypatch, tmp_path: Path
 
     identity = {
         "device": (
-            "Wireless 720-series Regulator *BA*se *S*tation "
-            "*V*aillant-branded Revision *2* (BASV2)"
+            "Wireless 720-series Regulator *BA*se *S*tation *V*aillant-branded Revision *2* (BASV2)"
         ),
         "model": "Vaillant sensoCOMFORT RF (VRC 720f/2) 0020262148",
         "serial": "21213400202621480000000001N7",
