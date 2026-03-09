@@ -14,6 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..protocol.parser import ValueParseError, parse_typed_value
+from .register_semantics import entry_status_kind, entry_status_label, visible_rr_keys
 
 
 def candidate_type_specs_for_length(length: int) -> tuple[str, ...]:
@@ -283,18 +284,7 @@ def _build_sheets(artifact: dict[str, Any]) -> list[_Sheet]:
         for ns_key, ns_label, instances in namespace_views:
             instance_keys = _sorted_hex_keys([k for k in instances if isinstance(k, str)])
 
-            rr_key_set: set[str] = set()
-            for instance_obj in instances.values():
-                if not isinstance(instance_obj, dict):
-                    continue
-                registers = instance_obj.get("registers")
-                if not isinstance(registers, dict):
-                    continue
-                for rr_key in registers:
-                    if isinstance(rr_key, str):
-                        rr_key_set.add(rr_key)
-
-            rr_keys = _sorted_hex_keys(sorted(rr_key_set))
+            rr_keys = visible_rr_keys(instances)
 
             sheets.append(
                 _Sheet(
@@ -343,7 +333,9 @@ def _cell_text(entry: dict[str, Any] | None, *, selected: bool) -> Text:
     raw_hex = entry.get("raw_hex")
     error = entry.get("error")
 
-    val_txt = _format_value(value)
+    status_kind = entry_status_kind(entry)
+    status_label = entry_status_label(entry)
+    val_txt = status_label.lower() if status_kind == "absent" else _format_value(value)
     raw_txt = raw_hex if isinstance(raw_hex, str) else ""
     raw_short = raw_txt[:16] + ("…" if len(raw_txt) > 16 else "")
 
@@ -351,10 +343,18 @@ def _cell_text(entry: dict[str, Any] | None, *, selected: bool) -> Text:
     err_short = err_txt.split(":", 1)[0] if err_txt else ""
 
     line2 = raw_short
-    if err_short:
+    if status_kind == "absent":
+        line2 = "valid no-data"
+    elif err_short:
         line2 = f"{raw_short} !{err_short}"
 
-    text = Text(f"{val_txt}\n{line2}", style="red" if err_txt else "white")
+    style = "white"
+    if status_kind == "absent":
+        style = "yellow"
+    elif err_txt:
+        style = "red"
+
+    text = Text(f"{val_txt}\n{line2}", style=style)
     if selected:
         text.stylize("reverse")
     return text
@@ -470,6 +470,7 @@ def _render(
         f"type={selected_entry.get('type') if selected_entry else None} override={override}"
     )
     details_lines.append(f"raw_len={raw_len} raw_hex={raw_hex}")
+    details_lines.append(f"status={entry_status_label(selected_entry)}")
     details_lines.append(f"error={selected_entry.get('error') if selected_entry else None}")
     details = Text("\n".join(details_lines), style="dim")
 

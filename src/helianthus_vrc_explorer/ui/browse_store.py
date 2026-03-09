@@ -6,6 +6,7 @@ from typing import Any
 
 from ..scanner.director import GROUP_CONFIG
 from .browse_models import BrowseTab, RegisterAddress, RegisterRow, TreeNodeRef
+from .register_semantics import entry_display_value_text, visible_rr_keys
 
 
 def _safe_int_hex(value: str) -> int:
@@ -16,15 +17,7 @@ def _safe_int_hex(value: str) -> int:
 
 
 def _fmt_value(entry: dict[str, Any]) -> str:
-    value_display = entry.get("value_display")
-    if isinstance(value_display, str) and value_display.strip():
-        return value_display
-    value = entry.get("value")
-    if value is None:
-        return "null"
-    if isinstance(value, float):
-        return f"{value:.6g}"
-    return str(value)
+    return entry_display_value_text(entry)
 
 
 def _parse_timestamp(meta: dict[str, Any]) -> datetime | None:
@@ -271,6 +264,7 @@ class BrowseStore:
                     (k for k in instances if isinstance(k, str)),
                     key=_safe_int_hex,
                 )
+                visible_registers = set(visible_rr_keys(instances))
                 for instance_key in instance_keys:
                     instance_obj = instances.get(instance_key)
                     if not isinstance(instance_obj, dict):
@@ -305,6 +299,8 @@ class BrowseStore:
                         (k for k in registers if isinstance(k, str)),
                         key=_safe_int_hex,
                     ):
+                        if register_key not in visible_registers:
+                            continue
                         entry = registers.get(register_key)
                         if not isinstance(entry, dict):
                             continue

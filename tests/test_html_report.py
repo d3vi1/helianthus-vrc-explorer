@@ -37,6 +37,7 @@ def test_html_report_supports_b509_tab_and_dual_naming() -> None:
 
     assert "B509 Dump" in html
     assert "Hide timeouts" in html
+    assert "hideAbsent" in html
     assert "ebusd: " in html
 
 
@@ -96,5 +97,6 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
     assert "Namespace Totals" in html
     assert "FLAGS Access" in html
     assert "Radio Sensors VRC7xx" in html
+    assert "activeNamespaceByGroup" in html
     assert '"label":"local"' in html
     assert '"label":"remote"' in html
