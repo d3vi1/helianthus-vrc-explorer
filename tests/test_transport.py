@@ -220,7 +220,7 @@ def test_transport_send_retries_timeout_once_then_succeeds(monkeypatch: pytest.M
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
-    assert sleep_calls == []
+    assert sleep_calls == [5.0]
 
 
 def test_transport_send_timeout_retries_exhaust_after_five_retries(
@@ -241,10 +241,13 @@ def test_transport_send_timeout_retries_exhaust_after_five_retries(
             transport.send(0x15, payload)
 
     assert commands == ["hex 15B52406020002000F00"] * 6
-    assert sleep_calls == []
+    assert sleep_calls == [5.0] * 5
 
 
-@pytest.mark.parametrize("err_line", ["ERR: SYN received", "ERR: wrong symbol received"])
+@pytest.mark.parametrize(
+    "err_line",
+    ["ERR: arbitration lost", "ERR: SYN received", "ERR: wrong symbol received"],
+)
 def test_transport_send_retries_retryable_transport_errors_once_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
     err_line: str,
@@ -258,14 +261,13 @@ def test_transport_send_retries_retryable_transport_errors_once_then_succeeds(
         import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
 
         monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
-        monkeypatch.setattr(ebusd_tcp.random, "uniform", lambda _a, _b: 0.05)
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
         payload = bytes.fromhex("020002000F00")
         result = transport.send(0x15, payload)
 
     assert result == bytes.fromhex("010203")
     assert commands == ["hex 15B52406020002000F00", "hex 15B52406020002000F00"]
-    assert sleep_calls == [0.05]
+    assert sleep_calls == [5.0]
 
 
 def test_transport_send_retries_socket_timeout_once_then_succeeds(
@@ -465,14 +467,13 @@ def test_transport_send_collision_retries_exhaust(monkeypatch: pytest.MonkeyPatc
         import helianthus_vrc_explorer.transport.ebusd_tcp as ebusd_tcp
 
         monkeypatch.setattr(ebusd_tcp.time, "sleep", _sleep)
-        monkeypatch.setattr(ebusd_tcp.random, "uniform", lambda _a, _b: 0.03)
         transport = EbusdTcpTransport(EbusdTcpConfig(host=host, port=port, timeout_s=0.5))
         payload = bytes.fromhex("020002000F00")
         with pytest.raises(TransportError, match=r"collision retries exhausted"):
             transport.send(0x15, payload)
 
     assert commands == ["hex 15B52406020002000F00"] * 6
-    assert sleep_calls == [0.03] * 5
+    assert sleep_calls == [5.0] * 5
 
 
 def test_transport_send_respects_max_command_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -516,4 +517,4 @@ def test_transport_send_proto_uses_retry_policy(monkeypatch: pytest.MonkeyPatch)
 
     assert result == bytes.fromhex("00")
     assert commands == ["hex 15070400", "hex 15070400"]
-    assert sleep_calls == []
+    assert sleep_calls == [5.0]

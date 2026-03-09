@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import random
 import socket
 import string
 import time
@@ -41,7 +40,9 @@ _SECONDARY_EXTENDED_REGISTER: Final[int] = 0x24
 _EBUSD_COMMAND_TERMINATOR: Final[bytes] = b"\n"
 _HEX_CHARS: Final[set[str]] = set(string.hexdigits)
 _POST_RESPONSE_DRAIN_TIMEOUT_S: Final[float] = 0.01
+_BUS_SETTLE_RETRY_S: Final[float] = 5.0
 _RETRYABLE_TRANSPORT_ERROR_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "arbitration lost",
     "syn received",
     "wrong symbol received",
 )
@@ -376,9 +377,10 @@ class EbusdTcpTransport(TransportInterface):
                 self._trace(
                     "#"
                     f"{seq} RETRY type=timeout "
-                    f"n={timeout_retries}/{self._config.timeout_max_retries}"
+                    f"n={timeout_retries}/{self._config.timeout_max_retries} "
+                    f"sleep_ms={int(_BUS_SETTLE_RETRY_S * 1000)}"
                 )
-                # Immediate retry for ERR: read timeout (no backoff).
+                time.sleep(_BUS_SETTLE_RETRY_S)
                 continue
             except TransportError as exc:
                 if _is_connection_level_error(exc):
@@ -415,15 +417,12 @@ class EbusdTcpTransport(TransportInterface):
                             exc,
                             f"collision retries exhausted ({self._config.collision_max_retries})",
                         ) from exc
-                    min_ms = self._config.collision_backoff_min_ms
-                    max_ms = self._config.collision_backoff_max_ms
-                    sleep_s = random.uniform(min_ms / 1000.0, max_ms / 1000.0)
                     self._trace(
                         f"#{seq} RETRY type=collision "
                         f"n={collision_retries}/{self._config.collision_max_retries} "
-                        f"sleep_ms={int(round(sleep_s * 1000))}"
+                        f"sleep_ms={int(_BUS_SETTLE_RETRY_S * 1000)}"
                     )
-                    time.sleep(sleep_s)
+                    time.sleep(_BUS_SETTLE_RETRY_S)
                     continue
                 raise
 
