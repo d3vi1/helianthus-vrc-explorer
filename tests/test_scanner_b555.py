@@ -107,6 +107,34 @@ def test_scan_b555_skips_unavailable_programs_and_bounds_slots() -> None:
     assert bytes.fromhex("a4ff04") not in transport.calls
 
 
+def test_scan_b555_does_not_materialize_weekdays_when_a4_is_unavailable() -> None:
+    unavailable = bytes.fromhex("030000000000000000")
+    transport = _ProtoOnlyTransport(
+        {
+            bytes.fromhex("a30000"): bytes.fromhex("000205010102021400"),
+            bytes.fromhex("a40000"): unavailable,
+            bytes.fromhex("a30001"): unavailable,
+            bytes.fromhex("a30100"): unavailable,
+            bytes.fromhex("a30101"): unavailable,
+            bytes.fromhex("a30200"): unavailable,
+            bytes.fromhex("a30201"): unavailable,
+            bytes.fromhex("a3ff02"): unavailable,
+            bytes.fromhex("a3ff03"): unavailable,
+            bytes.fromhex("a3ff04"): unavailable,
+        }
+    )
+
+    artifact = scan_b555(transport, dst=0x15)
+
+    z1_heating = artifact["programs"]["z1_heating"]
+    assert z1_heating["slots_per_weekday"]["status"] == "0x03"
+    assert z1_heating["slots_per_weekday"]["available"] is False
+    assert "days" not in z1_heating["slots_per_weekday"]
+    assert z1_heating["weekdays"] == {}
+    assert z1_heating["skipped_reason"] == "slots_status_0x03"
+    assert bytes.fromhex("a500000000") not in transport.calls
+
+
 def test_scan_vrc_adds_b555_dump_when_opted_in(monkeypatch) -> None:
     import helianthus_vrc_explorer.scanner.scan as scan_mod
 
@@ -144,3 +172,34 @@ def test_scan_vrc_skips_b555_when_b524_is_incomplete(monkeypatch) -> None:
     artifact = scan_vrc(_NoopTransport(), dst=0x15, b509_ranges=[], b555_dump=True)
 
     assert "b555_dump" not in artifact
+
+
+def test_scan_vrc_propagates_incomplete_b555_and_skips_b509(monkeypatch) -> None:
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    def _fake_scan_b524(*_args, **_kwargs):
+        return {"meta": {"incomplete": False}, "groups": {}}
+
+    def _fake_scan_b555(*_args, **_kwargs):
+        return {
+            "meta": {
+                "incomplete": True,
+                "incomplete_reason": "user_interrupt",
+                "read_count": 5,
+            },
+            "programs": {},
+        }
+
+    def _unexpected_scan_b509(*_args, **_kwargs):
+        raise AssertionError("B509 should be skipped after incomplete B555 dump")
+
+    monkeypatch.setattr(scan_mod, "scan_b524", _fake_scan_b524)
+    monkeypatch.setattr(scan_mod, "scan_b555", _fake_scan_b555)
+    monkeypatch.setattr(scan_mod, "scan_b509", _unexpected_scan_b509)
+
+    artifact = scan_vrc(_NoopTransport(), dst=0x15, b509_ranges=[], b555_dump=True)
+
+    assert artifact["meta"]["incomplete"] is True
+    assert artifact["meta"]["incomplete_reason"] == "b555_user_interrupt"
+    assert artifact["b555_dump"]["meta"]["read_count"] == 5
+    assert "b509_dump" not in artifact

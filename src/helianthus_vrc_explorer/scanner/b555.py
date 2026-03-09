@@ -131,12 +131,10 @@ def _slots_entry(
     }
     if parsed is None:
         return entry
-    entry.update(
-        {
-            "days": dict(zip(_DAY_NAMES, parsed.slot_counts, strict=True)),
-            "padding": _hex_u8(parsed.padding),
-        }
-    )
+    entry["available"] = parsed.available
+    entry["padding"] = _hex_u8(parsed.padding)
+    if parsed.available:
+        entry["days"] = dict(zip(_DAY_NAMES, parsed.slot_counts, strict=True))
     return entry
 
 
@@ -157,20 +155,22 @@ def _timer_entry(
     }
     if parsed is None:
         return entry
-    entry.update(
-        {
-            "start_hour": parsed.start_hour,
-            "start_minute": parsed.start_minute,
-            "start_text": format_b555_time(parsed.start_hour, parsed.start_minute),
-            "start_total_minutes": parsed.start_hour * 60 + parsed.start_minute,
-            "end_hour": parsed.end_hour,
-            "end_minute": parsed.end_minute,
-            "end_text": format_b555_time(parsed.end_hour, parsed.end_minute),
-            "end_total_minutes": parsed.end_hour * 60 + parsed.end_minute,
-            "temperature_raw": _hex_u16(parsed.temperature_raw_u16),
-            "temperature_c": parsed.temperature_c,
-        }
-    )
+    entry["available"] = parsed.status == 0x00
+    if parsed.status == 0x00:
+        entry.update(
+            {
+                "start_hour": parsed.start_hour,
+                "start_minute": parsed.start_minute,
+                "start_text": format_b555_time(parsed.start_hour, parsed.start_minute),
+                "start_total_minutes": parsed.start_hour * 60 + parsed.start_minute,
+                "end_hour": parsed.end_hour,
+                "end_minute": parsed.end_minute,
+                "end_text": format_b555_time(parsed.end_hour, parsed.end_minute),
+                "end_total_minutes": parsed.end_hour * 60 + parsed.end_minute,
+                "temperature_raw": _hex_u16(parsed.temperature_raw_u16),
+                "temperature_c": parsed.temperature_c,
+            }
+        )
     return entry
 
 
@@ -296,6 +296,15 @@ def scan_b555(
                 observer.phase_advance("b555_dump", advance=1)
 
             if slots_parsed is None or slots_error is not None:
+                continue
+            if not slots_parsed.available:
+                program_obj["skipped_reason"] = f"slots_status_{_hex_u8(slots_parsed.status)}"
+                if observer is not None:
+                    skip_label = b555_status_label(slots_parsed.status)
+                    observer.log(
+                        f"B555 {program.label}: slot map unavailable ({skip_label})",
+                        level="info",
+                    )
                 continue
 
             slot_counts = slots_parsed.as_day_map()
