@@ -829,6 +829,8 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 **Timeouts / invalid responses during scan:**
 - Errors are recorded inline per-entry (`error` field) and scanning continues (best-effort).
+- On `ebusd-tcp`, `ERR: timeout`, `ERR: arbitration lost`, `ERR: SYN received`, and `ERR: wrong symbol received`
+  trigger a fixed 5-second quiet backoff before retry so the bus can settle.
 - Partial scans are valid: Ctrl+C results in `meta.incomplete=true` with a reason string.
 
 **Signal handling:**
