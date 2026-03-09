@@ -133,7 +133,7 @@ class DummyTransport(TransportInterface):
             if configured:
                 return configured
 
-        return (0x02,)
+        return (0x02, 0x06)
 
     def _load_instances(
         self,

@@ -151,7 +151,10 @@ def _instances_for_preset(group: PlannerGroup, preset: PlannerPreset) -> tuple[i
         return (0x00,)
     if preset in {"conservative", "recommended"}:
         return group.present_instances
-    return tuple(range(0x00, group.ii_max + 1))
+    full_range = tuple(range(0x00, group.ii_max + 1))
+    if 0xFF in group.present_instances:
+        return full_range + (0xFF,)
+    return full_range
 
 
 def build_plan_from_preset(
@@ -302,7 +305,10 @@ def _ask_instances(
     current_instances: tuple[int, ...],
 ) -> tuple[int, ...]:
     assert group.ii_max is not None
-    full_range = tuple(range(0x00, group.ii_max + 1))
+    full_range = tuple(range(0x00, group.ii_max + 1)) + (
+        (0xFF,) if 0xFF in group.present_instances else ()
+    )
+    allowed_instances = set(full_range)
     if current_instances == group.present_instances:
         default_mode = "present"
     elif current_instances == full_range:
@@ -330,10 +336,22 @@ def _ask_instances(
             parsed_instances = parse_int_set(
                 raw_instances,
                 min_value=0x00,
-                max_value=group.ii_max,
+                max_value=(0xFF if 0xFF in group.present_instances else group.ii_max),
             )
         except ValueError as exc:
             console.print(f"[red]Invalid instance selection:[/red] {exc}")
+            continue
+        invalid_instances = [
+            instance for instance in parsed_instances if instance not in allowed_instances
+        ]
+        if invalid_instances:
+            invalid_text = ", ".join(_hex_u8(instance) for instance in invalid_instances)
+            console.print(
+                "[red]Invalid instance selection:[/red] "
+                f"allowed values are 0x00..{_hex_u8(group.ii_max)}"
+                + (" plus 0xFF" if 0xFF in allowed_instances else "")
+                + f"; got {invalid_text}"
+            )
             continue
         return tuple(parsed_instances)
 

@@ -58,7 +58,7 @@ def opcodes_for_group(group: int) -> list[RegisterOpcode]:
 
     config = GROUP_CONFIG.get(group)
     if config is None:
-        return [0x02]
+        return [0x02, 0x06]
     return [cast(RegisterOpcode, opcode) for opcode in config["opcodes"]]
 
 
