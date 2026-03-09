@@ -153,6 +153,36 @@ def _write_fixture_unknown_group_69(tmp_path: Path) -> Path:
     return path
 
 
+def _write_fixture_unknown_group_69_with_ff(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x6a"}},
+        "groups": {
+            "0x69": {
+                "descriptor_type": 1.0,
+                "namespaces": {
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "00"},
+                                }
+                            },
+                            "0xff": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "7f"},
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_unknown_ff.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
 def _write_fixture_unknown_descriptor(tmp_path: Path) -> Path:
     fixture = {
         "meta": {"dummy_transport": {"directory_terminator_group": "0x01"}},
@@ -494,7 +524,13 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
                 opcode=0x02,
                 rr_max=0x0000,
                 instances=(0x00,),
-            )
+            ),
+            (0x69, 0x06): GroupScanPlan(
+                group=0x69,
+                opcode=0x06,
+                rr_max=0x0000,
+                instances=(0x00,),
+            ),
         }
 
     monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
@@ -509,8 +545,12 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
     )
 
     assert "0x69" in artifact["groups"]
-    registers = artifact["groups"]["0x69"]["instances"]["0x00"]["registers"]
-    assert registers["0x0000"]["raw_hex"] == "00"
+    group = artifact["groups"]["0x69"]
+    assert group["dual_namespace"] is True
+    local_registers = group["namespaces"]["0x02"]["instances"]["0x00"]["registers"]
+    remote_registers = group["namespaces"]["0x06"]["instances"]["0x00"]["registers"]
+    assert local_registers["0x0000"]["raw_hex"] == "00"
+    assert remote_registers["0x0000"]["raw_hex"] == "00"
     issue_suggestion = artifact["meta"]["issue_suggestion"]
     assert issue_suggestion["unknown_groups"] == ["0x69"]
     assert issue_suggestion["suggest_issue"] is True
@@ -952,10 +992,11 @@ def test_scan_b524_normalizes_legacy_aggressive_preset_to_full_for_textual_defau
     assert captured["default_preset"] == "full"
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    assert (0x69, 0x02) in default_plan
-    group_plan = default_plan[(0x69, 0x02)]
-    assert group_plan.rr_max == 0x30
-    assert group_plan.instances == (0x00,)
+    for key in ((0x69, 0x02), (0x69, 0x06)):
+        assert key in default_plan
+        group_plan = default_plan[key]
+        assert group_plan.rr_max == 0x30
+        assert group_plan.instances == tuple(range(0x0B))
 
 
 def test_scan_b524_applies_preset_in_non_interactive_mode(tmp_path: Path) -> None:
@@ -968,12 +1009,19 @@ def test_scan_b524_applies_preset_in_non_interactive_mode(tmp_path: Path) -> Non
 
     scan_plan = artifact["meta"]["scan_plan"]["groups"]
     assert "0x69" in scan_plan
-    assert scan_plan["0x69"]["rr_max"] == "0x0030"
-    assert scan_plan["0x69"]["instances"] == ["0x00"]
+    assert scan_plan["0x69"]["dual_namespace"] is True
+    assert set(scan_plan["0x69"]["namespaces"]) == {"0x02", "0x06"}
+    for namespace in ("0x02", "0x06"):
+        assert scan_plan["0x69"]["namespaces"][namespace]["rr_max"] == "0x0030"
+        assert scan_plan["0x69"]["namespaces"][namespace]["instances"] == [
+            f"0x{ii:02x}" for ii in range(0x0B)
+        ]
 
     group = artifact["groups"]["0x69"]
-    assert set(group["instances"]) == {"0x00"}
-    assert group["instances"]["0x00"]["present"] is True
+    assert group["dual_namespace"] is True
+    assert set(group["namespaces"]) == {"0x02", "0x06"}
+    assert group["namespaces"]["0x02"]["instances"]["0x00"]["present"] is True
+    assert group["namespaces"]["0x06"]["instances"]["0x00"]["present"] is True
 
 
 def test_scan_b524_disabled_planner_skips_interactive_planner_even_on_tty(
@@ -1009,9 +1057,11 @@ def test_scan_b524_disabled_planner_skips_interactive_planner_even_on_tty(
     assert artifact["meta"]["incomplete"] is False
 
 
-def test_scan_unknown_group_defaults_to_singleton(tmp_path: Path) -> None:
+def test_scan_unknown_group_probes_both_opcodes_and_two_instances(tmp_path: Path) -> None:
+    transport = RecordingTransport(DummyTransport(_write_fixture_unknown_group_69(tmp_path)))
+
     artifact = scan_b524(
-        DummyTransport(_write_fixture_unknown_group_69(tmp_path)),
+        transport,
         dst=0x15,
         planner_ui="auto",
         planner_preset="full",
@@ -1019,8 +1069,38 @@ def test_scan_unknown_group_defaults_to_singleton(tmp_path: Path) -> None:
 
     group = artifact["groups"]["0x69"]
     assert group["descriptor_observed"] == 1.0
-    assert set(group["instances"]) == {"0x00"}
-    assert artifact["meta"]["scan_plan"]["groups"]["0x69"]["instances"] == ["0x00"]
+    assert group["dual_namespace"] is True
+    assert set(group["namespaces"]) == {"0x02", "0x06"}
+    probed_instances = {
+        (opcode, ii)
+        for (opcode, gg, ii, rr) in transport.register_reads
+        if gg == 0x69 and rr == 0x0000 and ii in {0x00, 0x01}
+    }
+    assert probed_instances >= {
+        (0x02, 0x00),
+        (0x02, 0x01),
+        (0x06, 0x00),
+        (0x06, 0x01),
+    }
+
+
+def test_scan_unknown_group_expands_to_instance_ff_after_readable_probe(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        DummyTransport(_write_fixture_unknown_group_69_with_ff(tmp_path))
+    )
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        planner_ui="auto",
+        planner_preset="recommended",
+    )
+
+    group = artifact["groups"]["0x69"]
+    remote_instances = group["namespaces"]["0x06"]["instances"]
+    assert remote_instances["0x00"]["present"] is True
+    assert remote_instances["0xff"]["present"] is True
+    assert (0x06, 0x69, 0xFF, 0x0000) in transport.register_reads
 
 
 def test_scan_b524_textual_failure_falls_back_to_classic_in_auto_mode(

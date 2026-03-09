@@ -56,7 +56,10 @@ def _hex_u16(value: int) -> str:
 _LOCAL_REGISTER_OPCODE: RegisterOpcode = 0x02
 _REMOTE_REGISTER_OPCODE: RegisterOpcode = 0x06
 _UNKNOWN_GROUP_DEFAULT_RR_MAX = 0x0030
-_UNKNOWN_GROUP_DEFAULT_II_MAX = 0x00
+_UNKNOWN_GROUP_DEFAULT_II_MAX = 0x0A
+_UNKNOWN_GROUP_INITIAL_INSTANCES: tuple[int, ...] = (0x00, 0x01)
+_UNKNOWN_GROUP_EXPANDED_INSTANCES: tuple[int, ...] = tuple(range(0x00, 0x0B)) + (0xFF,)
+_UNKNOWN_GROUP_PRESENCE_REGISTER = 0x0000
 
 PlannerUiMode = Literal["disabled", "auto", "textual", "classic"]
 _KNOWN_DESCRIPTOR_TYPES = frozenset(
@@ -227,6 +230,64 @@ def _present_instances_for_opcode(
 def _mark_present_instances(instances_obj: dict[str, Any], *, instances: tuple[int, ...]) -> None:
     for instance in instances:
         instances_obj[_hex_u8(instance)] = {"present": True}
+
+
+def _entry_is_readable(entry: RegisterEntry) -> bool:
+    return entry["error"] is None and entry.get("flags_access") != "absent"
+
+
+def _probe_unknown_present_instances(
+    transport: TransportInterface,
+    *,
+    dst: int,
+    group: int,
+    opcode: RegisterOpcode,
+    observer: ScanObserver | None,
+) -> tuple[int, ...]:
+    present_instances: list[int] = []
+    probed: set[int] = set()
+    should_expand = False
+
+    for ii in _UNKNOWN_GROUP_INITIAL_INSTANCES:
+        if observer is not None:
+            observer.status(f"Probe presence GG=0x{group:02X} OP={_hex_u8(opcode)} II=0x{ii:02X}")
+        entry = read_register(
+            transport,
+            dst,
+            opcode,
+            group=group,
+            instance=ii,
+            register=_UNKNOWN_GROUP_PRESENCE_REGISTER,
+        )
+        probed.add(ii)
+        if _entry_is_readable(entry):
+            present_instances.append(ii)
+            should_expand = True
+        if observer is not None:
+            observer.phase_advance("instance_discovery", advance=1)
+
+    if not should_expand:
+        return tuple(present_instances)
+
+    for ii in _UNKNOWN_GROUP_EXPANDED_INSTANCES:
+        if ii in probed:
+            continue
+        if observer is not None:
+            observer.status(f"Probe presence GG=0x{group:02X} OP={_hex_u8(opcode)} II=0x{ii:02X}")
+        entry = read_register(
+            transport,
+            dst,
+            opcode,
+            group=group,
+            instance=ii,
+            register=_UNKNOWN_GROUP_PRESENCE_REGISTER,
+        )
+        if _entry_is_readable(entry):
+            present_instances.append(ii)
+        if observer is not None:
+            observer.phase_advance("instance_discovery", advance=1)
+
+    return tuple(sorted(set(present_instances)))
 
 
 def _probe_present_instances(
@@ -961,6 +1022,11 @@ def scan_b524(
         instance_total = 0
         for group in classified:
             meta = metadata_map[group.group]
+            if GROUP_CONFIG.get(group.group) is None:
+                instance_total += len(_UNKNOWN_GROUP_EXPANDED_INSTANCES) * len(
+                    _group_opcodes(group.group)
+                )
+                continue
             if group.group in {0x09, 0x0A}:
                 shared_present: tuple[int, ...]
                 shared_ii_max = _ii_max_for_opcode(
@@ -991,6 +1057,7 @@ def scan_b524(
             rr_max = meta.rr_max
             opcodes = _group_opcodes(group.group)
             dual_namespace = len(opcodes) > 1
+            config = GROUP_CONFIG.get(group.group)
             _ensure_group_artifact(
                 artifact,
                 group=group.group,
@@ -998,6 +1065,37 @@ def scan_b524(
                 descriptor_observed=group.descriptor,
                 dual_namespace=dual_namespace,
             )
+
+            if config is None:
+                namespace_probe_counts: list[str] = []
+                total_slots = len(_UNKNOWN_GROUP_EXPANDED_INSTANCES)
+                for opcode in opcodes:
+                    instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
+                    emit_trace_label(
+                        transport,
+                        "Exploring unknown group "
+                        f"0x{group.group:02X} ({_opcode_label(opcode)}) "
+                        "across multiple instances",
+                    )
+                    present_instances = _probe_unknown_present_instances(
+                        transport,
+                        dst=dst,
+                        group=group.group,
+                        opcode=opcode,
+                        observer=observer,
+                    )
+                    _mark_present_instances(instances_obj, instances=present_instances)
+                    namespace_probe_counts.append(
+                        f"{_opcode_label(opcode)} {len(present_instances)}/{total_slots}"
+                    )
+                if observer is not None:
+                    observer.log(
+                        f"GG=0x{group.group:02X} {group.name}: "
+                        f"{', '.join(namespace_probe_counts)} present (experimental), "
+                        f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
+                        level="info",
+                    )
+                continue
 
             if group.group in {0x09, 0x0A}:
                 shared_ii_max = _ii_max_for_opcode(
@@ -1036,7 +1134,7 @@ def scan_b524(
                     )
                 continue
 
-            namespace_probe_counts: list[str] = []
+            known_namespace_probe_counts: list[str] = []
             for opcode in opcodes:
                 namespace_ii_max = _ii_max_for_opcode(
                     group=group.group,
@@ -1046,7 +1144,7 @@ def scan_b524(
                 instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
                 if not _is_instanced_group(namespace_ii_max):
                     _mark_present_instances(instances_obj, instances=(0x00,))
-                    namespace_probe_counts.append(f"{_opcode_label(opcode)} 1/1")
+                    known_namespace_probe_counts.append(f"{_opcode_label(opcode)} 1/1")
                     continue
 
                 assert namespace_ii_max is not None
@@ -1063,14 +1161,14 @@ def scan_b524(
                     observer=observer,
                 )
                 _mark_present_instances(instances_obj, instances=present_instances)
-                namespace_probe_counts.append(
+                known_namespace_probe_counts.append(
                     f"{_opcode_label(opcode)} {len(present_instances)}/{namespace_ii_max + 1}"
                 )
 
             if observer is not None:
                 observer.log(
                     f"GG=0x{group.group:02X} {group.name}: "
-                    f"{', '.join(namespace_probe_counts)} present, "
+                    f"{', '.join(known_namespace_probe_counts)} present, "
                     f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
                     level="info",
                 )
@@ -1463,9 +1561,7 @@ def scan_b524(
                     group=task.group,
                     name="Unknown",
                     descriptor_observed=None,
-                    dual_namespace=bool(
-                        task.group in GROUP_CONFIG and _is_dual_namespace_group(task.group)
-                    ),
+                    dual_namespace=_is_dual_namespace_group(task.group),
                 )
                 instances_obj = _instances_object(
                     artifact,
