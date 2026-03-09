@@ -250,3 +250,113 @@ def test_browse_store_treats_unknown_singleton_group_as_singleton() -> None:
 
     store = BrowseStore.from_artifact(artifact)
     assert not any(node.level == "instance" for node in store.tree_nodes)
+
+
+def test_browse_store_distinguishes_absent_from_transport_failure() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x00": {
+                "name": "Regulator Parameters",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {
+                                "reply_hex": "00",
+                                "flags_access": "absent",
+                                "error": None,
+                            },
+                            "0x0002": {
+                                "reply_hex": None,
+                                "flags_access": None,
+                                "error": "transport_error: ERR: arbitration lost",
+                            },
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    by_register = {row.register_key: row for row in store.rows}
+    assert by_register["0x0001"].value_text == "absent"
+    assert by_register["0x0002"].value_text == "transport failure"
+
+
+def test_browse_store_hides_rr_zero_and_trailing_unnamed_absent_rows_per_namespace() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x0c": {
+                "name": "Accessories",
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x02": {
+                        "label": "local",
+                        "instances": {
+                            "0x01": {
+                                "registers": {
+                                    "0x0000": {
+                                        "reply_hex": "00",
+                                        "flags_access": "absent",
+                                        "error": None,
+                                    },
+                                    "0x0035": {
+                                        "value": 1,
+                                        "raw_hex": "01",
+                                        "flags_access": "stable_ro",
+                                        "error": None,
+                                    },
+                                    "0x0036": {
+                                        "value": 2,
+                                        "raw_hex": "02",
+                                        "flags_access": "stable_ro",
+                                        "error": None,
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "0x06": {
+                        "label": "remote",
+                        "instances": {
+                            "0x01": {
+                                "registers": {
+                                    "0x0000": {
+                                        "reply_hex": "00",
+                                        "flags_access": "absent",
+                                        "error": None,
+                                    },
+                                    "0x0035": {
+                                        "value": 7,
+                                        "raw_hex": "07",
+                                        "flags_access": "stable_ro",
+                                        "error": None,
+                                    },
+                                    "0x0036": {
+                                        "reply_hex": "00",
+                                        "flags_access": "absent",
+                                        "error": None,
+                                    },
+                                    "0x0037": {
+                                        "reply_hex": "00",
+                                        "flags_access": "absent",
+                                        "error": None,
+                                    },
+                                }
+                            }
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    row_ids = {row.row_id for row in store.rows}
+    assert "0x0c:0x02:0x01:0x0000" not in row_ids
+    assert "0x0c:0x06:0x01:0x0000" not in row_ids
+    assert "0x0c:0x02:0x01:0x0036" in row_ids
+    assert "0x0c:0x06:0x01:0x0036" not in row_ids
+    assert "0x0c:0x06:0x01:0x0037" not in row_ids

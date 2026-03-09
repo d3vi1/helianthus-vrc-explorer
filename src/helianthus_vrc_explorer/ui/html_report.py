@@ -236,6 +236,49 @@ _TEMPLATE = """<!doctype html>
         word-break: break-word;
       }
 
+      .cell-status {
+        margin-top: 5px;
+      }
+
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-family: var(--mono);
+        border: 1px solid transparent;
+      }
+
+      .status-absent {
+        color: #ffe1a3;
+        background: rgba(255, 207, 110, 0.14);
+        border-color: rgba(255, 207, 110, 0.28);
+      }
+
+      .status-transport {
+        color: #ffb3b3;
+        background: rgba(255, 122, 122, 0.16);
+        border-color: rgba(255, 122, 122, 0.32);
+      }
+
+      .status-decode {
+        color: #ffd8b1;
+        background: rgba(255, 166, 77, 0.16);
+        border-color: rgba(255, 166, 77, 0.32);
+      }
+
+      .status-error {
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .cell-value-muted {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
       .cell-missing {
         color: rgba(255, 255, 255, 0.5);
         font-family: var(--mono);
@@ -258,6 +301,13 @@ _TEMPLATE = """<!doctype html>
         flex-wrap: wrap;
         align-items: center;
         margin-bottom: 8px;
+      }
+
+      .subtabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 4px;
       }
 
       .filter-chip {
@@ -603,7 +653,11 @@ __ARTIFACT_JSON__
 
       const state = {
         activeTab: null,
+        activeNamespaceByGroup: {},
         overrides: (meta && typeof meta === "object" && meta.type_overrides) || {},
+        b524Filters: {
+          hideAbsent: false,
+        },
         b509Filters: {
           search: "",
           hideTimeout: false,
@@ -647,6 +701,92 @@ __ARTIFACT_JSON__
         if (!namespaceKey) return raw;
         if (raw.startsWith("0x")) return raw;
         return `${raw.charAt(0).toUpperCase()}${raw.slice(1)} (${namespaceKey})`;
+      }
+
+      function entryStatusKind(entry) {
+        if (!entry || typeof entry !== "object") return "error";
+        const errTxt = typeof entry.error === "string" ? entry.error.trim() : "";
+        if (errTxt) {
+          const lower = errTxt.toLowerCase();
+          if (lower.startsWith("parse_error:") || lower.startsWith("decode_error:")) return "decode_error";
+          if (lower === "timeout" || lower.startsWith("transport_error:") || lower.startsWith("mcp_error:")) {
+            return "transport_failure";
+          }
+          return "error";
+        }
+        const access = typeof entry.flags_access === "string" ? entry.flags_access.trim().toLowerCase() : "";
+        if (access === "absent") return "absent";
+        const replyHex = typeof entry.reply_hex === "string" ? entry.reply_hex.trim().toLowerCase() : "";
+        if (replyHex === "00") return "absent";
+        return "ok";
+      }
+
+      function entryStatusLabel(entry) {
+        const kind = entryStatusKind(entry);
+        if (kind === "absent") return "Absent / no data";
+        if (kind === "transport_failure") return "Transport failure";
+        if (kind === "decode_error") return "Decode error";
+        if (kind === "error") return "Error";
+        return "OK";
+      }
+
+      function statusChipClass(kind) {
+        if (kind === "absent") return "status-chip status-absent";
+        if (kind === "transport_failure") return "status-chip status-transport";
+        if (kind === "decode_error") return "status-chip status-decode";
+        return "status-chip status-error";
+      }
+
+      function rowHasExplicitName(instancesObj, rrKey) {
+        if (!instancesObj || typeof instancesObj !== "object") return false;
+        for (const instanceObj of Object.values(instancesObj)) {
+          if (!instanceObj || typeof instanceObj !== "object") continue;
+          const registers = instanceObj.registers;
+          if (!registers || typeof registers !== "object") continue;
+          const entry = registers[rrKey];
+          if (!entry || typeof entry !== "object") continue;
+          for (const field of ["myvaillant_name", "ebusd_name"]) {
+            const value = entry[field];
+            if (typeof value === "string" && value.trim()) return true;
+          }
+        }
+        return false;
+      }
+
+      function rowIsAbsent(instancesObj, rrKey) {
+        if (!instancesObj || typeof instancesObj !== "object") return false;
+        let sawEntry = false;
+        for (const instanceObj of Object.values(instancesObj)) {
+          if (!instanceObj || typeof instanceObj !== "object") continue;
+          const registers = instanceObj.registers;
+          if (!registers || typeof registers !== "object") continue;
+          const entry = registers[rrKey];
+          if (!entry || typeof entry !== "object") continue;
+          sawEntry = true;
+          if (entryStatusKind(entry) !== "absent") return false;
+        }
+        return sawEntry;
+      }
+
+      function visibleRegisterKeys(instancesObj) {
+        const rrSet = new Set();
+        if (!instancesObj || typeof instancesObj !== "object") return [];
+        for (const instanceObj of Object.values(instancesObj)) {
+          if (!instanceObj || typeof instanceObj !== "object") continue;
+          const registers = instanceObj.registers;
+          if (!registers || typeof registers !== "object") continue;
+          for (const rrKey of Object.keys(registers)) rrSet.add(rrKey);
+        }
+        const rrKeys = sortedHexKeys(Array.from(rrSet)).filter((rrKey) => rrKey !== "0x0000");
+        let lastKeep = -1;
+        for (let idx = 0; idx < rrKeys.length; idx += 1) {
+          const rrKey = rrKeys[idx];
+          if (rowHasExplicitName(instancesObj, rrKey) || !rowIsAbsent(instancesObj, rrKey)) {
+            lastKeep = idx;
+          }
+        }
+        if (lastKeep < 0) return [];
+        return rrKeys.slice(0, lastKeep + 1);
       }
 
       function accessChipClass(accessValue) {
@@ -960,13 +1100,10 @@ __ARTIFACT_JSON__
 
         function buildGroupTable(title, instancesObj, namespaceKey = null) {
           const instanceKeys = sortedHexKeys(Object.keys(instancesObj || {}));
-          let rrSet = new Set();
-          for (const iiKey of instanceKeys) {
-            const inst = getInstanceObject(instancesObj[iiKey]);
-            const regs = inst.registers || {};
-            for (const rrKey of Object.keys(regs)) rrSet.add(rrKey);
+          let rrKeys = visibleRegisterKeys(instancesObj);
+          if (state.b524Filters.hideAbsent) {
+            rrKeys = rrKeys.filter((rrKey) => !rowIsAbsent(instancesObj, rrKey));
           }
-          const rrKeys = sortedHexKeys(Array.from(rrSet));
 
           const fragment = document.createElement("div");
           const heading = document.createElement("div");
@@ -977,7 +1114,7 @@ __ARTIFACT_JSON__
           if (!rrKeys.length) {
             const empty = document.createElement("div");
             empty.className = "subtitle";
-            empty.textContent = "No registers scanned.";
+            empty.textContent = "No visible registers.";
             fragment.appendChild(empty);
             return fragment;
           }
@@ -1110,13 +1247,16 @@ __ARTIFACT_JSON__
               const displayValue = (typeof entry.value_display === "string" && entry.value_display.length)
                 ? entry.value_display
                 : entry.value;
+              const statusKind = entryStatusKind(entry);
+              const statusLabel = entryStatusLabel(entry);
               const decoded = selectedType && valueBytes
                 ? parseTypedValue(selectedType, valueBytes)
                 : { value: displayValue, error: null };
 
-              const valueTxt = formatValue(decoded.value);
+              const valueTxt = statusKind === "absent" ? "absent" : formatValue(decoded.value);
               const valueEl = document.createElement("div");
               valueEl.className = "cell-value";
+              if (statusKind === "absent") valueEl.classList.add("cell-value-muted");
               valueEl.textContent = valueTxt;
               td.appendChild(valueEl);
 
@@ -1128,7 +1268,16 @@ __ARTIFACT_JSON__
               }
 
               const errTxt = typeof entry.error === "string" ? entry.error : decoded.error;
-              if (errTxt) {
+              if (statusKind !== "ok") {
+                const statusEl = document.createElement("div");
+                statusEl.className = "cell-status";
+                const badge = document.createElement("span");
+                badge.className = statusChipClass(statusKind);
+                badge.textContent = statusLabel;
+                statusEl.appendChild(badge);
+                td.appendChild(statusEl);
+              }
+              if (errTxt && statusKind !== "absent") {
                 td.classList.add("cell-bad");
                 const errEl = document.createElement("div");
                 errEl.className = "cell-error";
@@ -1169,16 +1318,59 @@ __ARTIFACT_JSON__
         title.textContent = `${groupKey} · ${groupName}`;
         container.appendChild(title);
 
+        const filters = document.createElement("div");
+        filters.className = "filters";
+        const hideAbsentLabel = document.createElement("label");
+        hideAbsentLabel.className = "filter-chip";
+        const hideAbsentCb = document.createElement("input");
+        hideAbsentCb.type = "checkbox";
+        hideAbsentCb.checked = !!state.b524Filters.hideAbsent;
+        hideAbsentCb.addEventListener("change", () => {
+          state.b524Filters.hideAbsent = !!hideAbsentCb.checked;
+          renderActiveGroup(groupKey);
+        });
+        hideAbsentLabel.appendChild(hideAbsentCb);
+        hideAbsentLabel.appendChild(document.createTextNode("Hide absent"));
+        filters.appendChild(hideAbsentLabel);
+        container.appendChild(filters);
+
         if (groupObj.dual_namespace && groupObj.namespaces && typeof groupObj.namespaces === "object") {
-          for (const namespaceKey of sortedHexKeys(Object.keys(groupObj.namespaces))) {
-            const namespaceObj = groupObj.namespaces[namespaceKey];
-            if (!namespaceObj || typeof namespaceObj !== "object") continue;
-            const tableTitle = `${namespaceLabel(namespaceKey, namespaceObj.label)} Registers`;
-            container.appendChild(buildGroupTable(tableTitle, namespaceObj.instances || {}, namespaceKey));
+          const namespaceKeys = sortedHexKeys(Object.keys(groupObj.namespaces));
+          if (!namespaceKeys.length) {
+            const empty = document.createElement("div");
+            empty.className = "subtitle";
+            empty.textContent = "No namespaces scanned.";
+            container.appendChild(empty);
+          } else {
+            const subtabs = document.createElement("div");
+            subtabs.className = "subtabs";
+            let activeNamespace = state.activeNamespaceByGroup[groupKey];
+            if (!namespaceKeys.includes(activeNamespace)) activeNamespace = namespaceKeys[0];
+            state.activeNamespaceByGroup[groupKey] = activeNamespace;
+
+            for (const namespaceKey of namespaceKeys) {
+              const namespaceObj = groupObj.namespaces[namespaceKey];
+              if (!namespaceObj || typeof namespaceObj !== "object") continue;
+              const btn = document.createElement("div");
+              btn.className = "tab";
+              if (namespaceKey === activeNamespace) btn.classList.add("active");
+              btn.textContent = namespaceLabel(namespaceKey, namespaceObj.label);
+              btn.addEventListener("click", () => {
+                state.activeNamespaceByGroup[groupKey] = namespaceKey;
+                renderActiveGroup(groupKey);
+              });
+              subtabs.appendChild(btn);
+            }
+            container.appendChild(subtabs);
+
+            const namespaceObj = groupObj.namespaces[activeNamespace];
+            if (namespaceObj && typeof namespaceObj === "object") {
+              const tableTitle = `${namespaceLabel(activeNamespace, namespaceObj.label)} Registers`;
+              container.appendChild(buildGroupTable(tableTitle, namespaceObj.instances || {}, activeNamespace));
+            }
           }
         } else {
-          const tableTitle = groupObj.dual_namespace ? "Registers" : "Registers";
-          container.appendChild(buildGroupTable(tableTitle, groupObj.instances || {}, null));
+          container.appendChild(buildGroupTable("Registers", groupObj.instances || {}, null));
         }
 
         sheetArea.innerHTML = "";
