@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 from .base import TransportError, TransportInterface, TransportTimeout
 
@@ -318,7 +319,7 @@ class EnhancedTcpConfig:
 @dataclass(slots=True)
 class _EnhancedTcpSession:
     sock: socket.socket
-    trace_handle: object | None = None  # IO[str] when trace is active
+    trace_handle: IO[str] | None = None
 
 
 class _EnhancedCollision(TransportError):
