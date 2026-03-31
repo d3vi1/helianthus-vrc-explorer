@@ -589,8 +589,8 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 │ --dst                                                TEXT     Destination eBUS address (e.g. 0x15) or auto           │
 │                                                               (default).                                             │
 │                                                               [default: auto]                                        │
-│ --source-address                                     TEXT     Source master address for ENH transport. Ignored for   │
-│                                                               tcp.                                                   │
+│ --source-address                                     TEXT     Source initiator address for ENH transport. Ignored    │
+│                                                               for tcp.                                               │
 │                                                               [default: 0x31]                                        │
 │ --host                                               TEXT     ebusd host (TCP). [default: 127.0.0.1]                 │
 │ --port                                               INTEGER  ebusd port (TCP). [default: 8888]                      │

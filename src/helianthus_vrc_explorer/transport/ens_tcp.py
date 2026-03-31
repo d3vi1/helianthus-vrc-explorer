@@ -319,7 +319,7 @@ class _EnsNack(TransportError):
 
 
 class _EnsCrcMismatch(TransportError):
-    """Retryable CRC mismatch while reading a slave response."""
+    """Retryable CRC mismatch while reading a target response."""
 
 
 def _utc_ts() -> str:

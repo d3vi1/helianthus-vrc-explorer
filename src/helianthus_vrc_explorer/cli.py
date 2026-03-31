@@ -588,7 +588,7 @@ def scan(
     source_address: str = typer.Option(  # noqa: B008
         "0x31",
         "--source-address",
-        help="Source master address for ENH transport. Ignored for tcp.",
+        help="Source initiator address for ENH transport. Ignored for tcp.",
     ),
     host: str = typer.Option(  # noqa: B008
         _DEFAULT_EBUSD_HOST,
