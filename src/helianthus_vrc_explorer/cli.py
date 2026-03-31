@@ -30,12 +30,7 @@ from .scanner.register import is_instance_present
 from .scanner.scan import PlannerUiMode, default_output_filename, scan_vrc
 from .schema.ebusd_csv import EbusdCsvSchema
 from .schema.myvaillant_map import MyvaillantRegisterMap
-from .transport.base import (
-    TransportCommandNotEnabled,
-    TransportError,
-    TransportInterface,
-    TransportTimeout,
-)
+from .transport.base import TransportCommandNotEnabled, TransportError, TransportTimeout
 from .transport.ebusd_tcp import EbusdTcpConfig, EbusdTcpTransport
 from .transport.ens_tcp import EnsTcpConfig, EnsTcpTransport
 from .ui.browse_textual import run_browse_from_artifact
@@ -261,7 +256,7 @@ def _format_fw(sw: str | None, hw: str | None) -> str:
 
 
 def _probe_scan_identity(
-    transport: TransportInterface,
+    transport: EbusdTcpTransport | EnsTcpTransport,
     *,
     dst: int,
     model_catalog: dict[str, _ModelCatalogEntry] | None = None,
@@ -452,7 +447,7 @@ def _prompt_transport_retry_settings(
 
 
 def _probe_group_descriptor(
-    transport: TransportInterface,
+    transport: EbusdTcpTransport | EnsTcpTransport,
     *,
     dst: int,
     group: int,
@@ -476,7 +471,7 @@ def _probe_group_descriptor(
 
 
 def _probe_scan_identification(
-    transport: TransportInterface,
+    transport: EbusdTcpTransport | EnsTcpTransport,
     *,
     dst: int,
     retries: int = _SCAN_IDENT_RETRIES,
@@ -799,7 +794,9 @@ def scan(
                     opened_session = True
                     if requested_dst == "auto":
                         _emit_scan_status(console, "Resolving destination address from ebusd")
-                        dst_u8 = _resolve_scan_destination(transport, dst=dst)
+                        dst_u8 = _resolve_scan_destination(
+                            cast(EbusdTcpTransport, transport), dst=dst
+                        )
                         _emit_scan_status(console, f"Resolved destination to 0x{dst_u8:02X}")
                     else:
                         dst_u8 = cast(int, explicit_dst_u8)
