@@ -678,9 +678,11 @@ def scan(
         )
         raise typer.Exit(2)
     preset_value = _normalize_planner_preset(preset)
-    if preset_value not in {"conservative", "recommended", "full", "exhaustive", "custom"}:
+    valid_presets = {"conservative", "recommended", "full", "exhaustive", "custom"}
+    if preset_value not in valid_presets:
         typer.echo(
-            "Invalid --preset value. Expected one of: conservative, recommended, full, exhaustive, custom.",
+            "Invalid --preset value. Expected one of: "
+            "conservative, recommended, aggressive, exhaustive, custom.",
             err=True,
         )
         raise typer.Exit(2)
