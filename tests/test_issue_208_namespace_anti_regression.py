@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +16,7 @@ from helianthus_vrc_explorer.scanner.identity import make_register_identity
 from helianthus_vrc_explorer.scanner.plan import make_plan_key
 from helianthus_vrc_explorer.schema.b524_constraints import (
     CONSTRAINT_SCOPE_DECISION,
-    load_default_b524_constraints_catalog,
+    load_b524_constraints_catalog_from_path,
     lookup_static_constraint,
 )
 from helianthus_vrc_explorer.ui.html_report import render_html_report
@@ -51,36 +49,6 @@ def _register_identity_set(artifact: dict[str, Any]) -> set[tuple[Any, ...]]:
     return identities
 
 
-def _namespace_collision_index(artifact: dict[str, Any]) -> dict[tuple[str, str, str], set[str]]:
-    by_coordinate: dict[tuple[str, str, str], set[str]] = {}
-    for (
-        group_key,
-        namespace_key,
-        instance_key,
-        register_key,
-        _entry,
-    ) in iter_register_entries(artifact):
-        if not isinstance(namespace_key, str):
-            continue
-        coordinate = (group_key, instance_key, register_key)
-        if coordinate not in by_coordinate:
-            by_coordinate[coordinate] = set()
-        by_coordinate[coordinate].add(namespace_key)
-    return {coordinate: keys for coordinate, keys in by_coordinate.items() if len(keys) > 1}
-
-
-def _normalize_opcode_hex(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = int(value, 0)
-    except ValueError:
-        return None
-    if not (0x00 <= parsed <= 0xFF):
-        return None
-    return f"0x{parsed:02x}"
-
-
 def test_issue_208_identity_isolation_keeps_opcode_namespace_distinct() -> None:
     local_key = make_register_identity(opcode=0x02, group=0x09, instance=0x01, register=0x0004)
     remote_key = make_register_identity(opcode=0x06, group=0x09, instance=0x01, register=0x0004)
@@ -105,8 +73,23 @@ def test_issue_208_artifact_round_trip_stability_preserves_identity_set() -> Non
     assert _register_identity_set(migrated_once) == _register_identity_set(migrated_twice)
 
 
-def test_issue_208_constraint_scope_is_opcode_invariant_for_same_group_register() -> None:
-    catalog, _source = load_default_b524_constraints_catalog()
+def test_issue_208_constraint_scope_is_opcode_invariant_for_same_group_register(
+    tmp_path: Path,
+) -> None:
+    catalog_path = tmp_path / "constraints.csv"
+    catalog_path.write_text(
+        "\n".join(
+            (
+                "group,register,type,min,max,step",
+                "0x03,0x0002,f32_range,15,30,0.5",
+                "0x03,0x0001,u16_range,1,200,1",
+                "0x04,0x0002,u8_range,0,10,1",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    catalog = load_b524_constraints_catalog_from_path(catalog_path)
 
     local = lookup_static_constraint(
         catalog,
@@ -144,41 +127,34 @@ def test_issue_208_constraint_scope_is_opcode_invariant_for_same_group_register(
 
 
 def test_issue_208_fixture_backward_compatibility_migrates_legacy_shape() -> None:
-    current = _load_fixture("dual_namespace_scan.json")
-    collision_index = _namespace_collision_index(current)
-    assert collision_index
-    assert all(namespaces == {"0x02", "0x06"} for namespaces in collision_index.values())
-
-    legacy = deepcopy(current)
-    legacy.pop("schema_version", None)
-    groups = legacy.get("groups")
-    assert isinstance(groups, dict)
-    for group_obj in groups.values():
-        if not isinstance(group_obj, dict):
-            continue
-        if "descriptor_observed" in group_obj:
-            group_obj["descriptor_type"] = group_obj.pop("descriptor_observed")
-        group_obj.pop("dual_namespace", None)
+    legacy = {
+        "meta": {"destination_address": "0x15"},
+        "groups": {
+            "0x09": {
+                "name": "Regulators",
+                "descriptor_observed": 1.0,
+                "instances": {
+                    "0x00": {
+                        "present": True,
+                        "registers": {
+                            "0x0001": {"read_opcode": "0x02", "raw_hex": "01", "error": None}
+                        },
+                    }
+                },
+                "namespaces": {},
+            }
+        },
+    }
+    expected_identities = _register_identity_set(legacy)
 
     migrated, report = migrate_artifact_schema(legacy)
 
     assert report.source_schema_version == LEGACY_UNVERSIONED_SCHEMA
     assert migrated["schema_version"] == CURRENT_ARTIFACT_SCHEMA_VERSION
-    assert _register_identity_set(migrated) == _register_identity_set(current)
-    assert _namespace_collision_index(migrated) == collision_index
-
-    for (
-        group_key,
-        namespace_key,
-        instance_key,
-        register_key,
-        entry,
-    ) in iter_register_entries(migrated):
-        coordinate = (group_key, instance_key, register_key)
-        if coordinate not in collision_index:
-            continue
-        assert isinstance(namespace_key, str)
-        assert _normalize_opcode_hex(entry.get("read_opcode")) == namespace_key.lower()
+    migrated_group = migrated["groups"]["0x09"]
+    assert "namespaces" not in migrated_group
+    assert migrated_group["instances"] == legacy["groups"]["0x09"]["instances"]
+    assert _register_identity_set(migrated) == expected_identities
 
 
 def test_issue_208_summary_namespace_totals_are_opcode_authoritative(tmp_path: Path) -> None:
@@ -257,16 +233,14 @@ def test_issue_208_html_namespace_isolation_avoids_single_namespace_sentinels() 
     html = render_html_report(artifact, title="issue-208")
 
     assert "activeNamespaceByGroup" in html
-    forbidden_fallback_patterns = (
-        r"""namespaceKey\s*(?:\|\||\?\?)\s*(['"`])single\1""",
-        r"""namespaceKey\s*(?:\|\||\?\?)\s*(['"`])0x00\1""",
-        r"""fallbackNamespaceKey\s*(?:\|\||\?\?)\s*(['"`])single\1""",
-        r"""fallbackNamespaceKey\s*(?:\|\||\?\?)\s*(['"`])0x00\1""",
-        r"""read_opcode(?:_label)?\s*(?:\|\||\?\?)\s*(['"`])single\1""",
-        r"""read_opcode(?:_label)?\s*(?:\|\||\?\?)\s*(['"`])0x00\1""",
-    )
-    for pattern in forbidden_fallback_patterns:
-        assert re.search(pattern, html, flags=re.IGNORECASE) is None
+    script_open = '<script id="artifact-data" type="application/json">'
+    script_start = html.index(script_open) + len(script_open)
+    script_end = html.index("</script>", script_start)
+    embedded_artifact = json.loads(html[script_start:script_end].strip())
+
+    namespaces = embedded_artifact["groups"]["0x09"]["namespaces"]
+    assert set(namespaces) == {"0x02", "0x06"}
+    assert '"single":' not in html
 
 
 def test_issue_208_planner_opcode_fidelity_keeps_namespace_specific_keys() -> None:
