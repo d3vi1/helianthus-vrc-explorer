@@ -1288,9 +1288,7 @@ def scan_b524(
             meta = metadata_map[group.group]
             opcodes = resolved_group_opcodes.get(group.group, ())
             if GROUP_CONFIG.get(group.group) is None:
-                instance_total += len(_UNKNOWN_GROUP_EXPANDED_INSTANCES) * len(
-                    opcodes
-                )
+                instance_total += len(_UNKNOWN_GROUP_EXPANDED_INSTANCES) * len(opcodes)
                 continue
             for opcode in opcodes:
                 namespace_ii_max = _ii_max_for_opcode(
