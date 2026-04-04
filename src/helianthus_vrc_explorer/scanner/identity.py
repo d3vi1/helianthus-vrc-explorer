@@ -3,12 +3,17 @@ from __future__ import annotations
 # Canonical register identity key for B524 namespace-aware surfaces.
 # Order is opcode-first to avoid GG-centric collisions.
 type RegisterIdentity = tuple[int, int, int, int]
+type NamespaceIdentity = tuple[int, int]
 
 
 def make_register_identity(
     *, opcode: int, group: int, instance: int, register: int
 ) -> RegisterIdentity:
     return (opcode, group, instance, register)
+
+
+def make_namespace_identity(*, opcode: int, group: int) -> NamespaceIdentity:
+    return (opcode, group)
 
 
 def opcode_label(opcode: int) -> str:

@@ -5,9 +5,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..protocol.b524 import RegisterOpcode
+from .identity import NamespaceIdentity, make_namespace_identity
 
 _HEX_DIGITS = set(string.hexdigits)
-PlanKey = tuple[int, int]
+PlanKey = NamespaceIdentity
 
 
 def parse_int_token(token: str) -> int:
@@ -116,11 +117,11 @@ def _hex_u16(value: int) -> str:
 
 
 def make_plan_key(group: int, opcode: int) -> PlanKey:
-    return (group, opcode)
+    return make_namespace_identity(opcode=opcode, group=group)
 
 
 def format_plan_key(key: PlanKey) -> str:
-    group, opcode = key
+    opcode, group = key
     return f"{_hex_u8(group)}/{_hex_u8(opcode)}"
 
 

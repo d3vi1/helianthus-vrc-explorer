@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
+from ..scanner.identity import RegisterIdentity
+
 _KIND_TO_TT = {
     "u8_range": 0x06,
     "u16_range": 0x09,
@@ -115,3 +117,17 @@ def load_default_b524_constraints_catalog() -> tuple[StaticConstraintCatalog, st
             except Exception:
                 return ({}, None)
         return ({}, None)
+
+
+def lookup_static_constraint(
+    catalog: StaticConstraintCatalog, *, identity: RegisterIdentity
+) -> StaticConstraintEntry | None:
+    """Resolve the current static catalog using canonical register identity.
+
+    The static catalog remains GG/RR-scoped because the underlying opcode-0x01
+    constraint protocol does not encode opcode or instance. The namespace-scope
+    decision is intentionally handled in follow-up issue #198.
+    """
+
+    _opcode, group, _instance, register = identity
+    return catalog.get(group, {}).get(register)

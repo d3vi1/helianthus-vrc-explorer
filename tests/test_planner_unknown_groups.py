@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from helianthus_vrc_explorer.scanner.plan import GroupScanPlan
+from helianthus_vrc_explorer.scanner.plan import GroupScanPlan, make_plan_key
 from helianthus_vrc_explorer.ui.planner import (
     PlannerGroup,
     build_plan_from_preset,
@@ -52,7 +52,7 @@ def test_prompt_scan_plan_disables_unknown_groups_by_default(monkeypatch) -> Non
     ]
 
     plan = prompt_scan_plan(console, groups, request_rate_rps=None, default_plan=None)
-    assert sorted(plan.keys()) == [(0x02, 0x02)]
+    assert sorted(plan.keys()) == [make_plan_key(0x02, 0x02)]
 
 
 def test_prompt_scan_plan_accepts_legacy_aggressive_alias_as_full(monkeypatch) -> None:
@@ -88,7 +88,7 @@ def test_prompt_scan_plan_accepts_legacy_aggressive_alias_as_full(monkeypatch) -
 
     plan = prompt_scan_plan(console, groups, request_rate_rps=None, default_plan=None)
     assert plan == {
-        (0x69, 0x02): GroupScanPlan(
+        make_plan_key(0x69, 0x02): GroupScanPlan(
             group=0x69,
             opcode=0x02,
             rr_max=0x30,
@@ -124,8 +124,9 @@ def test_build_plan_from_preset_recommended_skips_unknown_groups() -> None:
     ]
 
     plan = build_plan_from_preset(groups, preset="recommended")
-    assert sorted(plan.keys()) == [(0x02, 0x02)]
-    assert plan[(0x02, 0x02)].instances == (0x00, 0x01)
+    key = make_plan_key(0x02, 0x02)
+    assert sorted(plan.keys()) == [key]
+    assert plan[key].instances == (0x00, 0x01)
 
 
 def test_build_plan_from_preset_full_keeps_ff_when_present() -> None:
@@ -144,4 +145,4 @@ def test_build_plan_from_preset_full_keeps_ff_when_present() -> None:
     ]
 
     plan = build_plan_from_preset(groups, preset="full")
-    assert plan[(0x69, 0x06)].instances == tuple(range(0x0A + 1)) + (0xFF,)
+    assert plan[make_plan_key(0x69, 0x06)].instances == tuple(range(0x0A + 1)) + (0xFF,)
