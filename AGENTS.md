@@ -492,9 +492,16 @@ def parse_b524_id(id_hex: str) -> dict:
 
 - **GG=0x02 (Heating Circuits):** Probe RR=0x0002 (CircuitType u16). Absent if response is 0x0000, 0xFFFF, or NaN.
 - **GG=0x03 (Zones):** Probe RR=0x001C (zone index u8). Absent if response is 0xFF.
-- **GG=0x08 (Buffer / Solar Cylinder 2):** Include it in documented group enumerations; local `0x02` stays singleton while remote `0x06` can be instanced.
-- **GG=0x09 / 0x0A (Radio Sensors VRC7xx / Radio Sensors VR92):** Present if RR=0x0007 or RR=0x000F returns non-NaN.
-- **GG=0x0C (Remote Accessories / FM5 Slots):** Present if any of RR in {0x0002, 0x0007, 0x000F, 0x0016} responds.
+- **GG=0x05 (Hot Water Cylinder):** Probe RR=0x0004 (EXP). Present if the decoded value is not null.
+- **GG=0x08 / opcode 0x06 (Buffer / Solar Cylinder 2 remote namespace):** Probe RR=0x0001 (`BOOL`). Present if `device_connected == true`.
+- **GG=0x09 / 0x0A / opcode 0x02 (local namespace):** Probe RR=0x0001 in the local namespace. Present if the read succeeds and is not `absent`.
+- **GG=0x09 / 0x0A / opcode 0x06 (remote namespace):** Probe RR=0x0001 (`BOOL`). Present if `device_connected == true`.
+- **GG=0x0C (Remote Accessories / FM5 Slots):** Probe RR=0x0001 (`BOOL`). Present if `device_connected == true`.
+
+**Shared vs independent namespace discovery:**
+
+- **GG=0x09 / 0x0A** use **independent namespace discovery**. Local (`0x02`) and remote (`0x06`) instance presence may diverge, so the scanner must not copy remote results into the local namespace.
+- Raw presence-probe evidence is retained in the artifact under `availability_probes`, and the contract used for each namespace is retained under `availability_contract`.
 
 **Instance discovery probes all slots from 0x00 to ii_max** (do not stop at gaps, they are legitimate holes). The default register scan then uses the discovered present set; only the `full` preset expands back to every slot.
 
@@ -1245,9 +1252,10 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 **Presence detection logic:**
 
-Presence is determined by group-specific heuristics in `src/helianthus_vrc_explorer/scanner/register.py`
-(function `is_instance_present`). It uses `tt_kind` + decoded values to avoid false positives
-(e.g. NaN or TT=00 "no data").
+Presence is determined by explicit namespace availability contracts in
+`src/helianthus_vrc_explorer/scanner/register.py` (function `probe_instance_availability`, with
+`is_instance_present` as the boolean wrapper). The scanner keeps the raw probe evidence in the
+artifact so later UI/report layers can inspect why a slot was considered present or absent.
 
 **Instance discovery probes ALL slots 0x00..ii_max** (do not stop at gaps, they are legitimate holes). The default register scan remains presence-aware; only the `full` preset expands back to every slot.
 
