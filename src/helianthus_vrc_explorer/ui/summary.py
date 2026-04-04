@@ -153,10 +153,10 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                 for entry in registers.values():
                     if not isinstance(entry, dict):
                         continue
-                    namespace_label = _namespace_label_from_entry(entry)
-                    if namespace_label is not None:
-                        namespace_registers[namespace_label] = (
-                            namespace_registers.get(namespace_label, 0) + 1
+                    namespace_label_opt = _namespace_label_from_entry(entry)
+                    if namespace_label_opt is not None:
+                        namespace_registers[namespace_label_opt] = (
+                            namespace_registers.get(namespace_label_opt, 0) + 1
                         )
                     if entry.get("error") is not None:
                         registers_errors += 1
