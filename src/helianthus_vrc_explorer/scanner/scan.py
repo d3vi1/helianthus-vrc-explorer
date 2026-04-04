@@ -865,8 +865,8 @@ def _apply_contextual_enum_annotations(artifact: dict[str, Any]) -> None:
     gg02 = groups.get("0x02")
     if not isinstance(gg02, dict):
         return
-    gg02_instance_maps = _iter_group_instance_maps(gg02)
-    if not gg02_instance_maps:
+    gg02_instances = _group_instances_for_namespace(gg02, namespace_key="0x02")
+    if not isinstance(gg02_instances, dict) or not gg02_instances:
         return
 
     gg00 = groups.get("0x00")
@@ -885,52 +885,51 @@ def _apply_contextual_enum_annotations(artifact: dict[str, Any]) -> None:
     gg05_present = "0x05" in groups
     pool_sensor_present = False
 
-    for gg02_instances in gg02_instance_maps:
-        for instance_obj in gg02_instances.values():
-            if not isinstance(instance_obj, dict):
-                continue
-            registers = instance_obj.get("registers")
-            if not isinstance(registers, dict):
-                continue
+    for instance_obj in gg02_instances.values():
+        if not isinstance(instance_obj, dict):
+            continue
+        registers = instance_obj.get("registers")
+        if not isinstance(registers, dict):
+            continue
 
-            cooling_enabled = (
-                _entry_int_value(registers.get("0x0006"))
-                if isinstance(registers.get("0x0006"), dict)
-                else None
-            )
+        cooling_enabled = (
+            _entry_int_value(registers.get("0x0006"))
+            if isinstance(registers.get("0x0006"), dict)
+            else None
+        )
 
-            rr01 = registers.get("0x0001")
-            if isinstance(rr01, dict):
-                raw_value = _entry_int_value(rr01)
-                if raw_value is not None:
-                    raw_name, resolved_name = _resolve_heating_circuit_type_name(raw_value)
-                    rr01["enum_raw_name"] = raw_name
-                    rr01["enum_resolved_name"] = resolved_name
-                    rr01["value_display"] = f"{raw_name} ({resolved_name})"
+        rr01 = registers.get("0x0001")
+        if isinstance(rr01, dict):
+            raw_value = _entry_int_value(rr01)
+            if raw_value is not None:
+                raw_name, resolved_name = _resolve_heating_circuit_type_name(raw_value)
+                rr01["enum_raw_name"] = raw_name
+                rr01["enum_resolved_name"] = resolved_name
+                rr01["value_display"] = f"{raw_name} ({resolved_name})"
 
-            rr02 = registers.get("0x0002")
-            if isinstance(rr02, dict):
-                raw_value = _entry_int_value(rr02)
-                if raw_value is not None:
-                    raw_name, resolved_name = _resolve_mixer_circuit_type_name(
-                        raw_value,
-                        cooling_enabled=cooling_enabled,
-                        gg05_present=gg05_present,
-                        system_schema=system_schema,
-                        pool_sensor_present=pool_sensor_present,
-                    )
-                    rr02["enum_raw_name"] = raw_name
-                    rr02["enum_resolved_name"] = resolved_name
-                    rr02["value_display"] = f"{raw_name} ({resolved_name})"
+        rr02 = registers.get("0x0002")
+        if isinstance(rr02, dict):
+            raw_value = _entry_int_value(rr02)
+            if raw_value is not None:
+                raw_name, resolved_name = _resolve_mixer_circuit_type_name(
+                    raw_value,
+                    cooling_enabled=cooling_enabled,
+                    gg05_present=gg05_present,
+                    system_schema=system_schema,
+                    pool_sensor_present=pool_sensor_present,
+                )
+                rr02["enum_raw_name"] = raw_name
+                rr02["enum_resolved_name"] = resolved_name
+                rr02["value_display"] = f"{raw_name} ({resolved_name})"
 
-            rr03 = registers.get("0x0003")
-            if isinstance(rr03, dict):
-                raw_value = _entry_int_value(rr03)
-                if raw_value is not None:
-                    raw_name, resolved_name = _resolve_room_influence_type_name(raw_value)
-                    rr03["enum_raw_name"] = raw_name
-                    rr03["enum_resolved_name"] = resolved_name
-                    rr03["value_display"] = f"{raw_name} ({resolved_name})"
+        rr03 = registers.get("0x0003")
+        if isinstance(rr03, dict):
+            raw_value = _entry_int_value(rr03)
+            if raw_value is not None:
+                raw_name, resolved_name = _resolve_room_influence_type_name(raw_value)
+                rr03["enum_raw_name"] = raw_name
+                rr03["enum_resolved_name"] = resolved_name
+                rr03["value_display"] = f"{raw_name} ({resolved_name})"
 
 
 def _resolve_planner_mode(

@@ -36,6 +36,7 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x00,0x00,0x003E,environmental_yield_total,YieldTotal,state,U32,
 0x00,0x00,0x0045,esco_block_function,,config,,
 0x00,0x00,0x0046,hwc_max_flow_temp_desired,HwcMaxFlowTempDesired,config,,
+0x00,0x00,0x0048,unknown_0048,,state,UIN,0x02
 0x00,0x00,0x004B,system_flow_temperature,FlowTemp,,,
 0x00,0x00,0x004D,multi_relay_setting,MultiRelaySetting,config,,
 0x00,0x00,0x004E,fuel_consumption_heating_this_month,PrFuelSumHcThisMonth,state,U32,
@@ -79,6 +80,8 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x00,0x00,0x00CA,fuel_heating_last_month_mirror,,state,U32,
 0x00,0x00,0x00CB,gas_total_combined,,state,U32,
 0x00,0x00,0x00CD,gas_total_combined_dup,,state,U32,
+0x00,0x00,0x00DA,unknown_00da_date,,config,HDA:3,0x02
+0x00,0x00,0x00DB,unknown_00db_date,,config,HDA:3,0x02
 0x00,0x00,0x00DD,heating_curve_day_1,,config,,
 0x00,0x00,0x00DE,heating_curve_day_2,,config,,
 0x00,0x00,0x00DF,heating_curve_day_3,,config,,
@@ -97,6 +100,8 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x01,0x00,0x000F,hwc_status,,state,,
 0x01,0x00,0x0010,hwc_holiday_start_time,,config,HTI,
 0x01,0x00,0x0011,hwc_holiday_end_time,,config,HTI,
+0x01,0x00,0x0012,device_status,,state,UCH,0x06
+0x01,0x00,0x0015,unknown_0015,,state,UIN,0x06
 0x02,*,0x0001,heating_circuit_type,Hc{hc}CircuitType,,,
 0x02,*,0x0002,mixer_circuit_type_external,Hc{hc}CircuitType,,,
 0x02,*,0x0003,room_influence_type,Hc{hc}RoomInfluenceType,config,,
@@ -229,3 +234,4 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x0C,*,0x0003,device_error_code,,state,,0x06
 0x0C,*,0x0004,device_firmware_version,,state,FW,0x06
 0x0C,*,0x0012,device_status,,state,,0x06
+*,*,0x0001,device_connected,,state,BOOL,0x06
