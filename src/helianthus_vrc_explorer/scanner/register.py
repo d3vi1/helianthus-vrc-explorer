@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-import math
-from typing import Final, NotRequired, TypedDict, cast
+from dataclasses import dataclass
+from typing import Final, Literal, NotRequired, TypedDict, cast
 
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
@@ -56,6 +56,23 @@ class RegisterEntry(TypedDict):
     value_display: NotRequired[str]
 
 
+@dataclass(frozen=True, slots=True)
+class NamespaceAvailabilityContract:
+    source: Literal["heuristic_probe", "always_present"]
+    namespace_relationship: Literal["single_namespace", "independent"]
+    probe_register: int | None
+    probe_type_hint: str | None
+    positive_when: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceAvailabilityProbe:
+    present: bool
+    contract: NamespaceAvailabilityContract
+    evidence: RegisterEntry | None
+
+
 def opcodes_for_group(group: int) -> list[RegisterOpcode]:
     """Return active B524 register opcode families for a group."""
 
@@ -77,6 +94,101 @@ def namespace_opcodes_for_group(group: int) -> list[RegisterOpcode]:
         return [0x02, 0x06]
     raw_opcodes = config.get("namespace_opcodes", config["opcodes"])
     return [cast(RegisterOpcode, opcode) for opcode in raw_opcodes]
+
+
+def _namespace_relationship(group: int) -> Literal["single_namespace", "independent"]:
+    return "independent" if len(opcodes_for_group(group)) > 1 else "single_namespace"
+
+
+def namespace_availability_contract(
+    *,
+    group: int,
+    opcode: RegisterOpcode,
+) -> NamespaceAvailabilityContract:
+    """Return the explicit availability contract for a namespace.
+
+    The contract documents whether presence is derived from a namespace-specific
+    probe or from a conscious always-present fallback.
+    """
+
+    relationship = _namespace_relationship(group)
+
+    if group == 0x02 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0002,
+            probe_type_hint="UIN",
+            positive_when="value not in {0x0000, 0xFFFF}",
+            description="Heating circuit CircuitType must decode to a non-empty u16.",
+        )
+
+    if group == 0x03 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x001C,
+            probe_type_hint="UCH",
+            positive_when="value != 0xFF",
+            description="Zone index 0xFF marks an absent zone slot.",
+        )
+
+    if group == 0x05 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0004,
+            probe_type_hint="EXP",
+            positive_when="decoded EXP value is not null",
+            description="Cylinder availability requires a decodable float payload.",
+        )
+
+    if group in {0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0001,
+            probe_type_hint="BOOL",
+            positive_when="decoded BOOL value is true",
+            description="Remote namespace presence is derived from RR=0x0001 device-connected.",
+        )
+
+    if group in {0x09, 0x0A} and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0001,
+            probe_type_hint="UCH",
+            positive_when="register read succeeds and is not absent",
+            description="Local namespace presence is derived from a readable local slot register.",
+        )
+
+    if group in {0x06, 0x07, 0x0B, 0x0D, 0x0E, 0x0F, 0x10, 0x11}:
+        return NamespaceAvailabilityContract(
+            source="always_present",
+            namespace_relationship=relationship,
+            probe_register=None,
+            probe_type_hint=None,
+            positive_when="all configured slots are treated as present",
+            description=(
+                "Exploratory exhaustive group without a verified "
+                "namespace-specific heuristic."
+            ),
+        )
+
+    logger.debug(
+        "No explicit availability contract for GG=0x%02X OP=0x%02X; using always-present fallback",
+        group,
+        opcode,
+    )
+    return NamespaceAvailabilityContract(
+        source="always_present",
+        namespace_relationship=relationship,
+        probe_register=None,
+        probe_type_hint=None,
+        positive_when="all configured slots are treated as present",
+        description="Fallback contract for namespaces without a verified probe heuristic.",
+    )
 
 
 def _interpret_flags(flags: int, *, response_len: int) -> str:
@@ -355,6 +467,72 @@ def read_register(
     }
 
 
+def probe_instance_availability(
+    transport: TransportInterface,
+    dst: int,
+    group: int,
+    instance: int,
+    *,
+    opcode: RegisterOpcode | None = None,
+) -> InstanceAvailabilityProbe:
+    """Probe one instance slot and retain the evidence used for presence."""
+
+    if opcode is None:
+        opcode = opcodes_for_group(group)[0]
+
+    contract = namespace_availability_contract(group=group, opcode=opcode)
+    if contract.source == "always_present":
+        return InstanceAvailabilityProbe(present=True, contract=contract, evidence=None)
+
+    assert contract.probe_register is not None
+    entry = read_register(
+        transport,
+        dst,
+        opcode,
+        group=group,
+        instance=instance,
+        register=contract.probe_register,
+        type_hint=contract.probe_type_hint,
+    )
+
+    present = False
+
+    if group == 0x02 and opcode == 0x02:
+        if entry["error"] is None and entry.get("flags_access") != "absent":
+            value = entry["value"]
+            present = isinstance(value, int) and not isinstance(value, bool) and value not in {
+                0x0000,
+                0xFFFF,
+            }
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group == 0x03 and opcode == 0x02:
+        if entry["error"] is None and entry.get("flags_access") != "absent":
+            value = entry["value"]
+            present = isinstance(value, int) and not isinstance(value, bool) and value != 0xFF
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group == 0x05 and opcode == 0x02:
+        present = entry["error"] is None and entry.get("flags_access") != "absent" and entry[
+            "value"
+        ] is not None
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group in {0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+        present = (
+            entry["error"] is None
+            and entry.get("flags_access") != "absent"
+            and entry["value"] is True
+        )
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group in {0x09, 0x0A} and opcode == 0x02:
+        present = entry["error"] is None and entry.get("flags_access") != "absent"
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
+
+
 def is_instance_present(
     transport: TransportInterface,
     dst: int,
@@ -367,107 +545,10 @@ def is_instance_present(
 
     Source of truth: `AGENTS.md` (keep in sync).
     """
-
-    if opcode is None:
-        opcode = opcodes_for_group(group)[0]
-
-    if group == 0x02:
-        entry = read_register(
-            transport, dst, opcode, group=group, instance=instance, register=0x0002, type_hint="UIN"
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        value = entry["value"]
-        if value is None:
-            return False
-        if not isinstance(value, int) or isinstance(value, bool):
-            return False
-        return value not in {0x0000, 0xFFFF}
-
-    if group == 0x03:
-        entry = read_register(
-            transport, dst, opcode, group=group, instance=instance, register=0x001C, type_hint="UCH"
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        value = entry["value"]
-        if not isinstance(value, int) or isinstance(value, bool):
-            return False
-        return value != 0xFF
-
-    if group == 0x05:
-        entry = read_register(
-            transport,
-            dst,
-            opcode,
-            group=group,
-            instance=instance,
-            register=0x0004,
-            type_hint="EXP",
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        return entry["value"] is not None
-
-    if group == 0x08:
-        entry = read_register(
-            transport,
-            dst,
-            opcode,
-            group=group,
-            instance=instance,
-            register=0x0001,
-        )
-        if entry["error"] is not None:
-            return False
-        return entry.get("flags_access") != "absent"
-
-    if group in {0x09, 0x0A}:
-        entry_1 = read_register(
-            transport, dst, 0x06, group=group, instance=instance, register=0x0007, type_hint="EXP"
-        )
-        value_1 = entry_1["value"]
-        if (
-            entry_1["error"] is None
-            and entry_1.get("flags_access") != "absent"
-            and value_1 is not None
-            and not (isinstance(value_1, float) and math.isnan(value_1))
-        ):
-            return True
-        entry_2 = read_register(
-            transport, dst, 0x06, group=group, instance=instance, register=0x000F, type_hint="EXP"
-        )
-        value_2 = entry_2["value"]
-        return (
-            entry_2["error"] is None
-            and entry_2.get("flags_access") != "absent"
-            and value_2 is not None
-            and not (isinstance(value_2, float) and math.isnan(value_2))
-        )
-
-    if group == 0x0C:
-        entry = read_register(
-            transport,
-            dst,
-            0x06,
-            group=group,
-            instance=instance,
-            register=0x0001,
-            type_hint="BOOL",
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        return entry["value"] is True
-
-    logger.debug(
-        "No presence heuristic for GG=0x%02X; assuming present for II=0x%02X", group, instance
-    )
-    return True
+    return probe_instance_availability(
+        transport,
+        dst=dst,
+        group=group,
+        instance=instance,
+        opcode=opcode,
+    ).present

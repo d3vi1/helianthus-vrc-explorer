@@ -210,17 +210,67 @@ def _write_fixture_group_09(tmp_path: Path) -> Path:
         "groups": {
             "0x09": {
                 "descriptor_type": 1.0,
-                "instances": {
-                    "0x00": {
-                        "registers": {
-                            "0x0000": {"raw_hex": "00"},
+                "namespaces": {
+                    "0x02": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "00"},
+                                    "0x0001": {"raw_hex": "34"},
+                                }
+                            }
                         }
-                    }
+                    },
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "00"},
+                                    "0x0001": {"raw_hex": "01"},
+                                }
+                            }
+                        }
+                    },
                 },
             }
         },
     }
     path = tmp_path / "fixture_group_09.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
+def _write_fixture_group_09_presence_divergence(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x0a"}},
+        "groups": {
+            "0x09": {
+                "descriptor_type": 1.0,
+                "namespaces": {
+                    "0x02": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "00"},
+                                    "0x0001": {"raw_hex": "34"},
+                                }
+                            }
+                        }
+                    },
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {"raw_hex": "00"},
+                                }
+                            }
+                        }
+                    },
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_group_09_presence_divergence.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
     return path
 
@@ -729,9 +779,6 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
 
     transport = RecordingTransport(DummyTransport(_write_fixture_group_09(tmp_path)))
 
-    def fake_is_instance_present(*_args, **kwargs):  # type: ignore[no-untyped-def]
-        return kwargs["instance"] == 0x00
-
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
             make_plan_key(0x09, 0x02): GroupScanPlan(
@@ -748,7 +795,6 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
             ),
         }
 
-    monkeypatch.setattr(scan_mod, "is_instance_present", fake_is_instance_present)
     monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
@@ -769,6 +815,15 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     remote_ns = group["namespaces"]["0x06"]
     assert local_ns["label"] == "local"
     assert remote_ns["label"] == "remote"
+    assert (
+        group["discovery_advisory"]["instance_discovery_decision"]["decision"]
+        == "independent_per_namespace"
+    )
+    assert local_ns["availability_contract"]["namespace_relationship"] == "independent"
+    assert local_ns["availability_contract"]["probe_register"] == "0x0001"
+    assert remote_ns["availability_contract"]["probe_register"] == "0x0001"
+    assert local_ns["availability_probes"]["0x00"]["raw_hex"] == "34"
+    assert remote_ns["availability_probes"]["0x00"]["raw_hex"] == "01"
     assert local_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode"] == "0x02"
     assert local_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode_label"] == "local"
     assert remote_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode"] == "0x06"
@@ -781,9 +836,66 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     scanned_opcodes = {
         opcode
         for (opcode, gg, ii, rr) in transport.register_reads
-        if gg == 0x09 and ii == 0x00 and rr == 0x0000
+        if gg == 0x09 and ii == 0x00 and rr in {0x0000, 0x0001}
     }
     assert scanned_opcodes == {0x02, 0x06}
+
+
+def test_dual_namespace_presence_is_independent_and_retains_raw_probe_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    transport = RecordingTransport(
+        DummyTransport(_write_fixture_group_09_presence_divergence(tmp_path))
+    )
+
+    def fake_prompt_scan_plan(*_args, **_kwargs):
+        return {
+            make_plan_key(0x09, 0x02): GroupScanPlan(
+                group=0x09,
+                opcode=0x02,
+                rr_max=0x0000,
+                instances=(0x00,),
+            ),
+            make_plan_key(0x09, 0x06): GroupScanPlan(
+                group=0x09,
+                opcode=0x06,
+                rr_max=0x0000,
+                instances=(),
+            ),
+        }
+
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    local_ns = artifact["groups"]["0x09"]["namespaces"]["0x02"]
+    remote_ns = artifact["groups"]["0x09"]["namespaces"]["0x06"]
+
+    assert local_ns["availability_contract"]["namespace_relationship"] == "independent"
+    assert remote_ns["availability_contract"]["namespace_relationship"] == "independent"
+    assert local_ns["availability_probes"]["0x00"]["present"] is True
+    assert local_ns["availability_probes"]["0x00"]["raw_hex"] == "34"
+    assert remote_ns["availability_probes"]["0x00"]["present"] is False
+    assert remote_ns["availability_probes"]["0x00"]["reply_hex"] == "0109010000"
+    assert remote_ns["availability_probes"]["0x00"]["type"] == "BOOL"
+    assert set(local_ns["instances"]) == {"0x00"}
+    assert remote_ns["instances"] == {}
+    remote_reads = {
+        rr for (opcode, gg, _ii, rr) in transport.register_reads if opcode == 0x06 and gg == 0x09
+    }
+    assert remote_reads == {0x0001}
 
 
 def test_artifact_single_namespace_unchanged(tmp_path: Path) -> None:
@@ -871,10 +983,15 @@ def test_type_hint_propagation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         "groups": {
             "0x09": {
                 "descriptor_type": 1.0,
-                "instances": {
-                    "0x00": {
-                        "registers": {
-                            "0x0004": {"raw_hex": "021703"},
+                "namespaces": {
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {"raw_hex": "01"},
+                                    "0x0004": {"raw_hex": "021703"},
+                                }
+                            }
                         }
                     }
                 },
@@ -907,7 +1024,6 @@ def test_type_hint_propagation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         }
 
     monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
-    monkeypatch.setattr(scan_mod, "is_instance_present", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
     artifact = scan_b524(
@@ -936,6 +1052,10 @@ def test_scan_b524_replays_dual_namespace_fixture_end_to_end(
 
     import helianthus_vrc_explorer.scanner.scan as scan_mod
     from helianthus_vrc_explorer.scanner.director import DiscoveredGroup
+    from helianthus_vrc_explorer.scanner.register import (
+        InstanceAvailabilityProbe,
+        namespace_availability_contract,
+    )
     from helianthus_vrc_explorer.schema.myvaillant_map import MyvaillantRegisterMap
 
     transport = RecordingTransport(DummyTransport(dual_namespace_scan_path))
@@ -980,11 +1100,20 @@ def test_scan_b524_replays_dual_namespace_fixture_end_to_end(
     )
     monkeypatch.setattr(
         scan_mod,
-        "is_instance_present",
+        "probe_instance_availability",
         lambda *_args, **kwargs: (
-            kwargs["instance"] in {0x00, 0x01}
-            if kwargs["group"] == 0x09
-            else (kwargs["group"] == 0x0C and kwargs["instance"] == 0x00)
+            InstanceAvailabilityProbe(
+                present=(
+                    kwargs["instance"] in {0x00, 0x01}
+                    if kwargs["group"] == 0x09
+                    else (kwargs["group"] == 0x0C and kwargs["instance"] == 0x00)
+                ),
+                contract=namespace_availability_contract(
+                    group=kwargs["group"],
+                    opcode=kwargs["opcode"],
+                ),
+                evidence=None,
+            )
         ),
     )
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)

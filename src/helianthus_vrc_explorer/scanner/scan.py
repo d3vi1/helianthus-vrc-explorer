@@ -48,7 +48,15 @@ from .plan import (
     estimate_register_requests,
     make_plan_key,
 )
-from .register import RegisterEntry, is_instance_present, opcodes_for_group, read_register
+from .register import (
+    InstanceAvailabilityProbe,
+    NamespaceAvailabilityContract,
+    RegisterEntry,
+    namespace_availability_contract,
+    opcodes_for_group,
+    probe_instance_availability,
+    read_register,
+)
 
 
 def _hex_u8(value: int) -> str:
@@ -125,6 +133,31 @@ def _ii_max_for_opcode(*, group: int, default_ii_max: int | None, opcode: int) -
 
 def _plan_key(group: int, opcode: int) -> PlanKey:
     return make_plan_key(group, opcode)
+
+
+def _instance_discovery_decision(*, group: int, dual_namespace: bool) -> dict[str, Any]:
+    if not dual_namespace:
+        return {
+            "strategy": "single_namespace",
+            "decision": "independent_per_namespace",
+            "tradeoff": "not_applicable",
+        }
+
+    if group in {0x09, 0x0A}:
+        return {
+            "strategy": "dual_namespace",
+            "decision": "independent_per_namespace",
+            "tradeoff": (
+                "extra presence probes accepted to avoid cross-namespace false-equivalence "
+                "assumptions"
+            ),
+        }
+
+    return {
+        "strategy": "dual_namespace",
+        "decision": "independent_per_namespace",
+        "tradeoff": "independent probing is authoritative over shared inference",
+    }
 
 
 def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, object]:
@@ -210,6 +243,72 @@ def _instances_object(
         namespace_obj = _ensure_namespace_artifact(group_obj, opcode=opcode)
         return cast(dict[str, Any], namespace_obj.setdefault("instances", {}))
     return cast(dict[str, Any], group_obj.setdefault("instances", {}))
+
+
+def _availability_object(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+) -> dict[str, Any]:
+    group_obj = artifact["groups"][_hex_u8(group)]
+    if bool(group_obj.get("dual_namespace")):
+        return _ensure_namespace_artifact(group_obj, opcode=opcode)
+    return cast(dict[str, Any], group_obj)
+
+
+def _serialize_availability_contract(
+    contract: NamespaceAvailabilityContract,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "source": contract.source,
+        "namespace_relationship": contract.namespace_relationship,
+        "positive_when": contract.positive_when,
+        "description": contract.description,
+    }
+    if contract.probe_register is not None:
+        payload["probe_register"] = _hex_u16(contract.probe_register)
+    if contract.probe_type_hint is not None:
+        payload["probe_type_hint"] = contract.probe_type_hint
+    return payload
+
+
+def _serialize_availability_probe(
+    probe: InstanceAvailabilityProbe,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "present": probe.present,
+        "source": probe.contract.source,
+    }
+    evidence = probe.evidence
+    if evidence is not None:
+        payload.update(dict(evidence))
+    return payload
+
+
+def _record_availability_contract(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+    contract: NamespaceAvailabilityContract,
+) -> None:
+    target = _availability_object(artifact, group=group, opcode=opcode)
+    target["availability_contract"] = _serialize_availability_contract(contract)
+    target.setdefault("availability_probes", {})
+
+
+def _record_availability_probes(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+    probes: Mapping[int, InstanceAvailabilityProbe],
+) -> None:
+    target = _availability_object(artifact, group=group, opcode=opcode)
+    probe_map = cast(dict[str, Any], target.setdefault("availability_probes", {}))
+    for instance, probe in sorted(probes.items()):
+        probe_map[_hex_u8(instance)] = _serialize_availability_probe(probe)
 
 
 def _present_instances_for_opcode(
@@ -299,23 +398,22 @@ def _probe_present_instances(
     opcode: RegisterOpcode,
     ii_max: int,
     observer: ScanObserver | None,
-) -> tuple[int, ...]:
-    present_instances: list[int] = []
+) -> dict[int, InstanceAvailabilityProbe]:
+    probes: dict[int, InstanceAvailabilityProbe] = {}
     for ii in range(0x00, ii_max + 1):
         if observer is not None:
             observer.status(f"Probe presence GG=0x{group:02X} OP={_hex_u8(opcode)} II=0x{ii:02X}")
-        is_present = is_instance_present(
+        probe = probe_instance_availability(
             transport,
             dst=dst,
             group=group,
             instance=ii,
             opcode=opcode,
         )
-        if is_present:
-            present_instances.append(ii)
+        probes[ii] = probe
         if observer is not None:
             observer.phase_advance("instance_discovery", advance=1)
-    return tuple(present_instances)
+    return probes
 
 
 @dataclass(frozen=True, slots=True)
@@ -1101,17 +1199,6 @@ def scan_b524(
                     _group_opcodes(group.group)
                 )
                 continue
-            if group.group in {0x09, 0x0A}:
-                shared_present: tuple[int, ...]
-                shared_ii_max = _ii_max_for_opcode(
-                    group=group.group,
-                    default_ii_max=meta.ii_max,
-                    opcode=_REMOTE_REGISTER_OPCODE,
-                )
-                if _is_instanced_group(shared_ii_max):
-                    assert shared_ii_max is not None
-                    instance_total += shared_ii_max + 1
-                continue
             for opcode in _group_opcodes(group.group):
                 namespace_ii_max = _ii_max_for_opcode(
                     group=group.group,
@@ -1140,6 +1227,10 @@ def scan_b524(
                 "semantic_authority": False,
                 "proven_register_opcodes": [_hex_u8(opcode) for opcode in opcodes],
             }
+            discovery_advisory["instance_discovery_decision"] = _instance_discovery_decision(
+                group=group.group,
+                dual_namespace=dual_namespace,
+            )
             if desc_for_artifact is not None:
                 discovery_advisory["descriptor_observed"] = desc_for_artifact
             if group.expected_descriptor is not None:
@@ -1186,43 +1277,6 @@ def scan_b524(
                     )
                 continue
 
-            if group.group in {0x09, 0x0A}:
-                shared_ii_max = _ii_max_for_opcode(
-                    group=group.group,
-                    default_ii_max=meta.ii_max,
-                    opcode=_REMOTE_REGISTER_OPCODE,
-                )
-                if not _is_instanced_group(shared_ii_max):
-                    shared_present = (0x00,)
-                else:
-                    assert shared_ii_max is not None
-                    emit_trace_label(
-                        transport,
-                        "Identifying instances in group "
-                        f"0x{group.group:02X} via shared remote probe",
-                    )
-                    shared_present = _probe_present_instances(
-                        transport,
-                        dst=dst,
-                        group=group.group,
-                        opcode=_REMOTE_REGISTER_OPCODE,
-                        ii_max=shared_ii_max,
-                        observer=observer,
-                    )
-                for opcode in opcodes:
-                    instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
-                    _mark_present_instances(instances_obj, instances=shared_present)
-                if observer is not None:
-                    total_instances = 1 if shared_ii_max is None else shared_ii_max + 1
-                    observer.log(
-                        f"GG=0x{group.group:02X} {group.name}: "
-                        f"{len(shared_present)}/{total_instances} present "
-                        f"(shared across local/remote), "
-                        f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
-                        level="info",
-                    )
-                continue
-
             known_namespace_probe_counts: list[str] = []
             for opcode in opcodes:
                 namespace_ii_max = _ii_max_for_opcode(
@@ -1230,7 +1284,15 @@ def scan_b524(
                     default_ii_max=meta.ii_max,
                     opcode=opcode,
                 )
+                contract = namespace_availability_contract(group=group.group, opcode=opcode)
                 instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
+                if _is_instanced_group(namespace_ii_max):
+                    _record_availability_contract(
+                        artifact,
+                        group=group.group,
+                        opcode=opcode,
+                        contract=contract,
+                    )
                 if not _is_instanced_group(namespace_ii_max):
                     _mark_present_instances(instances_obj, instances=(0x00,))
                     known_namespace_probe_counts.append(f"{opcode_label(opcode)} 1/1")
@@ -1241,7 +1303,7 @@ def scan_b524(
                     transport,
                     f"Identifying instances in group 0x{group.group:02X} ({opcode_label(opcode)})",
                 )
-                present_instances = _probe_present_instances(
+                probes = _probe_present_instances(
                     transport,
                     dst=dst,
                     group=group.group,
@@ -1249,6 +1311,13 @@ def scan_b524(
                     ii_max=namespace_ii_max,
                     observer=observer,
                 )
+                _record_availability_probes(
+                    artifact,
+                    group=group.group,
+                    opcode=opcode,
+                    probes=probes,
+                )
+                present_instances = tuple(ii for ii, probe in probes.items() if probe.present)
                 _mark_present_instances(instances_obj, instances=present_instances)
                 known_namespace_probe_counts.append(
                     f"{opcode_label(opcode)} {len(present_instances)}/{namespace_ii_max + 1}"
