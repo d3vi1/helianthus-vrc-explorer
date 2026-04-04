@@ -4,7 +4,7 @@ import logging
 import math
 import struct
 from dataclasses import dataclass
-from typing import Final, NotRequired, TypedDict
+from typing import Final, NotRequired, TypedDict, cast
 
 from ..protocol.b524 import build_directory_probe_payload
 from ..transport.base import (
@@ -237,7 +237,7 @@ def _parse_directory_descriptor(resp: bytes, group: int) -> float:
             "Short directory probe response: "
             f"expected >=4 bytes, got {len(resp)} bytes for GG=0x{group:02X}"
         )
-    return struct.unpack("<f", resp[:4])[0]
+    return cast(float, struct.unpack("<f", resp[:4])[0])
 
 
 def _directory_probe_retry_budget(group: int) -> int:

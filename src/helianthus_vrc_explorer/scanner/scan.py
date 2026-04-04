@@ -173,7 +173,7 @@ def _ensure_group_artifact(
     group_obj.setdefault("name", name)
     group_obj.setdefault("descriptor_observed", descriptor_observed)
     group_obj["dual_namespace"] = dual_namespace
-    return group_obj
+    return cast(dict[str, Any], group_obj)
 
 
 def _ensure_namespace_artifact(group_obj: dict[str, Any], *, opcode: int) -> dict[str, Any]:
@@ -188,7 +188,7 @@ def _ensure_namespace_artifact(group_obj: dict[str, Any], *, opcode: int) -> dic
     )
     namespace_obj.setdefault("label", opcode_label(opcode))
     namespace_obj.setdefault("instances", {})
-    return namespace_obj
+    return cast(dict[str, Any], namespace_obj)
 
 
 def _instances_object(
@@ -200,8 +200,8 @@ def _instances_object(
     group_obj = artifact["groups"][_hex_u8(group)]
     if bool(group_obj.get("dual_namespace")):
         namespace_obj = _ensure_namespace_artifact(group_obj, opcode=opcode)
-        return namespace_obj.setdefault("instances", {})
-    return group_obj.setdefault("instances", {})
+        return cast(dict[str, Any], namespace_obj.setdefault("instances", {}))
+    return cast(dict[str, Any], group_obj.setdefault("instances", {}))
 
 
 def _present_instances_for_opcode(
@@ -1456,7 +1456,7 @@ def scan_b524(
                 # reply in the artifact.
                 opcodes_to_try: tuple[RegisterOpcode, ...]
                 if task.group in GROUP_CONFIG:
-                    opcodes_to_try = (cast(RegisterOpcode, task.opcode),)
+                    opcodes_to_try = (task.opcode,)
                 else:
                     opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
 
