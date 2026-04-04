@@ -171,8 +171,7 @@ def namespace_availability_contract(
             probe_type_hint=None,
             positive_when="all configured slots are treated as present",
             description=(
-                "Exploratory exhaustive group without a verified "
-                "namespace-specific heuristic."
+                "Exploratory exhaustive group without a verified namespace-specific heuristic."
             ),
         )
 
@@ -500,10 +499,15 @@ def probe_instance_availability(
     if group == 0x02 and opcode == 0x02:
         if entry["error"] is None and entry.get("flags_access") != "absent":
             value = entry["value"]
-            present = isinstance(value, int) and not isinstance(value, bool) and value not in {
-                0x0000,
-                0xFFFF,
-            }
+            present = (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value
+                not in {
+                    0x0000,
+                    0xFFFF,
+                }
+            )
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
     if group == 0x03 and opcode == 0x02:
@@ -513,9 +517,11 @@ def probe_instance_availability(
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
     if group == 0x05 and opcode == 0x02:
-        present = entry["error"] is None and entry.get("flags_access") != "absent" and entry[
-            "value"
-        ] is not None
+        present = (
+            entry["error"] is None
+            and entry.get("flags_access") != "absent"
+            and entry["value"] is not None
+        )
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
     if group in {0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:

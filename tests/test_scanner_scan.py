@@ -1101,19 +1101,17 @@ def test_scan_b524_replays_dual_namespace_fixture_end_to_end(
     monkeypatch.setattr(
         scan_mod,
         "probe_instance_availability",
-        lambda *_args, **kwargs: (
-            InstanceAvailabilityProbe(
-                present=(
-                    kwargs["instance"] in {0x00, 0x01}
-                    if kwargs["group"] == 0x09
-                    else (kwargs["group"] == 0x0C and kwargs["instance"] == 0x00)
-                ),
-                contract=namespace_availability_contract(
-                    group=kwargs["group"],
-                    opcode=kwargs["opcode"],
-                ),
-                evidence=None,
-            )
+        lambda *_args, **kwargs: InstanceAvailabilityProbe(
+            present=(
+                kwargs["instance"] in {0x00, 0x01}
+                if kwargs["group"] == 0x09
+                else (kwargs["group"] == 0x0C and kwargs["instance"] == 0x00)
+            ),
+            contract=namespace_availability_contract(
+                group=kwargs["group"],
+                opcode=kwargs["opcode"],
+            ),
+            evidence=None,
         ),
     )
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
