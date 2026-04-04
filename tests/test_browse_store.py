@@ -115,6 +115,11 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
     assert by_register["0x0002"].myvaillant_name == "limit_value"
     assert by_register["0x0002"].ebusd_name == ""
     assert by_register["0x0001"].access_flags == "user_rw"
+    assert by_register["0x0001"].row_id == "0x00:0x02:0x00:0x0001"
+    assert by_register["0x0002"].row_id == "0x00:0x06:0x00:0x0002"
+    assert by_register["0x0001"].path == "B524/Regulator Parameters/Local (0x02)/0x00/0x0001"
+    assert by_register["0x0002"].path == "B524/Regulator Parameters/Remote (0x06)/0x00/limit_value"
+    assert all(":single:" not in row.row_id for row in store.rows if row.protocol == "b524")
 
     by_node_id = {node.node_id: node for node in store.tree_nodes}
     assert by_node_id["proto:b524"].label == "B524"
@@ -133,6 +138,36 @@ def test_browse_store_filters_rows_for_tree_selection() -> None:
     assert len(store.rows_for_selection(protocol_node, tab="config")) == 1
     assert len(store.rows_for_selection(group_node, tab="config_limits")) == 1
     assert len(store.rows_for_selection(group_node, tab="state")) == 1
+
+
+def test_browse_store_single_namespace_instance_node_uses_opcode_identity() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0002": {
+                                "value": 1,
+                                "raw_hex": "0100",
+                                "flags_access": "stable_ro",
+                                "read_opcode": "0x02",
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    by_node_id = {node.node_id: node for node in store.tree_nodes}
+    assert "b524:inst:0x02:0x02:0x00" in by_node_id
+    assert not any(
+        ":single:" in node.node_id for node in store.tree_nodes if node.protocol == "b524"
+    )
 
 
 def test_browse_store_builds_namespace_nodes_for_dual_namespace_groups() -> None:

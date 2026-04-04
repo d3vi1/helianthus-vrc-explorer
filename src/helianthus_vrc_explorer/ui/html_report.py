@@ -735,7 +735,7 @@ __ARTIFACT_JSON__
       }
 
       function namespaceLabel(namespaceKey, label) {
-        const raw = typeof label === "string" && label ? label : (namespaceKey || "single");
+        const raw = typeof label === "string" && label ? label : (namespaceKey || "0x00");
         if (!namespaceKey) return raw;
         if (raw.startsWith("0x")) return raw;
         return `${raw.charAt(0).toUpperCase()}${raw.slice(1)} (${namespaceKey})`;
@@ -886,7 +886,7 @@ __ARTIFACT_JSON__
               if (!entry || typeof entry !== "object") continue;
               const label = typeof entry.read_opcode_label === "string" && entry.read_opcode_label
                 ? entry.read_opcode_label
-                : (typeof entry.read_opcode === "string" && entry.read_opcode ? entry.read_opcode : "single");
+                : (typeof entry.read_opcode === "string" && entry.read_opcode ? entry.read_opcode : "0x00");
               totalRegisters += 1;
               totals.set(label, (totals.get(label) || 0) + 1);
             }

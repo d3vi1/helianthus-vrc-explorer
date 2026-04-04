@@ -65,13 +65,19 @@ def _iter_register_entries(artifact: dict[str, Any]) -> Iterable[dict[str, Any]]
 
 
 def _namespace_label_from_entry(entry: dict[str, Any]) -> str:
+    opcode = entry.get("read_opcode")
+    if isinstance(opcode, str) and opcode.strip():
+        try:
+            parsed = int(opcode.strip(), 0)
+        except ValueError:
+            pass
+        else:
+            if 0 <= parsed <= 0xFF:
+                return f"0x{parsed:02x}"
     label = entry.get("read_opcode_label")
     if isinstance(label, str) and label.strip():
         return label.strip()
-    opcode = entry.get("read_opcode")
-    if isinstance(opcode, str) and opcode.strip():
-        return opcode.strip()
-    return "single"
+    return "0x00"
 
 
 def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:

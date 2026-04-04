@@ -44,6 +44,16 @@ FORBIDDEN_PATTERNS: tuple[ForbiddenPattern, ...] = (
         path="src/helianthus_vrc_explorer/scanner/identity.py",
         pattern=re.compile(r"return\s*\(\s*group\s*,\s*instance\s*,\s*register\s*\)"),
     ),
+    ForbiddenPattern(
+        description="B524 row identity sentinel fallback ('single') in browse store",
+        path="src/helianthus_vrc_explorer/ui/browse_store.py",
+        pattern=re.compile(r'namespace_key\s+or\s+"single"'),
+    ),
+    ForbiddenPattern(
+        description="B524 namespace sentinel fallback ('single') in HTML report",
+        path="src/helianthus_vrc_explorer/ui/html_report.py",
+        pattern=re.compile(r'\|\|\s*"single"'),
+    ),
 )
 
 

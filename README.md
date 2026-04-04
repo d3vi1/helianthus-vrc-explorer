@@ -62,6 +62,9 @@ Transport note:
 - Artifacts retain the availability contract plus raw per-slot probe evidence under `availability_contract` and `availability_probes`, including the opcode `0x06` `RR=0x0001` `device_connected` probe used for remote namespaces.
 - Unknown groups are namespace-classified from live opcode responsiveness evidence. There is no implicit unknown-group `[0x02, 0x06]` fallback.
 - Contextual enum annotations are local-namespace scoped: group `0x02` local (`0x02`) register context never relabels remote (`0x06`) entries.
+- Canonical namespace identity is always an opcode hex key (`0x02`, `0x06`, ...). Labels like `local`/`remote` are presentation metadata only.
+- Persisted `groups[*].dual_namespace` topology is authoritative for consumers. Do not infer or rewrite namespace shape from descriptors.
+- B524 browse/report row identity is namespace-aware even for single-namespace groups: dedupe key `<group>:<namespace>:<instance>:<register>` and path format `B524/<group-name>/<namespace-display>/<instance>/<register-name>` are round-trip stable.
 - CI enforces these rules with `python scripts/check_b524_namespace_guardrails.py`.
 
 Constraint note:

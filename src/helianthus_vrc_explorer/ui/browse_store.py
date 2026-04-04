@@ -9,6 +9,10 @@ from .browse_models import BrowseTab, RegisterAddress, RegisterRow, TreeNodeRef
 from .register_semantics import entry_display_value_text, visible_rr_keys
 
 
+def _hex_u8(value: int) -> str:
+    return f"0x{value:02x}"
+
+
 def _safe_int_hex(value: str) -> int:
     try:
         return int(value, 0)
@@ -139,6 +143,51 @@ def _namespace_display_label(namespace_key: str | None, namespace_label: str | N
     if label.startswith("0x"):
         return label
     return f"{label[:1].upper()}{label[1:]} ({namespace_key})"
+
+
+def _normalize_opcode_hex(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        opcode = int(raw, 0)
+    except ValueError:
+        return None
+    if opcode < 0x00 or opcode > 0xFF:
+        return None
+    return _hex_u8(opcode)
+
+
+def _namespace_label_for_key(namespace_key: str) -> str:
+    opcode = _safe_int_hex(namespace_key)
+    if opcode == 0x02:
+        return "local"
+    if opcode == 0x06:
+        return "remote"
+    return namespace_key
+
+
+def _single_namespace_key(group_key: str, group_obj: dict[str, Any]) -> str:
+    discovery_advisory = group_obj.get("discovery_advisory")
+    if isinstance(discovery_advisory, dict):
+        proven = discovery_advisory.get("proven_register_opcodes")
+        if isinstance(proven, list):
+            for opcode in proven:
+                normalized = _normalize_opcode_hex(opcode)
+                if normalized is not None:
+                    return normalized
+
+    gg = _safe_int_hex(group_key)
+    config = GROUP_CONFIG.get(gg)
+    if config is not None:
+        opcodes = config.get("opcodes")
+        if isinstance(opcodes, list):
+            for opcode in opcodes:
+                if isinstance(opcode, int):
+                    return _hex_u8(opcode)
+    return "0x00"
 
 
 def _group_namespace_views(
@@ -285,6 +334,8 @@ class BrowseStore:
                 continue
             group_name = str(group_obj.get("name") or "Unknown")
             gg = _safe_int_hex(group_key)
+            group_single_namespace_key = _single_namespace_key(group_key, group_obj)
+            group_single_namespace_label = _namespace_label_for_key(group_single_namespace_key)
             namespace_views = _group_namespace_views(group_obj)
             if not namespace_views:
                 continue
@@ -313,7 +364,15 @@ class BrowseStore:
             )
 
             for namespace_key, namespace_label, instances in namespace_views:
-                namespace_display = _namespace_display_label(namespace_key, namespace_label)
+                effective_namespace_key = (
+                    namespace_key if namespace_key is not None else group_single_namespace_key
+                )
+                effective_namespace_label = (
+                    namespace_label if namespace_key is not None else group_single_namespace_label
+                )
+                namespace_display = _namespace_display_label(
+                    effective_namespace_key, effective_namespace_label
+                )
                 if namespace_key is not None and namespace_display is not None:
                     tree_nodes.append(
                         TreeNodeRef(
@@ -339,7 +398,7 @@ class BrowseStore:
                     # For instanced groups, list instances as the leaf nodes (do not expand to RR).
                     if is_instanced:
                         node_id = ":".join(
-                            ["b524", "inst", group_key, namespace_key or "single", instance_key]
+                            ["b524", "inst", group_key, effective_namespace_key, instance_key]
                         )
                         tree_nodes.append(
                             TreeNodeRef(
@@ -353,8 +412,8 @@ class BrowseStore:
                                 level="instance",
                                 protocol="b524",
                                 group_key=group_key,
-                                namespace_key=namespace_key,
-                                namespace_label=namespace_label,
+                                namespace_key=effective_namespace_key,
+                                namespace_label=effective_namespace_label,
                                 instance_key=instance_key,
                             )
                         )
@@ -376,15 +435,28 @@ class BrowseStore:
                         ebusd_name = str(entry.get("ebusd_name") or "").strip()
                         name = myvaillant_name or register_key
                         tab = _tab_from_entry(entry)
-                        entry_namespace_label = (
+                        entry_namespace_key = effective_namespace_key
+                        read_opcode = _normalize_opcode_hex(entry.get("read_opcode"))
+                        if read_opcode is not None:
+                            entry_namespace_key = read_opcode
+                        read_opcode_label = (
                             entry.get("read_opcode_label")
                             if isinstance(entry.get("read_opcode_label"), str)
-                            else namespace_label
+                            else None
                         )
+                        if read_opcode_label:
+                            entry_namespace_label = read_opcode_label
+                        elif (
+                            namespace_key is not None
+                            and entry_namespace_key == effective_namespace_key
+                        ):
+                            entry_namespace_label = effective_namespace_label
+                        else:
+                            entry_namespace_label = _namespace_label_for_key(entry_namespace_key)
                         address = RegisterAddress(
                             protocol="b524",
                             group_key=group_key,
-                            namespace_key=namespace_key,
+                            namespace_key=entry_namespace_key,
                             namespace_label=entry_namespace_label,
                             instance_key=instance_key,
                             register_key=register_key,
@@ -394,20 +466,23 @@ class BrowseStore:
                         )
                         value_text = _fmt_value(entry)
                         raw_hex = str(entry.get("raw_hex") or "")
+                        entry_namespace_display = _namespace_display_label(
+                            entry_namespace_key, entry_namespace_label
+                        )
                         path_parts = ["B524", group_name]
-                        if namespace_display is not None:
-                            path_parts.append(namespace_display)
+                        if entry_namespace_display is not None:
+                            path_parts.append(entry_namespace_display)
                         path_parts.extend([instance_key, name])
                         path = "/".join(path_parts)
                         row_id = ":".join(
-                            [group_key, namespace_key or "single", instance_key, register_key]
+                            [group_key, entry_namespace_key, instance_key, register_key]
                         )
                         access_flags = str(entry.get("flags_access") or "—")
                         row = RegisterRow(
                             row_id=row_id,
                             protocol="b524",
                             group_key=group_key,
-                            namespace_key=namespace_key,
+                            namespace_key=entry_namespace_key,
                             namespace_label=entry_namespace_label,
                             group_name=group_name,
                             instance_key=instance_key,
