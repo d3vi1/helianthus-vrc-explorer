@@ -24,19 +24,29 @@ class _GroupStats:
 
 
 def _iter_register_entries(artifact: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    for entry, _fallback_namespace_key in _iter_register_entries_with_namespace_hint(artifact):
+        yield entry
+
+
+def _iter_register_entries_with_namespace_hint(
+    artifact: dict[str, Any],
+) -> Iterable[tuple[dict[str, Any], str | None]]:
     groups = artifact.get("groups", {})
     if not isinstance(groups, dict):
         return
     for group_obj in groups.values():
         if not isinstance(group_obj, dict):
             continue
-        if bool(group_obj.get("dual_namespace")):
-            namespaces = group_obj.get("namespaces", {})
-            if not isinstance(namespaces, dict):
-                continue
-            for namespace_obj in namespaces.values():
+        namespaces = group_obj.get("namespaces", {})
+        if isinstance(namespaces, dict) and namespaces:
+            for namespace_key, namespace_obj in namespaces.items():
+                if not isinstance(namespace_key, str):
+                    continue
                 if not isinstance(namespace_obj, dict):
                     continue
+                namespace_hint = _normalize_namespace_key(
+                    namespace_key
+                ) or _namespace_key_from_label(namespace_key)
                 instances = namespace_obj.get("instances", {})
                 if not isinstance(instances, dict):
                     continue
@@ -48,7 +58,7 @@ def _iter_register_entries(artifact: dict[str, Any]) -> Iterable[dict[str, Any]]
                         continue
                     for entry in registers.values():
                         if isinstance(entry, dict):
-                            yield entry
+                            yield entry, namespace_hint
             continue
         instances = group_obj.get("instances", {})
         if not isinstance(instances, dict):
@@ -61,20 +71,77 @@ def _iter_register_entries(artifact: dict[str, Any]) -> Iterable[dict[str, Any]]
                 continue
             for entry in registers.values():
                 if isinstance(entry, dict):
-                    yield entry
+                    yield entry, None
 
 
-def _namespace_label_from_entry(entry: dict[str, Any]) -> str | None:
-    for raw in (entry.get("read_opcode"), entry.get("read_opcode_label")):
-        if not isinstance(raw, str) or not raw.strip():
-            continue
-        try:
-            parsed = int(raw.strip(), 0)
-        except ValueError:
-            continue
-        if 0 <= parsed <= 0xFF:
-            return f"0x{parsed:02x}"
+def _normalize_namespace_key(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = int(raw, 0)
+    except ValueError:
+        return None
+    if 0 <= parsed <= 0xFF:
+        return f"0x{parsed:02x}"
     return None
+
+
+def _namespace_key_from_label(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().lower()
+    if raw == "local":
+        return "0x02"
+    if raw == "remote":
+        return "0x06"
+    return _normalize_namespace_key(value)
+
+
+def _namespace_display_label(namespace_key: str, namespace_label: object = None) -> str:
+    lowered_key = namespace_key.lower()
+    if lowered_key == "0x02":
+        return "local (0x02)"
+    if lowered_key == "0x06":
+        return "remote (0x06)"
+    if isinstance(namespace_label, str):
+        text = namespace_label.strip()
+        if text and text.lower() != lowered_key:
+            return f"{text} ({namespace_key})"
+    return namespace_key
+
+
+def _namespace_label_from_entry(
+    entry: dict[str, Any], *, fallback_namespace_key: str | None = None
+) -> str | None:
+    namespace_key = _normalize_namespace_key(entry.get("read_opcode"))
+    if namespace_key is None:
+        namespace_key = _normalize_namespace_key(fallback_namespace_key)
+    if namespace_key is None:
+        namespace_key = _namespace_key_from_label(entry.get("read_opcode_label"))
+    if namespace_key is None:
+        return None
+    return _namespace_display_label(namespace_key, entry.get("read_opcode_label"))
+
+
+def _display_namespace_sort_key(label: str) -> tuple[int, int, str]:
+    raw = label.strip()
+    if raw.startswith("0x"):
+        parsed = _normalize_namespace_key(raw)
+        if parsed is not None:
+            return (0, int(parsed, 0), raw)
+    if raw.endswith(")") and "(" in raw:
+        open_idx = raw.rfind("(")
+        parsed = _normalize_namespace_key(raw[open_idx + 1 : -1])
+        if parsed is not None:
+            return (0, int(parsed, 0), raw)
+    return (1, 0, raw.lower())
+
+
+def _sorted_namespace_counts(counts: dict[str, int]) -> dict[str, int]:
+    return dict(sorted(counts.items(), key=lambda item: _display_namespace_sort_key(item[0])))
 
 
 def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
@@ -110,11 +177,10 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
             for namespace_key, namespace_obj in namespaces.items():
                 if not isinstance(namespace_key, str) or not isinstance(namespace_obj, dict):
                     continue
-                namespace_label_obj = namespace_obj.get("label")
-                namespace_label = (
-                    namespace_label_obj
-                    if isinstance(namespace_label_obj, str) and namespace_label_obj.strip()
-                    else namespace_key
+                namespace_key_norm = _normalize_namespace_key(namespace_key) or namespace_key
+                namespace_label = _namespace_display_label(
+                    namespace_key_norm,
+                    namespace_obj.get("label"),
                 )
                 namespace_count = 0
                 namespace_instances = namespace_obj.get("instances", {})
@@ -137,7 +203,9 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                             continue
                         if entry.get("error") is not None:
                             registers_errors += 1
-                namespace_registers[namespace_label] = namespace_count
+                namespace_registers[namespace_label] = (
+                    namespace_registers.get(namespace_label, 0) + namespace_count
+                )
             instances_total = len(instance_ids_total)
             instances_present = len(instance_ids_present)
         else:
@@ -170,7 +238,7 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                 instances_present=instances_present,
                 registers_scanned=registers_scanned,
                 registers_errors=registers_errors,
-                namespace_registers=namespace_registers,
+                namespace_registers=_sorted_namespace_counts(namespace_registers),
             )
         )
 
@@ -180,12 +248,15 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
 
 def _compute_namespace_totals(artifact: dict[str, Any]) -> dict[str, int]:
     totals: dict[str, int] = {}
-    for entry in _iter_register_entries(artifact):
-        label = _namespace_label_from_entry(entry)
+    for entry, fallback_namespace_key in _iter_register_entries_with_namespace_hint(artifact):
+        label = _namespace_label_from_entry(
+            entry,
+            fallback_namespace_key=fallback_namespace_key,
+        )
         if label is None:
             continue
         totals[label] = totals.get(label, 0) + 1
-    return dict(sorted(totals.items()))
+    return _sorted_namespace_counts(totals)
 
 
 def _compute_flags_distribution(artifact: dict[str, Any]) -> dict[str, int]:
