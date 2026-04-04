@@ -170,8 +170,9 @@ def test_browse_store_single_namespace_instance_node_uses_opcode_identity() -> N
     )
 
 
-def test_browse_store_instance_selection_keeps_mixed_opcode_rows_in_single_namespace_group(
-) -> None:
+def test_browse_store_instance_selection_keeps_mixed_opcode_rows_in_single_namespace_group() -> (
+    None
+):
     artifact = {
         "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
         "groups": {
