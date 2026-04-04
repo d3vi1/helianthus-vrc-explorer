@@ -307,7 +307,6 @@ def _group_namespace_views(
     if not isinstance(instances, dict):
         return [(None, None, {})]
 
-    default_namespace_key = _single_namespace_key(group_key, group_obj)
     split_instances: dict[str, dict[str, Any]] = {}
     for instance_key in sorted(
         (k for k in instances if isinstance(k, str)),
@@ -326,13 +325,10 @@ def _group_namespace_views(
             entry = registers.get(register_key)
             if not isinstance(entry, dict):
                 continue
-            namespace_key = _entry_namespace_key(
-                entry,
-                fallback_namespace_key=default_namespace_key,
-            )
-            if namespace_key is None:
+            entry_namespace_key = _entry_namespace_key(entry)
+            if entry_namespace_key is None:
                 continue
-            namespace_instances = split_instances.setdefault(namespace_key, {})
+            namespace_instances = split_instances.setdefault(entry_namespace_key, {})
             namespace_instance = namespace_instances.get(instance_key)
             if not isinstance(namespace_instance, dict):
                 namespace_instance = {
@@ -592,15 +588,8 @@ class BrowseStore:
                         )
                         if entry_namespace_key is not None:
                             entry_namespace_label = _namespace_label_for_key(entry_namespace_key)
-                        elif (
-                            namespace_key is not None
-                            and entry_namespace_key == effective_namespace_key
-                        ):
-                            entry_namespace_label = effective_namespace_label
-                        elif read_opcode_label:
-                            entry_namespace_label = read_opcode_label
                         else:
-                            entry_namespace_label = _namespace_label_for_key(entry_namespace_key)
+                            entry_namespace_label = read_opcode_label
                         address = RegisterAddress(
                             protocol="b524",
                             group_key=group_key,

@@ -212,6 +212,55 @@ def test_browse_store_instance_selection_is_namespace_isolated_for_mixed_legacy_
     assert {(row.register_key, row.namespace_key) for row in remote_rows} == {("0x0002", "0x06")}
 
 
+def test_browse_store_drops_missing_namespace_entries_from_split_views() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {
+                                "value": 1,
+                                "raw_hex": "01",
+                                "flags_access": "stable_ro",
+                                "read_opcode": "0x02",
+                            },
+                            "0x0002": {
+                                "value": 2,
+                                "raw_hex": "02",
+                                "flags_access": "stable_ro",
+                                "read_opcode": "0x06",
+                            },
+                            "0x0003": {
+                                "value": 3,
+                                "raw_hex": "03",
+                                "flags_access": "stable_ro",
+                            },
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    assert {row.register_key for row in store.rows} == {"0x0001", "0x0002"}
+    assert all(row.register_key != "0x0003" for row in store.rows)
+
+    local_instance_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:inst:0x02:0x02:0x00"
+    )
+    remote_instance_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:inst:0x02:0x06:0x00"
+    )
+    local_rows = store.rows_for_selection(local_instance_node, tab="state")
+    remote_rows = store.rows_for_selection(remote_instance_node, tab="state")
+    assert {(row.register_key, row.namespace_key) for row in local_rows} == {("0x0001", "0x02")}
+    assert {(row.register_key, row.namespace_key) for row in remote_rows} == {("0x0002", "0x06")}
+
+
 def test_browse_store_builds_namespace_nodes_for_dual_namespace_groups() -> None:
     store = BrowseStore.from_artifact(_dual_namespace_artifact())
 

@@ -362,8 +362,38 @@ def test_html_report_splits_mixed_legacy_group_by_namespace_and_scopes_overrides
     html = render_html_report(artifact, title="test")
 
     assert "function splitInstancesByNamespace(instancesObj, fallbackNamespaceKey = null)" in html
-    assert "const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {});" in html
+    assert (
+        "const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);" in html
+    )
     assert "if (namespaceKeys.length > 1) {" in html
     assert "${namespaceLabel(activeNamespace, activeNamespace)} Registers" in html
     assert "if (namespaceKey) {" in html
     assert "return null;" in html
+
+
+def test_html_report_split_views_keep_unknown_namespace_entries_unassigned() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {"raw_hex": "01", "read_opcode": "0x02"},
+                            "0x0002": {"raw_hex": "02", "read_opcode": "0x06"},
+                            "0x0003": {"raw_hex": "03"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+
+    assert '"0x0003":{"raw_hex":"03"}' in html
+    assert (
+        "const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);" in html
+    )
+    assert "if (!namespaceKey) continue;" in html

@@ -190,3 +190,61 @@ def test_render_summary_namespace_totals_ignore_stale_namespace_labels(tmp_path:
     assert "namespaces local (0x02)=1, remote (0x06)=1" in text
     assert "remote (0x02)" not in text
     assert "local (0x06)" not in text
+
+
+def test_render_summary_namespace_totals_use_namespace_container_when_opcode_missing(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x09": {
+                "name": "Regulators",
+                "descriptor_observed": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x02": {
+                        "label": "remote",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0001": {
+                                        "read_opcode_label": "remote",
+                                        "flags_access": "stable_ro",
+                                        "error": None,
+                                    }
+                                },
+                            }
+                        },
+                    },
+                    "0x06": {
+                        "label": "local",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0002": {
+                                        "read_opcode_label": "local",
+                                        "flags_access": "stable_ro",
+                                        "error": None,
+                                    }
+                                },
+                            }
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=140)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+    assert "namespaces local (0x02)=1, remote (0x06)=1" in text
+    assert "remote (0x02)" not in text
+    assert "local (0x06)" not in text

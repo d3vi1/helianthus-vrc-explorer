@@ -770,8 +770,8 @@ __ARTIFACT_JSON__
         if (!entry || typeof entry !== "object") return fallbackNamespaceKey;
         return (
           normalizeOpcodeKey(entry.read_opcode)
+          || normalizeOpcodeKey(fallbackNamespaceKey)
           || normalizeOpcodeKey(entry.read_opcode_label)
-          || fallbackNamespaceKey
         );
       }
 
@@ -785,7 +785,7 @@ __ARTIFACT_JSON__
             const entry = regs[rrKey];
             if (!entry || typeof entry !== "object") continue;
             const namespaceKey = namespaceKeyFromEntry(entry, fallbackNamespaceKey);
-            if (!namespaceKey) continue;
+            if (!namespaceKey) continue; // Keep namespace views isolated; do not force-assign unknown rows.
             if (!split[namespaceKey] || typeof split[namespaceKey] !== "object") {
               split[namespaceKey] = {};
             }
@@ -1729,7 +1729,7 @@ __ARTIFACT_JSON__
             }
           }
         } else {
-          const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {});
+          const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);
           const namespaceKeys = sortedHexKeys(Object.keys(splitNamespaces));
           if (namespaceKeys.length > 1) {
             const subtabs = document.createElement("div");
