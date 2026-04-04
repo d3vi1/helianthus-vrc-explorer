@@ -917,17 +917,23 @@ def test_artifact_register_flags_present(tmp_path: Path) -> None:
     assert entry["read_opcode_label"] == "local"
 
 
-def test_contextual_enum_annotations_follow_dual_namespace_group_02(tmp_path: Path) -> None:
+def test_contextual_enum_annotations_are_namespace_owned_for_group_02(tmp_path: Path) -> None:
     fixture_path = _write_fixture_group_02_dual_namespace(tmp_path)
     artifact = json.loads(fixture_path.read_text(encoding="utf-8"))
     _apply_contextual_enum_annotations(artifact)
 
+    local_registers = artifact["groups"]["0x02"]["namespaces"]["0x02"]["instances"]["0x00"][
+        "registers"
+    ]
     remote_registers = artifact["groups"]["0x02"]["namespaces"]["0x06"]["instances"]["0x00"][
         "registers"
     ]
-    assert remote_registers["0x0001"]["enum_resolved_name"] == "MIXER_CIRCUIT_EXTERNAL"
-    assert remote_registers["0x0002"]["enum_resolved_name"] == "DHW"
-    assert remote_registers["0x0003"]["enum_resolved_name"] == "EXTENDED"
+    assert local_registers["0x0001"]["enum_resolved_name"] == "DIRECT_HEATING_CIRCUIT"
+    assert local_registers["0x0002"]["enum_resolved_name"] == "FIXED_VALUE"
+    assert local_registers["0x0003"]["enum_resolved_name"] == "ACTIVE"
+    assert "enum_resolved_name" not in remote_registers["0x0001"]
+    assert "enum_resolved_name" not in remote_registers["0x0002"]
+    assert "enum_resolved_name" not in remote_registers["0x0003"]
 
 
 def test_group_08_remote_namespace_only_marks_present_instances(
