@@ -778,7 +778,13 @@ def test_scan_singleton_group_nonzero_descriptor(tmp_path: Path) -> None:
     assert "descriptor_mismatch" not in group["discovery_advisory"]
     assert group["discovery_advisory"]["proven_register_opcodes"] == ["0x02"]
     assert set(group["instances"]) == {"0x00"}
-    assert artifact["meta"]["scan_plan"]["groups"]["0x00"]["instances"] == ["0x00"]
+    plan = artifact["meta"]["scan_plan"]["groups"]["0x00"]
+    assert plan["instances"] == ["0x00"]
+    assert plan["dual_namespace"] is False
+    assert plan["namespace_key"] == "0x02"
+    assert plan["label"] == "local"
+    assert plan["namespace_identity_keys"] == "opcode_hex"
+    assert set(plan["namespaces"]) == {"0x02"}
 
     scanned_instances = {ii for (_opcode, gg, ii, _rr) in transport.register_reads if gg == 0x00}
     assert scanned_instances == {0x00}
@@ -788,6 +794,15 @@ def test_artifact_schema_version(tmp_path: Path) -> None:
     artifact = scan_b524(DummyTransport(_write_fixture_group_00(tmp_path)), dst=0x15)
 
     assert artifact["schema_version"] == "2.0"
+    contract = artifact["meta"]["artifact_contract"]
+    assert contract["namespace_identity_keys"] == "opcode_hex"
+    assert contract["namespace_labels"] == "presentation_only"
+    assert "dual_namespace" in contract["topology_authority"]
+    assert (
+        contract["b524_row_identity"]["dedupe_key_format"]
+        == "<group>:<namespace>:<instance>:<register>"
+    )
+    assert "round_trip_stability" in contract["b524_row_identity"]
 
 
 def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:

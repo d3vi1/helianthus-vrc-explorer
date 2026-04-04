@@ -164,6 +164,14 @@ def _instance_discovery_decision(*, group: int, dual_namespace: bool) -> dict[st
     }
 
 
+def _namespace_plan_meta(group_plan: GroupScanPlan) -> tuple[str, dict[str, object]]:
+    namespace_key = _hex_u8(group_plan.opcode)
+    payload = group_plan.to_meta()
+    payload["namespace_key"] = namespace_key
+    payload["label"] = opcode_label(group_plan.opcode)
+    return namespace_key, payload
+
+
 def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, object]:
     serializable: dict[str, object] = {}
     grouped: dict[int, list[GroupScanPlan]] = {}
@@ -173,19 +181,43 @@ def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, obje
     for group in sorted(grouped):
         group_plans = sorted(grouped[group], key=lambda gp: gp.opcode)
         group_key = _hex_u8(group)
+        namespace_meta: dict[str, object] = {}
+        for group_plan in group_plans:
+            namespace_key, payload = _namespace_plan_meta(group_plan)
+            namespace_meta[namespace_key] = payload
         if len(group_plans) > 1:
-            namespace_meta: dict[str, object] = {}
-            for group_plan in group_plans:
-                payload = group_plan.to_meta()
-                payload["label"] = opcode_label(group_plan.opcode)
-                namespace_meta[_hex_u8(group_plan.opcode)] = payload
             serializable[group_key] = {
                 "dual_namespace": True,
+                "namespace_identity_keys": "opcode_hex",
                 "namespaces": namespace_meta,
             }
             continue
-        serializable[group_key] = group_plans[0].to_meta()
+        _, single_payload = _namespace_plan_meta(group_plans[0])
+        serializable[group_key] = {
+            **single_payload,
+            "dual_namespace": False,
+            "namespace_identity_keys": "opcode_hex",
+            "namespaces": namespace_meta,
+        }
     return serializable
+
+
+def _artifact_contract_metadata() -> dict[str, Any]:
+    return {
+        "namespace_identity_keys": "opcode_hex",
+        "namespace_labels": "presentation_only",
+        "topology_authority": (
+            "persisted groups[*].dual_namespace and groups[*].namespaces are authoritative for "
+            "consumers"
+        ),
+        "b524_row_identity": {
+            "dedupe_key_format": "<group>:<namespace>:<instance>:<register>",
+            "path_format": "B524/<group-name>/<namespace-display>/<instance>/<register-name>",
+            "round_trip_stability": (
+                "namespace keys and persisted topology must be preserved without sentinel rewrite"
+            ),
+        },
+    }
 
 
 def _ensure_group_artifact(
@@ -1087,6 +1119,7 @@ def scan_b524(
             "destination_address": _hex_u8(dst),
             "schema_sources": [],
             "incomplete": False,
+            "artifact_contract": _artifact_contract_metadata(),
         },
         "groups": {},
     }

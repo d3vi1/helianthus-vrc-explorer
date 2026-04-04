@@ -271,3 +271,33 @@ def test_html_report_renders_identity_card_with_star_bold_markers() -> None:
     assert "<strong>BA</strong>se" in html
     assert "<strong>S</strong>tation" in html
     assert "<strong>V</strong>aillant-branded Revision <strong>2</strong>" in html
+
+
+def test_html_report_does_not_use_single_namespace_identity_sentinel() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {
+            "0x00": {
+                "name": "Regulator Parameters",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {
+                                "raw_hex": "00",
+                                "value": 1,
+                                "error": None,
+                                "flags_access": "stable_ro",
+                                "read_opcode": "0x02",
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+    assert 'namespaceKey || "single"' not in html
+    assert '|| "single"' not in html
+    assert 'namespaceKey || "0x00"' not in html
+    assert ': "0x00"' not in html

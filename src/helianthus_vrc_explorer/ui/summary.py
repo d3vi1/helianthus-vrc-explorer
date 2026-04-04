@@ -64,14 +64,17 @@ def _iter_register_entries(artifact: dict[str, Any]) -> Iterable[dict[str, Any]]
                     yield entry
 
 
-def _namespace_label_from_entry(entry: dict[str, Any]) -> str:
-    label = entry.get("read_opcode_label")
-    if isinstance(label, str) and label.strip():
-        return label.strip()
-    opcode = entry.get("read_opcode")
-    if isinstance(opcode, str) and opcode.strip():
-        return opcode.strip()
-    return "single"
+def _namespace_label_from_entry(entry: dict[str, Any]) -> str | None:
+    for raw in (entry.get("read_opcode"), entry.get("read_opcode_label")):
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            parsed = int(raw.strip(), 0)
+        except ValueError:
+            continue
+        if 0 <= parsed <= 0xFF:
+            return f"0x{parsed:02x}"
+    return None
 
 
 def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
@@ -150,10 +153,11 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                 for entry in registers.values():
                     if not isinstance(entry, dict):
                         continue
-                    namespace_label = _namespace_label_from_entry(entry)
-                    namespace_registers[namespace_label] = (
-                        namespace_registers.get(namespace_label, 0) + 1
-                    )
+                    namespace_label_opt = _namespace_label_from_entry(entry)
+                    if namespace_label_opt is not None:
+                        namespace_registers[namespace_label_opt] = (
+                            namespace_registers.get(namespace_label_opt, 0) + 1
+                        )
                     if entry.get("error") is not None:
                         registers_errors += 1
 
@@ -178,6 +182,8 @@ def _compute_namespace_totals(artifact: dict[str, Any]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for entry in _iter_register_entries(artifact):
         label = _namespace_label_from_entry(entry)
+        if label is None:
+            continue
         totals[label] = totals.get(label, 0) + 1
     return dict(sorted(totals.items()))
 
