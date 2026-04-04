@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from helianthus_vrc_explorer.schema.b524_constraints import load_default_b524_constraints_catalog
+from helianthus_vrc_explorer.scanner.identity import make_register_identity
+from helianthus_vrc_explorer.schema.b524_constraints import (
+    load_default_b524_constraints_catalog,
+    lookup_static_constraint,
+)
 
 
 def test_load_default_b524_constraints_catalog() -> None:
@@ -22,3 +26,20 @@ def test_load_default_b524_constraints_catalog() -> None:
     assert zone_desired_temp.min_value == 15.0
     assert zone_desired_temp.max_value == 30.0
     assert zone_desired_temp.step_value == 0.5
+
+
+def test_lookup_static_constraint_accepts_canonical_register_identity() -> None:
+    catalog, _source = load_default_b524_constraints_catalog()
+
+    entry = lookup_static_constraint(
+        catalog,
+        identity=make_register_identity(
+            opcode=0x06,
+            group=0x02,
+            instance=0x00,
+            register=0x0002,
+        ),
+    )
+
+    assert entry is not None
+    assert entry.kind == "u16_range"

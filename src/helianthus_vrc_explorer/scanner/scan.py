@@ -19,6 +19,7 @@ from ..schema.b524_constraints import (
     StaticConstraintCatalog,
     StaticConstraintEntry,
     load_default_b524_constraints_catalog,
+    lookup_static_constraint,
 )
 from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
@@ -34,6 +35,7 @@ from .b509 import scan_b509
 from .b516 import scan_b516
 from .b555 import scan_b555
 from .director import GROUP_CONFIG, DiscoveredGroup, classify_groups, discover_groups
+from .identity import make_register_identity, opcode_label
 from .observer import ScanObserver
 from .plan import (
     GroupScanPlan,
@@ -41,6 +43,7 @@ from .plan import (
     RegisterTask,
     build_work_queue,
     estimate_register_requests,
+    make_plan_key,
 )
 from .register import RegisterEntry, is_instance_present, opcodes_for_group, read_register
 
@@ -90,14 +93,6 @@ def _primary_opcode(group: int) -> RegisterOpcode:
     return _group_opcodes(group)[0]
 
 
-def _opcode_label(opcode: int) -> str:
-    labels: dict[int, str] = {
-        _LOCAL_REGISTER_OPCODE: "local",
-        _REMOTE_REGISTER_OPCODE: "remote",
-    }
-    return labels.get(opcode, _hex_u8(opcode))
-
-
 def _is_dual_namespace_group(group: int) -> bool:
     return len(_group_opcodes(group)) > 1
 
@@ -126,7 +121,7 @@ def _ii_max_for_opcode(*, group: int, default_ii_max: int | None, opcode: int) -
 
 
 def _plan_key(group: int, opcode: int) -> PlanKey:
-    return (group, opcode)
+    return make_plan_key(group, opcode)
 
 
 def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, object]:
@@ -145,7 +140,7 @@ def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, obje
             namespaces = group_obj.setdefault("namespaces", {})
             assert isinstance(namespaces, dict)
             namespace_meta = group_plan.to_meta()
-            namespace_meta["label"] = _opcode_label(group_plan.opcode)
+            namespace_meta["label"] = opcode_label(group_plan.opcode)
             namespaces[_hex_u8(group_plan.opcode)] = namespace_meta
             continue
         serializable[group_key] = group_plan.to_meta()
@@ -180,7 +175,7 @@ def _ensure_group_artifact(
     group_obj.setdefault("name", name)
     group_obj.setdefault("descriptor_observed", descriptor_observed)
     group_obj["dual_namespace"] = dual_namespace
-    return group_obj
+    return cast(dict[str, Any], group_obj)
 
 
 def _ensure_namespace_artifact(group_obj: dict[str, Any], *, opcode: int) -> dict[str, Any]:
@@ -189,13 +184,13 @@ def _ensure_namespace_artifact(group_obj: dict[str, Any], *, opcode: int) -> dic
     namespace_obj = namespaces.setdefault(
         namespace_key,
         {
-            "label": _opcode_label(opcode),
+            "label": opcode_label(opcode),
             "instances": {},
         },
     )
-    namespace_obj.setdefault("label", _opcode_label(opcode))
+    namespace_obj.setdefault("label", opcode_label(opcode))
     namespace_obj.setdefault("instances", {})
-    return namespace_obj
+    return cast(dict[str, Any], namespace_obj)
 
 
 def _instances_object(
@@ -207,8 +202,8 @@ def _instances_object(
     group_obj = artifact["groups"][_hex_u8(group)]
     if bool(group_obj.get("dual_namespace")):
         namespace_obj = _ensure_namespace_artifact(group_obj, opcode=opcode)
-        return namespace_obj.setdefault("instances", {})
-    return group_obj.setdefault("instances", {})
+        return cast(dict[str, Any], namespace_obj.setdefault("instances", {}))
+    return cast(dict[str, Any], group_obj.setdefault("instances", {}))
 
 
 def _present_instances_for_opcode(
@@ -512,7 +507,9 @@ def _constraint_catalog_entry_count(catalog: StaticConstraintCatalog) -> int:
 
 def _constraint_for_register(
     *,
+    opcode: int,
     group: int,
+    instance: int,
     register: int,
     live_constraints: dict[int, dict[int, ConstraintEntry]],
     static_constraints: StaticConstraintCatalog,
@@ -520,7 +517,52 @@ def _constraint_for_register(
     live = live_constraints.get(group, {}).get(register)
     if live is not None:
         return live
-    return static_constraints.get(group, {}).get(register)
+    return lookup_static_constraint(
+        static_constraints,
+        identity=make_register_identity(
+            opcode=opcode,
+            group=group,
+            instance=instance,
+            register=register,
+        ),
+    )
+
+
+def _iter_group_instance_maps(group_obj: dict[str, Any]) -> list[dict[str, Any]]:
+    if bool(group_obj.get("dual_namespace")):
+        namespaces = group_obj.get("namespaces")
+        if not isinstance(namespaces, dict):
+            return []
+        instance_maps: list[dict[str, Any]] = []
+        for namespace_obj in namespaces.values():
+            if not isinstance(namespace_obj, dict):
+                continue
+            instances = namespace_obj.get("instances")
+            if isinstance(instances, dict):
+                instance_maps.append(instances)
+        return instance_maps
+
+    instances = group_obj.get("instances")
+    if isinstance(instances, dict):
+        return [instances]
+    return []
+
+
+def _group_instances_for_namespace(
+    group_obj: dict[str, Any], *, namespace_key: str | None = None
+) -> dict[str, Any] | None:
+    if namespace_key is not None and bool(group_obj.get("dual_namespace")):
+        namespaces = group_obj.get("namespaces")
+        if not isinstance(namespaces, dict):
+            return None
+        namespace_obj = namespaces.get(namespace_key)
+        if not isinstance(namespace_obj, dict):
+            return None
+        instances = namespace_obj.get("instances")
+        return instances if isinstance(instances, dict) else None
+
+    instance_maps = _iter_group_instance_maps(group_obj)
+    return instance_maps[0] if instance_maps else None
 
 
 def _apply_constraint_metadata(
@@ -656,14 +698,14 @@ def _apply_contextual_enum_annotations(artifact: dict[str, Any]) -> None:
     gg02 = groups.get("0x02")
     if not isinstance(gg02, dict):
         return
-    gg02_instances = gg02.get("instances")
-    if not isinstance(gg02_instances, dict):
+    gg02_instance_maps = _iter_group_instance_maps(gg02)
+    if not gg02_instance_maps:
         return
 
     gg00 = groups.get("0x00")
     system_schema: int | None = None
     if isinstance(gg00, dict):
-        gg00_instances = gg00.get("instances")
+        gg00_instances = _group_instances_for_namespace(gg00, namespace_key="0x02")
         if isinstance(gg00_instances, dict):
             ii00 = gg00_instances.get("0x00")
             if isinstance(ii00, dict):
@@ -676,51 +718,52 @@ def _apply_contextual_enum_annotations(artifact: dict[str, Any]) -> None:
     gg05_present = "0x05" in groups
     pool_sensor_present = False
 
-    for instance_obj in gg02_instances.values():
-        if not isinstance(instance_obj, dict):
-            continue
-        registers = instance_obj.get("registers")
-        if not isinstance(registers, dict):
-            continue
+    for gg02_instances in gg02_instance_maps:
+        for instance_obj in gg02_instances.values():
+            if not isinstance(instance_obj, dict):
+                continue
+            registers = instance_obj.get("registers")
+            if not isinstance(registers, dict):
+                continue
 
-        cooling_enabled = (
-            _entry_int_value(registers.get("0x0006"))
-            if isinstance(registers.get("0x0006"), dict)
-            else None
-        )
+            cooling_enabled = (
+                _entry_int_value(registers.get("0x0006"))
+                if isinstance(registers.get("0x0006"), dict)
+                else None
+            )
 
-        rr01 = registers.get("0x0001")
-        if isinstance(rr01, dict):
-            raw_value = _entry_int_value(rr01)
-            if raw_value is not None:
-                raw_name, resolved_name = _resolve_heating_circuit_type_name(raw_value)
-                rr01["enum_raw_name"] = raw_name
-                rr01["enum_resolved_name"] = resolved_name
-                rr01["value_display"] = f"{raw_name} ({resolved_name})"
+            rr01 = registers.get("0x0001")
+            if isinstance(rr01, dict):
+                raw_value = _entry_int_value(rr01)
+                if raw_value is not None:
+                    raw_name, resolved_name = _resolve_heating_circuit_type_name(raw_value)
+                    rr01["enum_raw_name"] = raw_name
+                    rr01["enum_resolved_name"] = resolved_name
+                    rr01["value_display"] = f"{raw_name} ({resolved_name})"
 
-        rr02 = registers.get("0x0002")
-        if isinstance(rr02, dict):
-            raw_value = _entry_int_value(rr02)
-            if raw_value is not None:
-                raw_name, resolved_name = _resolve_mixer_circuit_type_name(
-                    raw_value,
-                    cooling_enabled=cooling_enabled,
-                    gg05_present=gg05_present,
-                    system_schema=system_schema,
-                    pool_sensor_present=pool_sensor_present,
-                )
-                rr02["enum_raw_name"] = raw_name
-                rr02["enum_resolved_name"] = resolved_name
-                rr02["value_display"] = f"{raw_name} ({resolved_name})"
+            rr02 = registers.get("0x0002")
+            if isinstance(rr02, dict):
+                raw_value = _entry_int_value(rr02)
+                if raw_value is not None:
+                    raw_name, resolved_name = _resolve_mixer_circuit_type_name(
+                        raw_value,
+                        cooling_enabled=cooling_enabled,
+                        gg05_present=gg05_present,
+                        system_schema=system_schema,
+                        pool_sensor_present=pool_sensor_present,
+                    )
+                    rr02["enum_raw_name"] = raw_name
+                    rr02["enum_resolved_name"] = resolved_name
+                    rr02["value_display"] = f"{raw_name} ({resolved_name})"
 
-        rr03 = registers.get("0x0003")
-        if isinstance(rr03, dict):
-            raw_value = _entry_int_value(rr03)
-            if raw_value is not None:
-                raw_name, resolved_name = _resolve_room_influence_type_name(raw_value)
-                rr03["enum_raw_name"] = raw_name
-                rr03["enum_resolved_name"] = resolved_name
-                rr03["value_display"] = f"{raw_name} ({resolved_name})"
+            rr03 = registers.get("0x0003")
+            if isinstance(rr03, dict):
+                raw_value = _entry_int_value(rr03)
+                if raw_value is not None:
+                    raw_name, resolved_name = _resolve_room_influence_type_name(raw_value)
+                    rr03["enum_raw_name"] = raw_name
+                    rr03["enum_resolved_name"] = resolved_name
+                    rr03["value_display"] = f"{raw_name} ({resolved_name})"
 
 
 def _resolve_planner_mode(
@@ -1095,7 +1138,7 @@ def scan_b524(
                     emit_trace_label(
                         transport,
                         "Exploring unknown group "
-                        f"0x{group.group:02X} ({_opcode_label(opcode)}) "
+                        f"0x{group.group:02X} ({opcode_label(opcode)}) "
                         "across multiple instances",
                     )
                     present_instances = _probe_unknown_present_instances(
@@ -1107,7 +1150,7 @@ def scan_b524(
                     )
                     _mark_present_instances(instances_obj, instances=present_instances)
                     namespace_probe_counts.append(
-                        f"{_opcode_label(opcode)} {len(present_instances)}/{total_slots}"
+                        f"{opcode_label(opcode)} {len(present_instances)}/{total_slots}"
                     )
                 if observer is not None:
                     observer.log(
@@ -1165,13 +1208,13 @@ def scan_b524(
                 instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
                 if not _is_instanced_group(namespace_ii_max):
                     _mark_present_instances(instances_obj, instances=(0x00,))
-                    known_namespace_probe_counts.append(f"{_opcode_label(opcode)} 1/1")
+                    known_namespace_probe_counts.append(f"{opcode_label(opcode)} 1/1")
                     continue
 
                 assert namespace_ii_max is not None
                 emit_trace_label(
                     transport,
-                    f"Identifying instances in group 0x{group.group:02X} ({_opcode_label(opcode)})",
+                    f"Identifying instances in group 0x{group.group:02X} ({opcode_label(opcode)})",
                 )
                 present_instances = _probe_present_instances(
                     transport,
@@ -1183,7 +1226,7 @@ def scan_b524(
                 )
                 _mark_present_instances(instances_obj, instances=present_instances)
                 known_namespace_probe_counts.append(
-                    f"{_opcode_label(opcode)} {len(present_instances)}/{namespace_ii_max + 1}"
+                    f"{opcode_label(opcode)} {len(present_instances)}/{namespace_ii_max + 1}"
                 )
 
             if observer is not None:
@@ -1288,7 +1331,7 @@ def scan_b524(
                             opcode=opcode,
                         ),
                         present_instances=present_instances,
-                        namespace_label=(_opcode_label(opcode) if dual_namespace else None),
+                        namespace_label=(opcode_label(opcode) if dual_namespace else None),
                         primary=(opcode == primary_opcode),
                         exhaustive_only=bool(config and config.get("exhaustive_only")),
                     )
@@ -1463,7 +1506,7 @@ def scan_b524(
                 # reply in the artifact.
                 opcodes_to_try: tuple[RegisterOpcode, ...]
                 if task.group in GROUP_CONFIG:
-                    opcodes_to_try = (cast(RegisterOpcode, task.opcode),)
+                    opcodes_to_try = (task.opcode,)
                 else:
                     opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
 
@@ -1551,7 +1594,9 @@ def scan_b524(
                                 entry["ebusd_name"] = mapped_ebusd_name
 
                 constraint = _constraint_for_register(
+                    opcode=task.opcode,
                     group=task.group,
+                    instance=task.instance,
                     register=task.register,
                     live_constraints=constraint_map,
                     static_constraints=static_constraints,

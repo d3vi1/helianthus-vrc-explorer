@@ -17,6 +17,7 @@ from ..scanner.plan import (
     estimate_register_requests,
     format_int_set,
     format_plan_key,
+    make_plan_key,
     parse_int_set,
     parse_int_token,
 )
@@ -39,7 +40,7 @@ class PlannerGroup:
 
     @property
     def key(self) -> PlanKey:
-        return (self.group, self.opcode)
+        return make_plan_key(self.group, self.opcode)
 
     @property
     def display_name(self) -> str:

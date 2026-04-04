@@ -7,8 +7,8 @@ import pytest
 from rich.console import Console
 
 from helianthus_vrc_explorer.scanner.observer import ScanObserver
-from helianthus_vrc_explorer.scanner.plan import GroupScanPlan
-from helianthus_vrc_explorer.scanner.scan import scan_b524
+from helianthus_vrc_explorer.scanner.plan import GroupScanPlan, make_plan_key
+from helianthus_vrc_explorer.scanner.scan import _apply_contextual_enum_annotations, scan_b524
 from helianthus_vrc_explorer.transport.base import TransportInterface
 from helianthus_vrc_explorer.transport.dummy import DummyTransport
 
@@ -221,6 +221,57 @@ def _write_fixture_group_09(tmp_path: Path) -> Path:
         },
     }
     path = tmp_path / "fixture_group_09.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
+def _write_fixture_group_02_dual_namespace(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x03"}},
+        "groups": {
+            "0x00": {
+                "descriptor_type": 3.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {"raw_hex": "08 00 00 00"},
+                        }
+                    }
+                },
+            },
+            "0x02": {
+                "descriptor_type": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x02": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {"raw_hex": "01", "value": 1},
+                                    "0x0002": {"raw_hex": "02", "value": 2},
+                                    "0x0003": {"raw_hex": "01", "value": 1},
+                                    "0x0006": {"raw_hex": "00", "value": 0},
+                                }
+                            }
+                        }
+                    },
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {"raw_hex": "02", "value": 2},
+                                    "0x0002": {"raw_hex": "03", "value": 3},
+                                    "0x0003": {"raw_hex": "02", "value": 2},
+                                    "0x0006": {"raw_hex": "01", "value": 1},
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+        },
+    }
+    path = tmp_path / "fixture_group_02_dual_namespace.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
     return path
 
@@ -519,13 +570,13 @@ def test_scan_b524_scans_enabled_unknown_group_via_planner(monkeypatch, tmp_path
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
-            (0x69, 0x02): GroupScanPlan(
+            make_plan_key(0x69, 0x02): GroupScanPlan(
                 group=0x69,
                 opcode=0x02,
                 rr_max=0x0000,
                 instances=(0x00,),
             ),
-            (0x69, 0x06): GroupScanPlan(
+            make_plan_key(0x69, 0x06): GroupScanPlan(
                 group=0x69,
                 opcode=0x06,
                 rr_max=0x0000,
@@ -575,7 +626,7 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
-            (0x02, 0x02): GroupScanPlan(
+            make_plan_key(0x02, 0x02): GroupScanPlan(
                 group=0x02,
                 opcode=0x02,
                 rr_max=0x0002,
@@ -662,13 +713,13 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
-            (0x09, 0x02): GroupScanPlan(
+            make_plan_key(0x09, 0x02): GroupScanPlan(
                 group=0x09,
                 opcode=0x02,
                 rr_max=0x0000,
                 instances=(0x00,),
             ),
-            (0x09, 0x06): GroupScanPlan(
+            make_plan_key(0x09, 0x06): GroupScanPlan(
                 group=0x09,
                 opcode=0x06,
                 rr_max=0x0000,
@@ -733,6 +784,19 @@ def test_artifact_register_flags_present(tmp_path: Path) -> None:
     assert entry["read_opcode_label"] == "local"
 
 
+def test_contextual_enum_annotations_follow_dual_namespace_group_02(tmp_path: Path) -> None:
+    fixture_path = _write_fixture_group_02_dual_namespace(tmp_path)
+    artifact = json.loads(fixture_path.read_text(encoding="utf-8"))
+    _apply_contextual_enum_annotations(artifact)
+
+    remote_registers = artifact["groups"]["0x02"]["namespaces"]["0x06"]["instances"]["0x00"][
+        "registers"
+    ]
+    assert remote_registers["0x0001"]["enum_resolved_name"] == "MIXER_CIRCUIT_EXTERNAL"
+    assert remote_registers["0x0002"]["enum_resolved_name"] == "DHW"
+    assert remote_registers["0x0003"]["enum_resolved_name"] == "EXTENDED"
+
+
 def test_group_08_remote_namespace_only_marks_present_instances(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -744,13 +808,13 @@ def test_group_08_remote_namespace_only_marks_present_instances(
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
-            (0x08, 0x02): GroupScanPlan(
+            make_plan_key(0x08, 0x02): GroupScanPlan(
                 group=0x08,
                 opcode=0x02,
                 rr_max=0x0000,
                 instances=(0x00,),
             ),
-            (0x08, 0x06): GroupScanPlan(
+            make_plan_key(0x08, 0x06): GroupScanPlan(
                 group=0x08,
                 opcode=0x06,
                 rr_max=0x0000,
@@ -813,7 +877,7 @@ def test_type_hint_propagation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
-            (0x09, 0x06): GroupScanPlan(
+            make_plan_key(0x09, 0x06): GroupScanPlan(
                 group=0x09,
                 opcode=0x06,
                 rr_max=0x0004,
@@ -857,25 +921,25 @@ def test_scan_b524_replays_dual_namespace_fixture_end_to_end(
 
     def fake_prompt_scan_plan(*_args, **_kwargs):
         return {
-            (0x00, 0x02): GroupScanPlan(
+            make_plan_key(0x00, 0x02): GroupScanPlan(
                 group=0x00,
                 opcode=0x02,
                 rr_max=0x0004,
                 instances=(0x00,),
             ),
-            (0x09, 0x02): GroupScanPlan(
+            make_plan_key(0x09, 0x02): GroupScanPlan(
                 group=0x09,
                 opcode=0x02,
                 rr_max=0x0007,
                 instances=(0x00, 0x01),
             ),
-            (0x09, 0x06): GroupScanPlan(
+            make_plan_key(0x09, 0x06): GroupScanPlan(
                 group=0x09,
                 opcode=0x06,
                 rr_max=0x0007,
                 instances=(0x00, 0x01),
             ),
-            (0x0C, 0x06): GroupScanPlan(
+            make_plan_key(0x0C, 0x06): GroupScanPlan(
                 group=0x0C,
                 opcode=0x06,
                 rr_max=0x0007,
@@ -992,7 +1056,7 @@ def test_scan_b524_normalizes_legacy_aggressive_preset_to_full_for_textual_defau
     assert captured["default_preset"] == "full"
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    for key in ((0x69, 0x02), (0x69, 0x06)):
+    for key in (make_plan_key(0x69, 0x02), make_plan_key(0x69, 0x06)):
         assert key in default_plan
         group_plan = default_plan[key]
         assert group_plan.rr_max == 0x30
@@ -1267,7 +1331,7 @@ def test_scan_b524_replan_textual_failure_prompts_classic_immediately(
     def fake_prompt_scan_plan(*_args, **_kwargs):
         classic_calls["count"] += 1
         return {
-            (0x02, 0x02): GroupScanPlan(
+            make_plan_key(0x02, 0x02): GroupScanPlan(
                 group=0x02,
                 opcode=0x02,
                 rr_max=0x0000,
