@@ -47,7 +47,7 @@ def iter_register_entries(
             continue
 
         namespaces = group_obj.get("namespaces")
-        if isinstance(namespaces, dict):
+        if isinstance(namespaces, dict) and namespaces:
             for namespace_key, namespace_obj in namespaces.items():
                 if not isinstance(namespace_key, str) or not isinstance(namespace_obj, dict):
                     continue
@@ -90,6 +90,15 @@ def _migrate_group(group_obj: dict[str, Any]) -> bool:
 
     namespaces = group_obj.get("namespaces")
     has_namespaces = isinstance(namespaces, dict)
+    instances = group_obj.get("instances")
+    has_instances = isinstance(instances, dict)
+
+    # Legacy artifacts can contain an empty namespaces object plus populated flat instances.
+    # Keep flat instances canonical in this shape so namespace-first readers do not drop data.
+    if has_namespaces and not namespaces and has_instances and instances:
+        group_obj.pop("namespaces", None)
+        has_namespaces = False
+        changed = True
 
     dual_namespace = group_obj.get("dual_namespace")
     if not isinstance(dual_namespace, bool):

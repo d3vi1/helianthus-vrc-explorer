@@ -11,6 +11,7 @@ import pytest
 
 from helianthus_vrc_explorer.artifact_schema import (
     CURRENT_ARTIFACT_SCHEMA_VERSION,
+    LEGACY_VERSIONED_SCHEMAS,
     LEGACY_UNVERSIONED_SCHEMA,
     count_register_entries,
     iter_register_entries,
@@ -157,6 +158,16 @@ def test_validator_can_reject_legacy_when_requested() -> None:
     assert any("legacy unversioned artifact rejected" in error for error in errors)
 
 
+def test_validator_can_reject_legacy_versioned_when_requested() -> None:
+    artifact = _load_fixture("vrc720_full_scan.json")
+    artifact["schema_version"] = next(iter(LEGACY_VERSIONED_SCHEMAS))
+
+    errors, _migrated, source_schema = _validate_scan_artifact(artifact, allow_legacy=False)
+
+    assert source_schema in LEGACY_VERSIONED_SCHEMAS
+    assert any("legacy versioned artifact" in error for error in errors)
+
+
 def test_validator_detects_namespace_opcode_mismatch() -> None:
     artifact = _load_fixture("dual_namespace_scan.json")
     artifact["groups"]["0x09"]["namespaces"]["0x06"]["instances"]["0x00"]["registers"]["0x0004"][
@@ -166,3 +177,36 @@ def test_validator_detects_namespace_opcode_mismatch() -> None:
     errors, _migrated, _source_schema = _validate_scan_artifact(artifact, allow_legacy=True)
 
     assert any("does not match namespace 0x06" in error for error in errors)
+
+
+def test_migrate_legacy_empty_namespaces_preserves_flat_instances() -> None:
+    legacy_artifact = {
+        "schema_version": "2.0",
+        "meta": {},
+        "groups": {
+            "0x02": {
+                "descriptor_type": 1.0,
+                "namespaces": {},
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x000f": {"raw_hex": "3412"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    migrated, report = migrate_artifact_schema(legacy_artifact)
+    group = migrated["groups"]["0x02"]
+    entries = list(iter_register_entries(migrated))
+
+    assert report.register_count_before == 1
+    assert report.register_count_after == 1
+    assert group["dual_namespace"] is False
+    assert "namespaces" not in group
+    assert group["instances"]["0x00"]["registers"]["0x000f"]["raw_hex"] == "3412"
+    assert entries == [
+        ("0x02", None, "0x00", "0x000f", {"raw_hex": "3412"}),
+    ]

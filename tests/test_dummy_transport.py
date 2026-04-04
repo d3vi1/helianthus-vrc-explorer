@@ -184,6 +184,35 @@ def test_dummy_transport_artifact_v2_namespaces_do_not_require_dual_namespace_fl
     assert transport.send(0x15, remote_payload) == bytes.fromhex("01090400021703")
 
 
+def test_dummy_transport_legacy_empty_namespaces_keeps_flat_instances_reachable(
+    tmp_path: Path,
+) -> None:
+    fixture = {
+        "schema_version": "2.0",
+        "meta": {},
+        "groups": {
+            "0x02": {
+                "descriptor_type": 1.0,
+                "namespaces": {},
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x000f": {"raw_hex": "3412"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+    fixture_path = tmp_path / "fixture_empty_namespaces_flat_instances.json"
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    transport = DummyTransport(fixture_path)
+    payload = build_register_read_payload(0x02, group=0x02, instance=0x00, register=0x000F)
+
+    assert transport.send(0x15, payload) == bytes.fromhex("01020f003412")
+
+
 def test_dummy_transport_unknown_group_flat_fixture_requires_explicit_namespace(
     tmp_path: Path,
 ) -> None:

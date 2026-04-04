@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from helianthus_vrc_explorer.artifact_schema import (
+    LEGACY_VERSIONED_SCHEMAS,
     LEGACY_UNVERSIONED_SCHEMA,
     ArtifactSchemaError,
     count_register_entries,
@@ -92,6 +93,12 @@ def validate_scan_artifact(
     source_schema_version = detect_schema_version(artifact)
     if not allow_legacy and source_schema_version == LEGACY_UNVERSIONED_SCHEMA:
         errors.append("schema_version: legacy unversioned artifact rejected (--reject-legacy)")
+        return errors, artifact, source_schema_version
+    if not allow_legacy and source_schema_version in LEGACY_VERSIONED_SCHEMAS:
+        errors.append(
+            "schema_version: legacy versioned artifact "
+            f"{source_schema_version!r} rejected (--reject-legacy)"
+        )
         return errors, artifact, source_schema_version
 
     try:
