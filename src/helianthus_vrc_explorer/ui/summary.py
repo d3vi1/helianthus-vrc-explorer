@@ -237,6 +237,7 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                     continue
                 namespace_present = 0
                 namespace_total = _topology_total_from_ii_max(namespace_obj.get("ii_max"))
+                topology_authoritative = namespace_total is not None
                 if namespace_total is None:
                     known_totals = False
                     namespace_total = len(namespace_instances)
@@ -258,16 +259,15 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                 namespace_registers[namespace_label] = (
                     namespace_registers.get(namespace_label, 0) + namespace_count
                 )
-            if namespace_group_names:
-                name = " / ".join(namespace_group_names)
                 namespace_instance_summaries[namespace_label] = _format_instance_summary(
                     present=namespace_present,
                     total=namespace_total,
-                    topology_authoritative=_topology_total_from_ii_max(namespace_obj.get("ii_max"))
-                    is not None,
+                    topology_authoritative=topology_authoritative,
                 )
                 instances_total += namespace_total
                 instances_present += namespace_present
+            if namespace_group_names:
+                name = " / ".join(namespace_group_names)
             if namespace_instance_summaries:
                 ordered_items = sorted(
                     namespace_instance_summaries.items(),

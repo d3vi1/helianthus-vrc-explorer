@@ -413,7 +413,7 @@ def _record_namespace_topology(
     if not isinstance(group_obj, dict):
         return
     if bool(group_obj.get("dual_namespace")):
-        _ensure_namespace_artifact(group_obj, opcode=opcode, ii_max=ii_max)
+        _ensure_namespace_artifact(group_obj, group=group, opcode=opcode, ii_max=ii_max)
         return
     if ii_max is not None:
         group_obj["ii_max"] = _hex_u8(ii_max)
