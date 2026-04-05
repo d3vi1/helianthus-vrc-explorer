@@ -73,7 +73,7 @@ def test_lookup_static_constraint_accepts_explicit_read_opcode_scope(tmp_path: P
         "\n".join(
             (
                 "group,register,type,min,max,step,read_opcodes",
-                "0x03,0x0002,f32_range,15,30,0.5,\"0x02,0x06\"",
+                '0x03,0x0002,f32_range,15,30,0.5,"0x02,0x06"',
             )
         )
         + "\n",

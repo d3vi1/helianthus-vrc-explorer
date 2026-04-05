@@ -746,9 +746,9 @@ def test_scan_b524_does_not_flag_remote_seeded_static_constraint_mismatch(
         planner_ui="classic",
     )
 
-    remote_entry = (
-        artifact["groups"]["0x09"]["namespaces"]["0x06"]["instances"]["0x00"]["registers"]["0x0002"]
-    )
+    remote_entry = artifact["groups"]["0x09"]["namespaces"]["0x06"]["instances"]["0x00"][
+        "registers"
+    ]["0x0002"]
     assert remote_entry["value"] == 21
     assert "constraint_source" not in remote_entry
     assert "constraint_mismatch_reason" not in remote_entry
