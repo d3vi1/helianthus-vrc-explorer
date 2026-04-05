@@ -7,7 +7,7 @@ import struct
 import sys
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -121,7 +121,7 @@ def _namespace_opcode_sort_key(opcode: int) -> tuple[int, int]:
     return priority, opcode
 
 
-def _sorted_namespace_opcodes(opcodes: list[int] | tuple[int, ...]) -> tuple[RegisterOpcode, ...]:
+def _sorted_namespace_opcodes(opcodes: Sequence[int]) -> tuple[RegisterOpcode, ...]:
     unique = {int(opcode): cast(RegisterOpcode, opcode) for opcode in opcodes}
     ordered = sorted(unique, key=_namespace_opcode_sort_key)
     return tuple(unique[opcode] for opcode in ordered)
