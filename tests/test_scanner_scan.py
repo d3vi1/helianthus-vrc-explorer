@@ -182,6 +182,77 @@ def _write_fixture_groups_00_and_01(tmp_path: Path) -> Path:
     return path
 
 
+def _write_fixture_groups_00_to_05(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x06"}},
+        "groups": {
+            "0x00": {
+                "descriptor_type": 3.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x01": {
+                "descriptor_type": 3.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x02": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0002": {"raw_hex": "0100"},
+                        }
+                    }
+                },
+            },
+            "0x03": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x001c": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x04": {
+                "descriptor_type": 6.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x05": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0004": {"raw_hex": "0000803f"},
+                        }
+                    }
+                },
+            },
+        },
+    }
+    path = tmp_path / "fixture_groups_00_to_05.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
 def _write_fixture_group_01_namespaces(tmp_path: Path) -> Path:
     fixture = {
         "meta": {"dummy_transport": {"directory_terminator_group": "0x02"}},
@@ -1714,7 +1785,7 @@ def test_scan_b524_textual_failure_falls_back_to_classic_in_auto_mode(
     assert classic_called["count"] >= 1
 
 
-def test_scan_b524_textual_planner_receives_group_01_remote_and_keeps_group_00_local_only(
+def test_scan_b524_textual_planner_receives_remote_heating_source_rows(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1746,12 +1817,13 @@ def test_scan_b524_textual_planner_receives_group_01_remote_and_keeps_group_00_l
     assert isinstance(planner_groups, list)
     planner_keys = {(group.group, group.opcode) for group in planner_groups}
     assert (0x00, 0x02) in planner_keys
-    assert (0x00, 0x06) not in planner_keys
+    assert (0x00, 0x06) in planner_keys
     assert (0x01, 0x02) in planner_keys
     assert (0x01, 0x06) in planner_keys
 
     name_by_key = {(group.group, group.opcode): group.name for group in planner_groups}
     assert name_by_key[(0x00, 0x02)] == "Regulator Parameters"
+    assert name_by_key[(0x00, 0x06)] == "Primary Heating Sources"
     assert name_by_key[(0x01, 0x02)] == "Hot Water Circuit"
     assert name_by_key[(0x01, 0x06)] == "Secondary Heating Sources"
 
@@ -1761,6 +1833,56 @@ def test_scan_b524_textual_planner_receives_group_01_remote_and_keeps_group_00_l
     assert make_plan_key(0x01, 0x02) not in default_plan
     assert make_plan_key(0x01, 0x06) not in default_plan
     assert make_plan_key(0x00, 0x06) not in default_plan
+    assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 0
+
+
+def test_scan_b524_textual_planner_includes_remote_exploratory_rows_for_groups_02_to_05(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        DummyTransport(_write_fixture_groups_00_to_05(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x02, 0x06)].name == "Unknown 0x02 (remote)"
+    assert by_key[(0x03, 0x06)].name == "Unknown 0x03 (remote)"
+    assert by_key[(0x04, 0x06)].name == "Unknown 0x04 (remote)"
+    assert by_key[(0x05, 0x06)].name == "Unknown 0x05 (remote)"
+    assert by_key[(0x02, 0x06)].ii_max == 0x0A
+    assert by_key[(0x03, 0x06)].ii_max == 0x0A
+    assert by_key[(0x04, 0x06)].ii_max == 0x0A
+    assert by_key[(0x05, 0x06)].ii_max == 0x0A
+
+    default_plan = captured["default_plan"]
+    assert isinstance(default_plan, dict)
+    assert make_plan_key(0x02, 0x06) not in default_plan
+    assert make_plan_key(0x03, 0x06) not in default_plan
+    assert make_plan_key(0x04, 0x06) not in default_plan
+    assert make_plan_key(0x05, 0x06) not in default_plan
     assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 0
 
 

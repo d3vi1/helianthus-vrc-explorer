@@ -157,7 +157,7 @@ def _is_dual_namespace_group(group: int) -> bool:
 
 
 def _planner_group_is_recommended(*, group: int, opcode: RegisterOpcode) -> bool:
-    if group in KNOWN_CORE_GROUPS:
+    if group in KNOWN_CORE_GROUPS and opcode == _LOCAL_REGISTER_OPCODE:
         return True
     config = GROUP_CONFIG.get(group)
     if config is None or bool(config.get("exhaustive_only")):
