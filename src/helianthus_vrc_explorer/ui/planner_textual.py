@@ -112,15 +112,14 @@ def _estimate_footer(
 def _planner_pane_id(opcode: int) -> str:
     if opcode == 0x02:
         return "local"
-    if opcode == 0x06:
-        return "remote"
-    return "other"
+    # Keep the planner bounded to the two B524 namespace panes. Unexpected
+    # opcodes are routed to remote instead of being silently dropped.
+    return "remote"
 
 
 _PANE_TABLE_IDS: dict[str, str] = {
     "local": "planner-table-local",
     "remote": "planner-table-remote",
-    "other": "planner-table-other",
 }
 
 
@@ -147,7 +146,7 @@ def run_textual_scan_plan(
 
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Horizontal, Vertical
+    from textual.containers import Vertical
     from textual.events import Key
     from textual.screen import ModalScreen
     from textual.widgets import DataTable, Footer, Header, Input, Label, Static
@@ -215,6 +214,9 @@ def run_textual_scan_plan(
             background: #2e3436;
             color: #eeeeec;
         }
+        #planner-pane-local, #planner-pane-remote {
+            height: 1fr;
+        }
         DataTable {
             height: 1fr;
         }
@@ -239,7 +241,7 @@ def run_textual_scan_plan(
             preset_plan = build_plan_from_preset(self._groups, preset=default_preset)
             initial_plan = default_plan if default_plan is not None else preset_plan
             self._states: dict[PlanKey, _EditableGroup] = {}
-            self._row_groups: dict[str, list[PlanKey]] = {"local": [], "remote": [], "other": []}
+            self._row_groups: dict[str, list[PlanKey]] = {"local": [], "remote": []}
             self._editing_group: PlanKey | None = None
             for group in self._groups:
                 group_plan = initial_plan.get(group.key)
@@ -261,7 +263,7 @@ def run_textual_scan_plan(
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
-            yield Horizontal(
+            yield Vertical(
                 Vertical(
                     Label(planner_namespace_title(0x02)),
                     DataTable(id="planner-table-local"),
@@ -271,11 +273,6 @@ def run_textual_scan_plan(
                     Label(planner_namespace_title(0x06)),
                     DataTable(id="planner-table-remote"),
                     id="planner-pane-remote",
-                ),
-                Vertical(
-                    Label("Other Namespaces"),
-                    DataTable(id="planner-table-other"),
-                    id="planner-pane-other",
                 ),
                 id="planner-panes",
             )
@@ -292,10 +289,8 @@ def run_textual_scan_plan(
             self._set_help("1/2/3/4 presets | Space toggle | Enter edit RR_max | i edit instances")
             if self._row_groups["local"]:
                 self.query_one("#planner-table-local", DataTable).focus()
-            elif self._row_groups["remote"]:
-                self.query_one("#planner-table-remote", DataTable).focus()
             else:
-                self.query_one("#planner-table-other", DataTable).focus()
+                self.query_one("#planner-table-remote", DataTable).focus()
 
         def _set_help(self, text: str) -> None:
             self.query_one("#help", Static).update(text)
@@ -351,7 +346,7 @@ def run_textual_scan_plan(
             ):
                 self.focused.focus()
                 return
-            for pane_key in ("local", "remote", "other"):
+            for pane_key in ("local", "remote"):
                 if self._row_groups[pane_key]:
                     self.query_one(f"#{_PANE_TABLE_IDS[pane_key]}", DataTable).focus()
                     return
@@ -422,7 +417,6 @@ def run_textual_scan_plan(
             tables = [
                 self.query_one("#planner-table-local", DataTable),
                 self.query_one("#planner-table-remote", DataTable),
-                self.query_one("#planner-table-other", DataTable),
             ]
             if not any(self._row_groups[pane_key] for pane_key in _PANE_TABLE_IDS):
                 return

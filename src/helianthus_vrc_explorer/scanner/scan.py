@@ -128,13 +128,24 @@ def _sorted_namespace_opcodes(opcodes: Sequence[int]) -> tuple[RegisterOpcode, .
 
 
 def _planner_source_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
-    if group != 0x01:
-        return _group_opcodes(group)
+    """Return broad planner-visible opcode candidates for a group.
+
+    The planner intentionally exposes both local and remote opcode families so
+    users can include exploratory rows even when semantic modeling is still
+    conservative for that namespace.
+    """
+
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return _UNKNOWN_GROUP_OPCODE_CANDIDATES
 
     profiles = group_namespace_profiles(group)
-    if not profiles:
-        return _group_opcodes(group)
-    return _sorted_namespace_opcodes(tuple(profiles))
+    candidate_opcodes: set[int] = {int(opcode) for opcode in _UNKNOWN_GROUP_OPCODE_CANDIDATES}
+    if profiles:
+        candidate_opcodes.update(int(opcode) for opcode in profiles)
+    else:
+        candidate_opcodes.update(int(opcode) for opcode in config["opcodes"])
+    return _sorted_namespace_opcodes(tuple(candidate_opcodes))
 
 
 def _primary_opcode(group: int) -> RegisterOpcode:
@@ -1790,7 +1801,7 @@ def scan_b524(
             config = GROUP_CONFIG.get(group.group)
             group_meta = metadata_map[group.group]
             opcodes = resolved_group_opcodes.get(group.group, ())
-            if planner_mode != "disabled" and config is not None:
+            if planner_mode != "disabled":
                 opcodes = _planner_source_opcodes(group.group)
             if not opcodes:
                 continue

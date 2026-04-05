@@ -153,7 +153,7 @@ def test_split_planner_groups_by_namespace_prefers_local_then_remote() -> None:
     assert sections[1][1] == [remote_group]
 
 
-def test_planner_pane_id_keeps_unknown_namespaces_visible() -> None:
+def test_planner_pane_id_routes_unexpected_namespaces_into_remote_pane() -> None:
     assert _planner_pane_id(0x02) == "local"
     assert _planner_pane_id(0x06) == "remote"
-    assert _planner_pane_id(0x08) == "other"
+    assert _planner_pane_id(0x08) == "remote"

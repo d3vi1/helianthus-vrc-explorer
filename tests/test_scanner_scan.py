@@ -1543,11 +1543,16 @@ def test_scan_b524_instance_discovery_runs_local_namespace_before_remote(
     assert all(opcode == 0x06 for opcode in presence_reads[first_remote_index:])
 
 
-def test_planner_source_opcodes_include_staged_group_01_remote_but_keep_group_00_local_only() -> (
-    None
-):
-    assert _planner_source_opcodes(0x00) == (0x02,)
+def test_planner_source_opcodes_surface_both_local_and_remote_for_planner_visibility() -> None:
+    # Planner visibility is intentionally broad:
+    # "Grupurile trebuie sa apara toate. Pur si simplu."
+    assert _planner_source_opcodes(0x00) == (0x02, 0x06)
     assert _planner_source_opcodes(0x01) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x02) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x06) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x07) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x0B) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x0C) == (0x02, 0x06)
 
 
 def test_scan_b524_disabled_planner_skips_interactive_planner_even_on_tty(
