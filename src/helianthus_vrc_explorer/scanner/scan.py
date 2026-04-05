@@ -404,6 +404,36 @@ def _promote_group_artifact_to_dual_namespace(
     group_obj["dual_namespace"] = True
 
 
+def _apply_effective_namespace_topology(
+    artifact: dict[str, Any],
+    *,
+    group_dual_namespace_runtime: Mapping[int, bool],
+    plan: Mapping[PlanKey, GroupScanPlan],
+) -> dict[int, bool]:
+    effective = dict(group_dual_namespace_runtime)
+    planned_opcodes_by_group: dict[int, set[RegisterOpcode]] = {}
+    for group_plan in plan.values():
+        group_id = group_plan.group
+        planned_opcodes = planned_opcodes_by_group.setdefault(group_id, set())
+        planned_opcodes.add(group_plan.opcode)
+
+    for group_id, planned_opcodes in planned_opcodes_by_group.items():
+        if len(planned_opcodes) <= 1:
+            continue
+        effective[group_id] = True
+        primary_opcode = (
+            _primary_opcode(group_id)
+            if group_id in GROUP_CONFIG
+            else cast(RegisterOpcode, min(planned_opcodes))
+        )
+        _promote_group_artifact_to_dual_namespace(
+            artifact,
+            group=group_id,
+            primary_opcode=primary_opcode,
+        )
+    return effective
+
+
 def _present_instances_for_opcode(
     artifact: dict[str, Any],
     *,
@@ -1685,23 +1715,11 @@ def scan_b524(
                         default_preset=planner_preset,
                     )
 
-        group_dual_namespace_effective = dict(group_dual_namespace_runtime)
-        planned_opcodes_by_group: dict[int, set[int]] = {}
-        for group_plan in plan.values():
-            planned_opcodes_by_group.setdefault(group_plan.group, set()).add(group_plan.opcode)
-        for group, opcodes in planned_opcodes_by_group.items():
-            if len(opcodes) > 1:
-                group_dual_namespace_effective[group] = True
-                primary_opcode = (
-                    _primary_opcode(group)
-                    if group in GROUP_CONFIG
-                    else cast(RegisterOpcode, min(opcodes))
-                )
-                _promote_group_artifact_to_dual_namespace(
-                    artifact,
-                    group=group,
-                    primary_opcode=primary_opcode,
-                )
+        group_dual_namespace_effective = _apply_effective_namespace_topology(
+            artifact,
+            group_dual_namespace_runtime=group_dual_namespace_runtime,
+            plan=plan,
+        )
 
         artifact["meta"]["scan_plan"] = {
             "groups": _scan_plan_meta_groups(plan),
@@ -1778,6 +1796,11 @@ def scan_b524(
                                 default_plan=plan,
                                 default_preset=planner_preset,
                             )
+                    group_dual_namespace_effective = _apply_effective_namespace_topology(
+                        artifact,
+                        group_dual_namespace_runtime=group_dual_namespace_runtime,
+                        plan=plan,
+                    )
                     artifact["meta"]["scan_plan"]["groups"] = _scan_plan_meta_groups(plan)
                     artifact["meta"]["scan_plan"]["estimated_register_requests"] = (
                         estimate_register_requests(plan)

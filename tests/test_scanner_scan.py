@@ -182,6 +182,40 @@ def _write_fixture_groups_00_and_01(tmp_path: Path) -> Path:
     return path
 
 
+def _write_fixture_group_01_namespaces(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x02"}},
+        "groups": {
+            "0x01": {
+                "descriptor_type": 3.0,
+                "namespaces": {
+                    "0x02": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "02"},
+                                }
+                            }
+                        }
+                    },
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "06"},
+                                }
+                            }
+                        }
+                    },
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_group_01_namespaces.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
 def _write_fixture_unknown_group_69(tmp_path: Path) -> Path:
     fixture = {
         "meta": {"dummy_transport": {"directory_terminator_group": "0x6a"}},
@@ -1340,8 +1374,9 @@ def test_scan_b524_recommended_plan_keeps_namespace_rr_max(tmp_path: Path) -> No
     assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 70
 
 
-def test_planner_source_opcodes_include_staged_group_01_remote_but_keep_group_00_local_only(
-) -> None:
+def test_planner_source_opcodes_include_staged_group_01_remote_but_keep_group_00_local_only() -> (
+    None
+):
     assert _planner_source_opcodes(0x00) == (0x02,)
     assert _planner_source_opcodes(0x01) == (0x02, 0x06)
 
@@ -1622,6 +1657,93 @@ def test_scan_b524_replan_before_first_completed_task_does_not_divide_by_zero(
     )
 
     assert artifact["meta"]["incomplete"] is False
+
+
+def test_scan_b524_replan_promotes_group_01_to_dual_namespace_before_queue_rebuild(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+    from contextlib import contextmanager
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    class _FakeHotkeys:
+        def __init__(self, *, enabled: bool) -> None:
+            self._enabled = enabled
+            self._poll_calls = 0
+
+        def __enter__(self) -> _FakeHotkeys:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def poll(self) -> bool:
+            if not self._enabled:
+                return False
+            self._poll_calls += 1
+            return self._poll_calls == 2
+
+        @contextmanager
+        def suspend(self):
+            yield None
+
+    transport = RecordingTransport(DummyTransport(_write_fixture_group_01_namespaces(tmp_path)))
+    planner_calls = {"count": 0}
+
+    def fake_prompt_scan_plan(*_args, **_kwargs):
+        planner_calls["count"] += 1
+        if planner_calls["count"] == 1:
+            return {
+                make_plan_key(0x01, 0x02): GroupScanPlan(
+                    group=0x01,
+                    opcode=0x02,
+                    rr_max=0x0001,
+                    instances=(0x00,),
+                )
+            }
+        return {
+            make_plan_key(0x01, 0x02): GroupScanPlan(
+                group=0x01,
+                opcode=0x02,
+                rr_max=0x0001,
+                instances=(0x00,),
+            ),
+            make_plan_key(0x01, 0x06): GroupScanPlan(
+                group=0x01,
+                opcode=0x06,
+                rr_max=0x0000,
+                instances=(0x00,),
+            ),
+        }
+
+    monkeypatch.setattr(scan_mod, "_PlannerHotkeyReader", _FakeHotkeys)
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    group = artifact["groups"]["0x01"]
+    assert group["dual_namespace"] is True
+    assert "instances" not in group
+    assert (
+        group["namespaces"]["0x02"]["instances"]["0x00"]["registers"]["0x0000"]["raw_hex"] == "02"
+    )
+    assert (
+        group["namespaces"]["0x06"]["instances"]["0x00"]["registers"]["0x0000"]["raw_hex"] == "06"
+    )
+
+    scan_plan = artifact["meta"]["scan_plan"]["groups"]["0x01"]
+    assert scan_plan["dual_namespace"] is True
+    assert set(scan_plan["namespaces"]) == {"0x02", "0x06"}
+    assert (0x06, 0x01, 0x00, 0x0000) in transport.register_reads
 
 
 def test_scan_b524_replan_textual_failure_prompts_classic_immediately(
