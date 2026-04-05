@@ -17,8 +17,8 @@ from rich.console import Console
 from ..artifact_schema import CURRENT_ARTIFACT_SCHEMA_VERSION
 from ..protocol.b524 import RegisterOpcode, build_constraint_probe_payload
 from ..schema.b524_constraints import (
-    CONSTRAINT_SCOPE_DECISION,
     CONSTRAINT_SCOPE_PROTOCOL,
+    LIVE_PROBE_CONSTRAINT_SCOPE,
     StaticConstraintCatalog,
     StaticConstraintEntry,
     constraint_scope_metadata,
@@ -611,7 +611,7 @@ class ConstraintEntry:
     step_value: int | float
     raw_hex: str
     source: str = "opcode_0x01"
-    scope: str = CONSTRAINT_SCOPE_DECISION
+    scope: str = LIVE_PROBE_CONSTRAINT_SCOPE
     provenance: str = "live_probe_from_opcode_0x01"
 
 
@@ -1958,9 +1958,9 @@ def scan_b524(
             artifact["meta"]["constraint_rescan_recommended"] = True
             if observer is not None:
                 observer.log(
-                    "Observed register values outside the bundled static constraint catalog. "
-                    "Review meta.constraint_mismatches and rerun with --probe-constraints if "
-                    "you want live confirmation.",
+                    "Observed register values outside the scoped bundled static "
+                    "constraint catalog. Review meta.constraint_mismatches and rerun "
+                    "with --probe-constraints if you want live confirmation.",
                     level="warn",
                 )
 

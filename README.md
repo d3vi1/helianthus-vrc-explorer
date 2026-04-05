@@ -77,7 +77,7 @@ Transport note:
 Constraint note:
 - Normal scans use a bundled static BASV2 constraint catalog and flag values that fall outside it.
 - `--probe-constraints` is a separate live rescan path for opcode `0x01`; it can add hundreds of extra requests and should only be used when you need to confirm a mismatch or do research work.
-- Constraint scope decision: `gg_rr_invariant`. The opcode `0x01` probe frame (`01 GG RR`) does not carry register-read opcode (`0x02`/`0x06`) or instance, so constraints are treated as GG/RR-scoped invariants across local and remote namespaces.
+- Constraint scope decision: `opcode_0x02_default`. The bundled static catalog is seeded from opcode `0x01` probe evidence, but it is only applied to opcode `0x02` by default. Remote opcode `0x06` requires explicit scope or live confirmation via `--probe-constraints`.
 - Artifacts record this decision in `meta.constraint_scope` and per-entry fields (`constraint_scope`, `constraint_provenance`) so report/UI consumers do not guess scope semantics.
 - `--preset full` is intentionally expensive: it expands all instance slots and full RR ranges and can take hours on BASV2.
 

@@ -599,7 +599,7 @@ def test_scan_b524_collects_constraint_dictionary_entries(tmp_path: Path) -> Non
     assert constraints["min"] == 0
     assert constraints["max"] == 4
     assert constraints["step"] == 1
-    assert constraints["scope"] == "gg_rr_invariant"
+    assert constraints["scope"] == "opcode_0x01_probe"
     assert constraints["provenance"] == "live_probe_from_opcode_0x01"
     assert transport.register_reads is not None
     scanned_registers = {
@@ -650,11 +650,11 @@ def test_scan_b524_skips_constraint_dictionary_by_default(tmp_path: Path) -> Non
     assert transport.constraint_requests == []
     assert artifact["meta"]["constraint_probe_enabled"] is False
     assert artifact["meta"]["constraint_dictionary"] == {}
-    assert artifact["meta"]["constraint_scope"]["decision"] == "gg_rr_invariant"
+    assert artifact["meta"]["constraint_scope"]["decision"] == "opcode_0x02_default"
     assert artifact["meta"]["constraint_scope"]["protocol"] == "opcode_0x01"
     entry = artifact["groups"]["0x02"]["instances"]["0x00"]["registers"]["0x0002"]
     assert entry["constraint_source"] == "static_catalog"
-    assert entry["constraint_scope"] == "gg_rr_invariant"
+    assert entry["constraint_scope"] == "opcode_0x02_default"
     assert entry["constraint_provenance"] == "catalog_seeded_from_opcode_0x01"
     assert entry["constraint_type"] == "u16_range"
     assert entry["constraint_min"] == 0
@@ -697,10 +697,62 @@ def test_scan_b524_flags_seeded_constraint_mismatch(tmp_path: Path) -> None:
     assert mismatches[0]["group"] == "0x02"
     assert mismatches[0]["register"] == "0x0002"
     assert mismatches[0]["value"] == 5
-    assert mismatches[0]["constraint_scope"] == "gg_rr_invariant"
+    assert mismatches[0]["constraint_scope"] == "opcode_0x02_default"
     assert mismatches[0]["constraint_provenance"] == "catalog_seeded_from_opcode_0x01"
     assert mismatches[0]["constraint_probe_protocol"] == "opcode_0x01"
     assert artifact["meta"]["constraint_rescan_recommended"] is True
+
+
+def test_scan_b524_does_not_flag_remote_seeded_static_constraint_mismatch(
+    tmp_path: Path,
+) -> None:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x0a"}},
+        "groups": {
+            "0x09": {
+                "descriptor_type": 1.0,
+                "namespaces": {
+                    "0x02": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {"raw_hex": "34"},
+                                }
+                            }
+                        }
+                    },
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {"raw_hex": "01"},
+                                    "0x0002": {"raw_hex": "15"},
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+        },
+    }
+    fixture_path = tmp_path / "remote_constraint_scope.json"
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    artifact = scan_b524(
+        DummyTransport(fixture_path),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    remote_entry = artifact["groups"]["0x09"]["namespaces"]["0x06"]["instances"]["0x00"][
+        "registers"
+    ]["0x0002"]
+    assert remote_entry["value"] == 21
+    assert "constraint_source" not in remote_entry
+    assert "constraint_mismatch_reason" not in remote_entry
+    assert artifact["meta"].get("constraint_mismatches") is None
 
 
 def test_scan_b524_group_bounds_come_from_profile_defaults(tmp_path: Path) -> None:

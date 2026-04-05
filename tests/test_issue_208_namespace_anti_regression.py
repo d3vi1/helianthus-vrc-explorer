@@ -73,7 +73,7 @@ def test_issue_208_artifact_round_trip_stability_preserves_identity_set() -> Non
     assert _register_identity_set(migrated_once) == _register_identity_set(migrated_twice)
 
 
-def test_issue_208_constraint_scope_is_opcode_invariant_for_same_group_register(
+def test_issue_208_constraint_scope_defaults_to_opcode_0x02_only(
     tmp_path: Path,
 ) -> None:
     catalog_path = tmp_path / "constraints.csv"
@@ -101,8 +101,7 @@ def test_issue_208_constraint_scope_is_opcode_invariant_for_same_group_register(
     )
 
     assert local is not None
-    assert remote is not None
-    assert local == remote
+    assert remote is None
     assert local.scope == CONSTRAINT_SCOPE_DECISION
     assert local.kind == "f32_range"
     assert local.min_value == 15
