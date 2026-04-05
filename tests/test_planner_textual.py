@@ -5,6 +5,7 @@ from helianthus_vrc_explorer.ui.planner_textual import (
     _EditableGroup,
     _estimate_footer,
     _parse_instances_spec,
+    _table_row_values,
 )
 
 
@@ -49,3 +50,58 @@ def test_estimate_footer_reports_requests_and_eta() -> None:
     assert "Plan: 6 requests" in footer
     assert "ETA:" in footer
     assert "1 plan entries selected" in footer
+
+
+def test_table_row_values_show_explicit_namespace_column() -> None:
+    remote_group = PlannerGroup(
+        group=0x01,
+        opcode=0x06,
+        name="Hot Water Circuit",
+        descriptor=3.0,
+        known=True,
+        ii_max=None,
+        rr_max=0x0015,
+        rr_max_full=0x0015,
+        present_instances=(0x00,),
+        namespace_label="remote",
+        primary=False,
+    )
+    local_only_group = PlannerGroup(
+        group=0x00,
+        opcode=0x02,
+        name="Regulator Parameters",
+        descriptor=3.0,
+        known=True,
+        ii_max=None,
+        rr_max=0x00FF,
+        rr_max_full=0x00FF,
+        present_instances=(0x00,),
+    )
+
+    remote_row = _table_row_values(
+        _EditableGroup(
+            group=remote_group,
+            enabled=True,
+            rr_max=0x0015,
+            instances=(0x00,),
+        )
+    )
+    local_row = _table_row_values(
+        _EditableGroup(
+            group=local_only_group,
+            enabled=False,
+            rr_max=0x00FF,
+            instances=(0x00,),
+        )
+    )
+
+    assert remote_row == ("✓", "0x01", "Hot Water Circuit", "remote", "3.0", "singleton", "0x0015")
+    assert local_row == (
+        " ",
+        "0x00",
+        "Regulator Parameters",
+        "local",
+        "3.0",
+        "singleton",
+        "0x00FF",
+    )

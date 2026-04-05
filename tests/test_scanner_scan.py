@@ -11,6 +11,7 @@ from helianthus_vrc_explorer.scanner.observer import ScanObserver
 from helianthus_vrc_explorer.scanner.plan import GroupScanPlan, make_plan_key
 from helianthus_vrc_explorer.scanner.scan import (
     _apply_contextual_enum_annotations,
+    _planner_source_opcodes,
     _probe_unknown_group_opcodes,
     scan_b524,
 )
@@ -133,6 +134,50 @@ def _write_fixture_group_00(tmp_path: Path) -> Path:
         },
     }
     path = tmp_path / "fixture_group_00.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
+def _write_fixture_groups_00_and_01(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x02"}},
+        "groups": {
+            "0x00": {
+                "descriptor_type": 3.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x01": {
+                "descriptor_type": 3.0,
+                "namespaces": {
+                    "0x02": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "00"},
+                                }
+                            }
+                        }
+                    },
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0000": {"raw_hex": "00"},
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+        },
+    }
+    path = tmp_path / "fixture_groups_00_and_01.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
     return path
 
@@ -1295,6 +1340,12 @@ def test_scan_b524_recommended_plan_keeps_namespace_rr_max(tmp_path: Path) -> No
     assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 70
 
 
+def test_planner_source_opcodes_include_staged_group_01_remote_but_keep_group_00_local_only(
+) -> None:
+    assert _planner_source_opcodes(0x00) == (0x02,)
+    assert _planner_source_opcodes(0x01) == (0x02, 0x06)
+
+
 def test_scan_b524_disabled_planner_skips_interactive_planner_even_on_tty(
     monkeypatch,
     tmp_path: Path,
@@ -1448,6 +1499,50 @@ def test_scan_b524_textual_failure_falls_back_to_classic_in_auto_mode(
 
     assert artifact["meta"]["incomplete"] is False
     assert classic_called["count"] >= 1
+
+
+def test_scan_b524_textual_planner_receives_group_01_remote_and_keeps_group_00_local_only(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        DummyTransport(_write_fixture_groups_00_and_01(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    planner_keys = {(group.group, group.opcode) for group in planner_groups}
+    assert (0x00, 0x02) in planner_keys
+    assert (0x00, 0x06) not in planner_keys
+    assert (0x01, 0x02) in planner_keys
+    assert (0x01, 0x06) in planner_keys
+
+    default_plan = captured["default_plan"]
+    assert isinstance(default_plan, dict)
+    assert make_plan_key(0x01, 0x02) in default_plan
+    assert make_plan_key(0x01, 0x06) in default_plan
+    assert make_plan_key(0x00, 0x06) not in default_plan
+    assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 0
 
 
 def test_scan_b524_textual_failure_raises_in_forced_textual_mode(

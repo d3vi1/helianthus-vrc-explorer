@@ -38,7 +38,13 @@ from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, pr
 from .b509 import scan_b509
 from .b516 import scan_b516
 from .b555 import scan_b555
-from .director import GROUP_CONFIG, DiscoveredGroup, classify_groups, discover_groups
+from .director import (
+    GROUP_CONFIG,
+    DiscoveredGroup,
+    classify_groups,
+    discover_groups,
+    group_namespace_profiles,
+)
 from .identity import make_register_identity, opcode_label
 from .observer import ScanObserver
 from .plan import (
@@ -103,6 +109,16 @@ def _planner_ii_max(ii_max: int | None) -> int | None:
 
 def _group_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
     return tuple(opcodes_for_group(group))
+
+
+def _planner_source_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
+    if group != 0x01:
+        return _group_opcodes(group)
+
+    profiles = group_namespace_profiles(group)
+    if not profiles:
+        return _group_opcodes(group)
+    return tuple(cast(RegisterOpcode, opcode) for opcode in sorted(profiles))
 
 
 def _primary_opcode(group: int) -> RegisterOpcode:
@@ -347,6 +363,45 @@ def _record_availability_probes(
     probe_map = cast(dict[str, Any], target.setdefault("availability_probes", {}))
     for instance, probe in sorted(probes.items()):
         probe_map[_hex_u8(instance)] = _serialize_availability_probe(probe)
+
+
+def _promote_group_artifact_to_dual_namespace(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    primary_opcode: RegisterOpcode,
+) -> None:
+    group_obj = artifact["groups"].get(_hex_u8(group))
+    if not isinstance(group_obj, dict) or bool(group_obj.get("dual_namespace")):
+        return
+
+    flat_instances = group_obj.pop("instances", {})
+    namespaces = group_obj.setdefault("namespaces", {})
+    if not isinstance(namespaces, dict):
+        namespaces = {}
+        group_obj["namespaces"] = namespaces
+
+    namespace_key = _hex_u8(primary_opcode)
+    namespace_obj = namespaces.setdefault(
+        namespace_key,
+        {
+            "label": opcode_label(primary_opcode),
+            "instances": {},
+        },
+    )
+    if not isinstance(namespace_obj, dict):
+        namespace_obj = {
+            "label": opcode_label(primary_opcode),
+            "instances": {},
+        }
+        namespaces[namespace_key] = namespace_obj
+
+    namespace_obj.setdefault("label", opcode_label(primary_opcode))
+    if isinstance(flat_instances, dict) and flat_instances:
+        namespace_obj["instances"] = flat_instances
+    else:
+        namespace_obj.setdefault("instances", {})
+    group_obj["dual_namespace"] = True
 
 
 def _present_instances_for_opcode(
@@ -1531,6 +1586,8 @@ def scan_b524(
             config = GROUP_CONFIG.get(group.group)
             group_meta = metadata_map[group.group]
             opcodes = resolved_group_opcodes.get(group.group, ())
+            if planner_mode != "disabled" and config is not None:
+                opcodes = _planner_source_opcodes(group.group)
             if not opcodes:
                 continue
             primary_opcode = opcodes[0]
@@ -1627,6 +1684,24 @@ def scan_b524(
                         default_plan=planner_default_plan,
                         default_preset=planner_preset,
                     )
+
+        group_dual_namespace_effective = dict(group_dual_namespace_runtime)
+        planned_opcodes_by_group: dict[int, set[int]] = {}
+        for group_plan in plan.values():
+            planned_opcodes_by_group.setdefault(group_plan.group, set()).add(group_plan.opcode)
+        for group, opcodes in planned_opcodes_by_group.items():
+            if len(opcodes) > 1:
+                group_dual_namespace_effective[group] = True
+                primary_opcode = (
+                    _primary_opcode(group)
+                    if group in GROUP_CONFIG
+                    else cast(RegisterOpcode, min(opcodes))
+                )
+                _promote_group_artifact_to_dual_namespace(
+                    artifact,
+                    group=group,
+                    primary_opcode=primary_opcode,
+                )
 
         artifact["meta"]["scan_plan"] = {
             "groups": _scan_plan_meta_groups(plan),
@@ -1841,7 +1916,7 @@ def scan_b524(
                     group=task.group,
                     name="Unknown",
                     descriptor_observed=None,
-                    dual_namespace=group_dual_namespace_runtime.get(task.group, False),
+                    dual_namespace=group_dual_namespace_effective.get(task.group, False),
                 )
                 instances_obj = _instances_object(
                     artifact,

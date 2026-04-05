@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..scanner.identity import opcode_label
 from ..scanner.plan import (
     GroupScanPlan,
     PlanKey,
@@ -20,6 +21,25 @@ class _EditableGroup:
     enabled: bool
     rr_max: int
     instances: tuple[int, ...]
+
+
+def _namespace_text(group: PlannerGroup) -> str:
+    return group.namespace_label or opcode_label(group.opcode)
+
+
+def _table_row_values(state: _EditableGroup) -> tuple[str, str, str, str, str, str, str]:
+    group = state.group
+    mark = "✓" if state.enabled else " "
+    name = group.name if group.known else f"{group.name} (experimental)"
+    return (
+        mark,
+        f"0x{group.group:02X}",
+        name,
+        _namespace_text(group),
+        f"{group.descriptor:.1f}",
+        _format_instances(group, state.instances, enabled=state.enabled),
+        f"0x{state.rr_max:04X}",
+    )
 
 
 def _format_instances(group: PlannerGroup, instances: tuple[int, ...], *, enabled: bool) -> str:
@@ -215,7 +235,7 @@ def run_textual_scan_plan(
         def on_mount(self) -> None:
             table = self.query_one(DataTable)
             table.cursor_type = "row"
-            table.add_columns("On", "GG", "Name", "Type", "Instances", "RR_max")
+            table.add_columns("On", "GG", "Name", "Namespace", "Type", "Instances", "RR_max")
             self._refresh_table()
             self._set_help("1/2/3/4 presets | Space toggle | Enter edit RR_max | i edit instances")
             table.focus()
@@ -244,16 +264,7 @@ def run_textual_scan_plan(
             self._row_groups = []
             for group in self._groups:
                 state = self._states[group.key]
-                mark = "✓" if state.enabled else " "
-                name = group.display_name if group.known else f"{group.display_name} (experimental)"
-                table.add_row(
-                    mark,
-                    f"0x{group.group:02X}",
-                    name,
-                    f"{group.descriptor:.1f}",
-                    _format_instances(group, state.instances, enabled=state.enabled),
-                    f"0x{state.rr_max:04X}",
-                )
+                table.add_row(*_table_row_values(state))
                 self._row_groups.append(group.key)
             if self._row_groups:
                 table.move_cursor(row=min(current, len(self._row_groups) - 1))
