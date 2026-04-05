@@ -1963,6 +1963,88 @@ def test_scan_b524_replan_promotes_group_01_to_dual_namespace_before_queue_rebui
     assert (0x06, 0x01, 0x00, 0x0000) in transport.register_reads
 
 
+def test_scan_b524_replan_back_to_single_preserves_promoted_dual_namespace_data(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+    from contextlib import contextmanager
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    class _FakeHotkeys:
+        def __init__(self, *, enabled: bool) -> None:
+            self._enabled = enabled
+            self._poll_calls = 0
+
+        def __enter__(self) -> _FakeHotkeys:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def poll(self) -> bool:
+            if not self._enabled:
+                return False
+            self._poll_calls += 1
+            return self._poll_calls == 2
+
+        @contextmanager
+        def suspend(self):
+            yield None
+
+    transport = RecordingTransport(DummyTransport(_write_fixture_group_01_namespaces(tmp_path)))
+    planner_calls = {"count": 0}
+
+    def fake_prompt_scan_plan(*_args, **_kwargs):
+        planner_calls["count"] += 1
+        if planner_calls["count"] == 1:
+            return {
+                make_plan_key(0x01, 0x02): GroupScanPlan(
+                    group=0x01,
+                    opcode=0x02,
+                    rr_max=0x0001,
+                    instances=(0x00,),
+                ),
+                make_plan_key(0x01, 0x06): GroupScanPlan(
+                    group=0x01,
+                    opcode=0x06,
+                    rr_max=0x0000,
+                    instances=(0x00,),
+                ),
+            }
+        return {
+            make_plan_key(0x01, 0x02): GroupScanPlan(
+                group=0x01,
+                opcode=0x02,
+                rr_max=0x0001,
+                instances=(0x00,),
+            )
+        }
+
+    monkeypatch.setattr(scan_mod, "_PlannerHotkeyReader", _FakeHotkeys)
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    group = artifact["groups"]["0x01"]
+    assert group["dual_namespace"] is True
+    assert "namespaces" in group
+    assert "instances" not in group
+    assert (
+        group["namespaces"]["0x02"]["instances"]["0x00"]["registers"]["0x0000"]["raw_hex"]
+        == "02"
+    )
+    assert transport.register_reads[0] == (0x02, 0x01, 0x00, 0x0000)
+
+
 def test_scan_b524_replan_textual_failure_prompts_classic_immediately(
     monkeypatch,
     tmp_path: Path,

@@ -515,6 +515,24 @@ def _apply_effective_namespace_topology(
     plan: Mapping[PlanKey, GroupScanPlan],
 ) -> dict[int, bool]:
     effective = dict(group_dual_namespace_runtime)
+    groups_obj = artifact.get("groups")
+    if isinstance(groups_obj, dict):
+        for group_key, group_obj in groups_obj.items():
+            if not isinstance(group_obj, dict):
+                continue
+            if not isinstance(group_key, str):
+                continue
+            namespaces_obj = group_obj.get("namespaces")
+            has_namespace_data = isinstance(namespaces_obj, dict) and bool(namespaces_obj)
+            if not (bool(group_obj.get("dual_namespace")) or has_namespace_data):
+                continue
+            try:
+                group_id = int(group_key, 0)
+            except ValueError:
+                continue
+            # Topology is monotonic once promoted: hotkey replans must not demote groups
+            # back to flat storage and drop already-captured namespace data.
+            effective[group_id] = True
     planned_opcodes_by_group: dict[int, set[RegisterOpcode]] = {}
     for group_plan in plan.values():
         group_id = group_plan.group
