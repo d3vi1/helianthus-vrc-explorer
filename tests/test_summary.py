@@ -448,6 +448,7 @@ def test_render_summary_ignores_synthetic_instance_slots_in_topology_ratios(
     assert "Unknown 0x69" in text and "1/11" in text
     assert "Buffer / Solar Cylinder 2" in text and "singleton" in text
 
+
 def test_render_summary_uses_discovery_namespace_for_omitted_single_namespace_group(
     tmp_path: Path,
 ) -> None:
