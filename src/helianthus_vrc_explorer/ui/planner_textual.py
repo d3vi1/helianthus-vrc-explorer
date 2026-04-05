@@ -218,9 +218,7 @@ def run_textual_scan_plan(
             super().__init__()
             namespace_sections = split_planner_groups_by_namespace(groups)
             self._groups = [
-                group
-                for (_title, pane_groups) in namespace_sections
-                for group in pane_groups
+                group for (_title, pane_groups) in namespace_sections for group in pane_groups
             ]
             preset_plan = build_plan_from_preset(self._groups, preset=default_preset)
             initial_plan = default_plan if default_plan is not None else preset_plan
@@ -302,8 +300,7 @@ def run_textual_scan_plan(
                 "remote": self.query_one("#planner-table-remote", DataTable),
             }
             cursor_by_pane = {
-                pane: max(0, table.cursor_row)
-                for pane, table in table_by_pane.items()
+                pane: max(0, table.cursor_row) for pane, table in table_by_pane.items()
             }
             for table in table_by_pane.values():
                 table.clear(columns=False)

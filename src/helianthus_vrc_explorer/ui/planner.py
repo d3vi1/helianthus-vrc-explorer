@@ -457,7 +457,6 @@ def prompt_scan_plan(
         default_preset=default_preset,
     )
 
-
     console.print(Rule("Scan Planner", style="dim"))
     console.print(
         Text(

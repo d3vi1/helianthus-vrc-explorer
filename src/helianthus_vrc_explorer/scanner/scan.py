@@ -116,12 +116,14 @@ def _group_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
     return _sorted_namespace_opcodes(opcodes_for_group(group))
 
 
+def _namespace_opcode_sort_key(opcode: int) -> tuple[int, int]:
+    priority = 0 if opcode == 0x02 else 1 if opcode == 0x06 else 2
+    return priority, opcode
+
+
 def _sorted_namespace_opcodes(opcodes: list[int] | tuple[int, ...]) -> tuple[RegisterOpcode, ...]:
     unique = {int(opcode): cast(RegisterOpcode, opcode) for opcode in opcodes}
-    ordered = sorted(
-        unique,
-        key=lambda opcode: (0 if opcode == 0x02 else 1 if opcode == 0x06 else 2, opcode),
-    )
+    ordered = sorted(unique, key=_namespace_opcode_sort_key)
     return tuple(unique[opcode] for opcode in ordered)
 
 
@@ -1660,8 +1662,7 @@ def scan_b524(
             if not _is_instanced_group(namespace_ii_max):
                 _mark_present_instances(instances_obj, instances=(0x00,))
                 known_namespace_probe_counts.setdefault(group.group, []).append(
-                    f"{_group_name_for_opcode(group.group, opcode)} "
-                    f"[{opcode_label(opcode)}] 1/1"
+                    f"{_group_name_for_opcode(group.group, opcode)} [{opcode_label(opcode)}] 1/1"
                 )
                 continue
 

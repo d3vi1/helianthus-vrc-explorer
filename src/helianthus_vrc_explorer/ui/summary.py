@@ -225,11 +225,7 @@ def _scan_plan_namespace_keys(artifact: dict[str, Any], group_key: str) -> list[
     namespaces = group_plan.get("namespaces")
     if isinstance(namespaces, dict) and namespaces:
         return sorted(
-            (
-                namespace_key
-                for namespace_key in namespaces
-                if isinstance(namespace_key, str)
-            ),
+            (namespace_key for namespace_key in namespaces if isinstance(namespace_key, str)),
             key=_namespace_sort_key,
         )
     namespace_key = _normalize_namespace_key(group_plan.get("namespace_key"))
@@ -487,9 +483,7 @@ def render_summary(console: Console, artifact: dict[str, Any], *, output_path: P
     namespace_totals = _compute_namespace_totals(artifact)
     flags_distribution = _compute_flags_distribution(artifact)
 
-    console.print(
-        f"groups={group_count} registers={total_regs} errors={total_errs}", style="dim"
-    )
+    console.print(f"groups={group_count} registers={total_regs} errors={total_errs}", style="dim")
     console.print(f"namespaces {_format_counts(namespace_totals)}", style="dim")
     console.print(f"flags_access {_format_counts(flags_distribution)}", style="dim")
 
@@ -549,11 +543,7 @@ def render_summary(console: Console, artifact: dict[str, Any], *, output_path: P
 
     local_rows = [row for row in summary_rows if row.namespace_key == "0x02"]
     remote_rows = [row for row in summary_rows if row.namespace_key == "0x06"]
-    other_rows = [
-        row
-        for row in summary_rows
-        if row.namespace_key not in {"0x02", "0x06"}
-    ]
+    other_rows = [row for row in summary_rows if row.namespace_key not in {"0x02", "0x06"}]
     _render_summary_block(console, title="Local Devices (0x02)", rows=local_rows)
     _render_summary_block(console, title="Remote Devices (0x06)", rows=remote_rows)
     _render_summary_block(console, title="Other Namespaces", rows=other_rows)
