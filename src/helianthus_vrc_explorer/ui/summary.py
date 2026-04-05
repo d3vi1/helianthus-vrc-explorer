@@ -239,6 +239,21 @@ def _scan_plan_namespace_keys(artifact: dict[str, Any], group_key: str) -> list[
     return [namespace_key] if namespace_key is not None else []
 
 
+def _discovery_namespace_keys(group_obj: dict[str, Any]) -> list[str]:
+    discovery_advisory = group_obj.get("discovery_advisory")
+    if not isinstance(discovery_advisory, dict):
+        return []
+    proven_register_opcodes = discovery_advisory.get("proven_register_opcodes")
+    if not isinstance(proven_register_opcodes, list):
+        return []
+    namespace_keys: set[str] = set()
+    for opcode in proven_register_opcodes:
+        namespace_key = _normalize_namespace_key(opcode)
+        if namespace_key is not None:
+            namespace_keys.add(namespace_key)
+    return sorted(namespace_keys, key=_namespace_sort_key)
+
+
 def _infer_single_namespace_key(
     artifact: dict[str, Any],
     *,
@@ -248,6 +263,9 @@ def _infer_single_namespace_key(
     planned_namespace_keys = _scan_plan_namespace_keys(artifact, group_key)
     if len(planned_namespace_keys) == 1:
         return planned_namespace_keys[0]
+    discovery_namespace_keys = _discovery_namespace_keys(group_obj)
+    if len(discovery_namespace_keys) == 1:
+        return discovery_namespace_keys[0]
     inferred_keys: set[str] = set()
     instances = group_obj.get("instances", {})
     if not isinstance(instances, dict):

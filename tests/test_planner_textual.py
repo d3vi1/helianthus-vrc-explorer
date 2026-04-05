@@ -5,6 +5,7 @@ from helianthus_vrc_explorer.ui.planner_textual import (
     _EditableGroup,
     _estimate_footer,
     _parse_instances_spec,
+    _planner_pane_id,
     _table_row_values,
 )
 
@@ -150,3 +151,9 @@ def test_split_planner_groups_by_namespace_prefers_local_then_remote() -> None:
     ]
     assert sections[0][1] == [local_group]
     assert sections[1][1] == [remote_group]
+
+
+def test_planner_pane_id_keeps_unknown_namespaces_visible() -> None:
+    assert _planner_pane_id(0x02) == "local"
+    assert _planner_pane_id(0x06) == "remote"
+    assert _planner_pane_id(0x08) == "other"

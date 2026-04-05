@@ -303,6 +303,49 @@ def test_render_summary_uses_namespace_specific_topology_for_instances(tmp_path:
     assert "remote (0x06) singleton" not in text
 
 
+def test_render_summary_excludes_synthetic_namespace_slots_from_present_counts(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x08": {
+                "name": "Buffer / Solar Cylinder 2",
+                "descriptor_observed": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x06": {
+                        "label": "remote",
+                        "ii_max": "0x0a",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {"0x0001": {"read_opcode": "0x06", "error": None}},
+                            },
+                            "0xff": {
+                                "present": True,
+                                "registers": {"0x0000": {"read_opcode": "0x06", "error": None}},
+                            },
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=180)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "Remote Devices (0x06)" in text
+    assert "1/11" in text
+    assert "2/11" not in text
+
+
 def test_render_summary_does_not_infer_singleton_from_observed_remote_count(
     tmp_path: Path,
 ) -> None:
@@ -404,3 +447,40 @@ def test_render_summary_ignores_synthetic_instance_slots_in_topology_ratios(
     assert "Remote Devices (0x06)" in text
     assert "Unknown 0x69" in text and "1/11" in text
     assert "Buffer / Solar Cylinder 2" in text and "singleton" in text
+
+def test_render_summary_uses_discovery_namespace_for_omitted_single_namespace_group(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x05": {
+                "name": "Hot Water Cylinder",
+                "descriptor_observed": 1.0,
+                "ii_max": "0x01",
+                "discovery_advisory": {
+                    "kind": "directory_probe",
+                    "semantic_authority": False,
+                    "proven_register_opcodes": ["0x06"],
+                },
+                "instances": {
+                    "0x00": {
+                        "present": False,
+                        "registers": {},
+                    }
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=160)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "Remote Devices (0x06)" in text
+    assert "Hot Water Cylinder" in text
+    assert "Other Namespaces" not in text
