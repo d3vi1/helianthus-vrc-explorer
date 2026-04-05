@@ -14,13 +14,17 @@ _KIND_TO_TT = {
     "f32_range": 0x0F,
 }
 
-CONSTRAINT_SCOPE_DECISION = "gg_rr_invariant"
+_DEFAULT_STATIC_READ_OPCODES = (0x02,)
+
+CONSTRAINT_SCOPE_DECISION = "opcode_0x02_default"
 CONSTRAINT_SCOPE_PROTOCOL = "opcode_0x01"
-CONSTRAINT_SCOPE_APPLIES_TO = "all_register_read_namespaces"
+CONSTRAINT_SCOPE_APPLIES_TO = "opcode_0x02_by_default_unless_explicitly_scoped"
 CONSTRAINT_SCOPE_RATIONALE = (
-    "B524 constraint probe frames (01 GG RR) do not encode register-read opcode or "
-    "instance, so static constraints are treated as GG/RR-scoped invariants."
+    "The bundled static catalog is seeded from opcode-0x01 probe evidence, but it is "
+    "only applied to opcode 0x02 by default. Remote opcode 0x06 requires explicit scope "
+    "or live confirmation."
 )
+LIVE_PROBE_CONSTRAINT_SCOPE = "opcode_0x01_probe"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +37,7 @@ class StaticConstraintEntry:
     source: str = "static_catalog"
     scope: str = CONSTRAINT_SCOPE_DECISION
     provenance: str = "catalog_seeded_from_opcode_0x01"
+    read_opcodes: tuple[int, ...] = _DEFAULT_STATIC_READ_OPCODES
 
 
 type StaticConstraintCatalog = dict[int, dict[int, StaticConstraintEntry]]
@@ -80,6 +85,45 @@ def _parse_numeric(value: str) -> int | float:
     return parsed
 
 
+def _parse_constraint_read_opcodes(*, raw_scope: str, raw_opcodes: str) -> tuple[int, ...]:
+    scope = raw_scope.strip().lower()
+    if scope == "gg_rr_invariant":
+        return (0x02, 0x06)
+
+    value = raw_opcodes.strip().lower()
+    if not value:
+        return _DEFAULT_STATIC_READ_OPCODES
+    if value in {"all", "all_register_read_namespaces", "0x02+0x06"}:
+        return (0x02, 0x06)
+
+    normalized = value.replace("|", ",").replace("+", ",")
+    opcodes: list[int] = []
+    for token in normalized.split(","):
+        candidate = token.strip()
+        if not candidate:
+            continue
+        opcode = _parse_hex_u8(candidate)
+        if opcode not in {0x02, 0x06}:
+            raise ValueError(f"Unsupported constraint read opcode: {candidate!r}")
+        if opcode not in opcodes:
+            opcodes.append(opcode)
+    if not opcodes:
+        return _DEFAULT_STATIC_READ_OPCODES
+    return tuple(opcodes)
+
+
+def _constraint_scope_label(*, raw_scope: str, read_opcodes: tuple[int, ...]) -> str:
+    if raw_scope.strip():
+        return raw_scope.strip()
+    if read_opcodes == _DEFAULT_STATIC_READ_OPCODES:
+        return CONSTRAINT_SCOPE_DECISION
+    if read_opcodes == (0x06,):
+        return "opcode_0x06_only"
+    if read_opcodes == (0x02, 0x06):
+        return "explicit_opcode_0x02_0x06"
+    return "explicit_opcode_scope"
+
+
 def load_b524_constraints_catalog_from_path(path: Path) -> StaticConstraintCatalog:
     catalog: StaticConstraintCatalog = {}
 
@@ -94,6 +138,8 @@ def load_b524_constraints_catalog_from_path(path: Path) -> StaticConstraintCatal
             min_raw = (row.get("min") or "").strip()
             max_raw = (row.get("max") or "").strip()
             step_raw = (row.get("step") or "").strip()
+            scope_raw = (row.get("scope") or "").strip()
+            opcodes_raw = (row.get("read_opcodes") or "").strip()
             if not all((group_raw, register_raw, kind, min_raw, max_raw, step_raw)):
                 continue
             tt = _KIND_TO_TT.get(kind)
@@ -101,12 +147,21 @@ def load_b524_constraints_catalog_from_path(path: Path) -> StaticConstraintCatal
                 raise ValueError(f"Unsupported static constraint kind: {kind!r}")
             group = _parse_hex_u8(group_raw)
             register = _parse_hex_u16(register_raw)
+            read_opcodes = _parse_constraint_read_opcodes(
+                raw_scope=scope_raw,
+                raw_opcodes=opcodes_raw,
+            )
             entry = StaticConstraintEntry(
                 tt=tt,
                 kind=kind,
                 min_value=_parse_scalar(min_raw),
                 max_value=_parse_scalar(max_raw),
                 step_value=_parse_numeric(step_raw),
+                scope=_constraint_scope_label(
+                    raw_scope=scope_raw,
+                    read_opcodes=read_opcodes,
+                ),
+                read_opcodes=read_opcodes,
             )
             catalog.setdefault(group, {})
             if register in catalog[group]:
@@ -145,9 +200,14 @@ def lookup_static_constraint(
 ) -> StaticConstraintEntry | None:
     """Resolve the current static catalog using canonical register identity.
 
-    The static catalog remains GG/RR-scoped because the underlying opcode-0x01
-    constraint protocol does not encode opcode or instance.
+    The bundled static catalog is opcode-0x02-scoped by default. Individual rows
+    may opt into other namespaces via explicit read-opcode metadata.
     """
 
-    _opcode, group, _instance, register = identity
-    return catalog.get(group, {}).get(register)
+    opcode, group, _instance, register = identity
+    entry = catalog.get(group, {}).get(register)
+    if entry is None:
+        return None
+    if opcode not in entry.read_opcodes:
+        return None
+    return entry

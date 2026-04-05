@@ -22,10 +22,10 @@ behavior that is already stable in code/tests.
    - Semantic identity, namespace topology, and row identity are not derived from descriptor values.
    - **Ban:** GG discovery MUST NOT be used as semantic authority.
 
-3. Constraint scope is explicitly `gg_rr_invariant`.
-   - Decision: `gg_rr_invariant`.
-   - Rationale: `0x01` probe frame shape is `01 GG RR` and does not encode register-read opcode or instance.
-   - Outcome: static constraints are GG/RR-scoped across register-read namespaces.
+3. Constraint scope is explicitly `opcode_0x02_default`.
+   - Decision: `opcode_0x02_default`.
+   - Rationale: the bundled static catalog is seeded from `0x01` probe evidence, but it is only trusted for opcode `0x02` by default.
+   - Outcome: remote opcode `0x06` does not inherit seeded static constraints unless a constraint entry explicitly scopes into that namespace or a live probe confirms it.
 
 4. Artifact identity keys are namespace-aware.
    - Persisted topology authority: `groups[*].dual_namespace` plus `groups[*].namespaces` (when present).
