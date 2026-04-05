@@ -107,6 +107,66 @@ def test_lookup_static_constraint_accepts_explicit_read_opcode_scope(tmp_path: P
     assert local.read_opcodes == (0x02, 0x06)
 
 
+def test_lookup_static_constraint_derives_scope_only_remote_opcode(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "constraints.csv"
+    catalog_path.write_text(
+        "\n".join(
+            (
+                "group,register,type,min,max,step,scope,read_opcodes",
+                "0x03,0x0002,f32_range,15,30,0.5,opcode_0x06_only,",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    catalog = load_b524_constraints_catalog_from_path(catalog_path)
+
+    local = lookup_static_constraint(
+        catalog,
+        identity=make_register_identity(
+            opcode=0x02,
+            group=0x03,
+            instance=0x00,
+            register=0x0002,
+        ),
+    )
+    remote = lookup_static_constraint(
+        catalog,
+        identity=make_register_identity(
+            opcode=0x06,
+            group=0x03,
+            instance=0x01,
+            register=0x0002,
+        ),
+    )
+
+    assert local is None
+    assert remote is not None
+    assert remote.scope == "opcode_0x06_only"
+    assert remote.read_opcodes == (0x06,)
+
+
+def test_load_constraints_rejects_unknown_scope_without_read_opcodes(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "constraints.csv"
+    catalog_path.write_text(
+        "\n".join(
+            (
+                "group,register,type,min,max,step,scope,read_opcodes",
+                "0x03,0x0002,f32_range,15,30,0.5,custom_scope,",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        load_b524_constraints_catalog_from_path(catalog_path)
+    except ValueError as exc:
+        assert "Unsupported constraint scope without read_opcodes" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for unsupported scope-only row")
+
+
 def test_constraint_scope_metadata_declares_opcode_0x02_default_policy() -> None:
     metadata = constraint_scope_metadata()
     assert metadata["decision"] == "opcode_0x02_default"

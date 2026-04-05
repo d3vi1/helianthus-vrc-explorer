@@ -173,6 +173,13 @@ def _topology_total_from_ii_max(value: object) -> int | None:
     return ii_max + 1
 
 
+def _counts_toward_topology_total(instance_key: object, *, total: int) -> bool:
+    instance_id = _parse_u8_int(instance_key)
+    if instance_id is None:
+        return False
+    return instance_id < total
+
+
 def _format_instance_summary(
     *,
     present: int,
@@ -244,7 +251,13 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
                 for instance_key, instance_obj in namespace_instances.items():
                     if not isinstance(instance_obj, dict):
                         continue
-                    if instance_obj.get("present") is True and isinstance(instance_key, str):
+                    if instance_obj.get("present") is True and (
+                        not topology_authoritative
+                        or _counts_toward_topology_total(
+                            instance_key,
+                            total=namespace_total,
+                        )
+                    ):
                         namespace_present += 1
                     registers = instance_obj.get("registers", {})
                     if not isinstance(registers, dict):
@@ -289,10 +302,13 @@ def _compute_group_stats(artifact: dict[str, Any]) -> list[_GroupStats]:
             topology_authoritative = group_total is not None
             if group_total is None:
                 group_total = len(instances)
-            for instance_obj in instances.values():
+            for instance_key, instance_obj in instances.items():
                 if not isinstance(instance_obj, dict):
                     continue
-                if instance_obj.get("present") is True:
+                if instance_obj.get("present") is True and (
+                    not topology_authoritative
+                    or _counts_toward_topology_total(instance_key, total=group_total)
+                ):
                     instances_present += 1
                 registers = instance_obj.get("registers", {})
                 if not isinstance(registers, dict):

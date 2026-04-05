@@ -85,13 +85,29 @@ def _parse_numeric(value: str) -> int | float:
     return parsed
 
 
-def _parse_constraint_read_opcodes(*, raw_scope: str, raw_opcodes: str) -> tuple[int, ...]:
+def _scope_derived_read_opcodes(raw_scope: str) -> tuple[int, ...] | None:
     scope = raw_scope.strip().lower()
-    if scope == "gg_rr_invariant":
+    if not scope:
+        return None
+    if scope in {CONSTRAINT_SCOPE_DECISION, "opcode_0x02_only"}:
+        return _DEFAULT_STATIC_READ_OPCODES
+    if scope == "opcode_0x06_only":
+        return (0x06,)
+    if scope in {"gg_rr_invariant", "explicit_opcode_0x02_0x06"}:
         return (0x02, 0x06)
+    return None
 
+
+def _parse_constraint_read_opcodes(*, raw_scope: str, raw_opcodes: str) -> tuple[int, ...]:
     value = raw_opcodes.strip().lower()
     if not value:
+        derived = _scope_derived_read_opcodes(raw_scope)
+        if derived is not None:
+            return derived
+        if raw_scope.strip():
+            raise ValueError(
+                f"Unsupported constraint scope without read_opcodes: {raw_scope!r}"
+            )
         return _DEFAULT_STATIC_READ_OPCODES
     if value in {"all", "all_register_read_namespaces", "0x02+0x06"}:
         return (0x02, 0x06)
