@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .artifact_schema import CURRENT_ARTIFACT_SCHEMA_VERSION
-from .scanner.director import GROUP_CONFIG, group_name_for_opcode
+from .scanner.director import (
+    GROUP_CONFIG,
+    NamespaceProfile,
+    group_name_for_opcode,
+    group_namespace_profiles,
+)
 from .scanner.identity import opcode_label, operation_label
 from .scanner.register import (
     _interpret_flags,
@@ -244,6 +249,10 @@ def _group_name_for_opcode(group: int, opcode: int) -> str:
         return f"Unknown {_hex_u8(group)}"
 
 
+def _namespace_profile(group: int, opcode: int) -> NamespaceProfile | None:
+    return group_namespace_profiles(group).get(opcode)
+
+
 def _ensure_group_namespace(
     groups: dict[str, Any],
     *,
@@ -252,6 +261,7 @@ def _ensure_group_namespace(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     group_key = _hex_u8(group)
     config = GROUP_CONFIG.get(group)
+    profile = _namespace_profile(group, opcode)
     default_name = str(config.get("name")) if isinstance(config, dict) else f"Unknown {group_key}"
     descriptor = config.get("desc") if isinstance(config, dict) else None
     group_obj = groups.setdefault(
@@ -267,15 +277,22 @@ def _ensure_group_namespace(
     )
     namespaces = group_obj.setdefault("namespaces", {})
     namespace_key = _hex_u8(opcode)
+    namespace_group_name = (
+        profile.name if profile is not None else _group_name_for_opcode(group, opcode)
+    )
     namespace_obj = namespaces.setdefault(
         namespace_key,
         {
             "label": opcode_label(opcode),
             "operation_label": operation_label(opcode=opcode, optype=0x00),
-            "group_name": _group_name_for_opcode(group, opcode),
+            "group_name": namespace_group_name,
             "instances": {},
         },
     )
+    namespace_obj["group_name"] = namespace_group_name
+    if profile is not None:
+        namespace_obj["ii_max"] = _hex_u8(profile.ii_max)
+        namespace_obj["rr_max"] = _hex_u16(profile.rr_max)
     return group_obj, namespace_obj
 
 
@@ -408,6 +425,14 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
             group = int(payload[2])
             instance = int(payload[3])
             register = int.from_bytes(payload[4:6], byteorder="little", signed=False)
+            profile = _namespace_profile(group, opcode)
+            if group in GROUP_CONFIG and profile is None:
+                continue
+            if profile is not None:
+                if instance > profile.ii_max:
+                    continue
+                if register > profile.rr_max:
+                    continue
             _group_obj, namespace_obj = _ensure_group_namespace(
                 artifact["groups"], group=group, opcode=opcode
             )

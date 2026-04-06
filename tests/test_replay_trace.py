@@ -201,3 +201,42 @@ def test_replay_trace_marks_nack_when_retry_evidence_is_nack_or_crc(tmp_path: Pa
         "0x0001"
     ]
     assert entry["response_state"] == "nack"
+
+
+def test_replay_trace_applies_current_namespace_profiles(tmp_path: Path) -> None:
+    trace_path = _write_trace(
+        tmp_path,
+        "profiles.trace",
+        "\n".join(
+            [
+                "2026-04-06T10:00:00.000000Z INIT features=0x01",
+                "2026-04-06T10:00:00.050000Z START initiator=0xF7",
+                # OP=0x06 GG=0x00 is no longer part of the current profile and must be dropped.
+                (
+                    "2026-04-06T10:00:00.100000Z #1 SEND_PROTO src=0xF7 dst=0x15 "
+                    "primary=0xB5 secondary=0x24 payload=060000000100"
+                ),
+                "2026-04-06T10:00:00.150000Z #1 PARSED_PROTO len=5 hex=0100010001",
+                # OP=0x02 GG=0x04 keeps only II=0x00..0x01 in the current profile.
+                (
+                    "2026-04-06T10:00:00.200000Z #2 SEND_PROTO src=0xF7 dst=0x15 "
+                    "primary=0xB5 secondary=0x24 payload=020004000400"
+                ),
+                "2026-04-06T10:00:00.250000Z #2 PARSED_PROTO len=8 hex=010404000000803f",
+                (
+                    "2026-04-06T10:00:00.300000Z #3 SEND_PROTO src=0xF7 dst=0x15 "
+                    "primary=0xB5 secondary=0x24 payload=020004020400"
+                ),
+                "2026-04-06T10:00:00.350000Z #3 PARSED_PROTO len=8 hex=0104040200000040",
+            ]
+        )
+        + "\n",
+    )
+
+    artifact = replay_trace_to_artifact(trace_path)
+
+    assert "0x00" not in artifact["groups"]
+    local_ns = artifact["groups"]["0x04"]["namespaces"]["0x02"]
+    assert local_ns["ii_max"] == "0x01"
+    assert local_ns["rr_max"] == "0x000b"
+    assert set(local_ns["instances"]) == {"0x00"}
