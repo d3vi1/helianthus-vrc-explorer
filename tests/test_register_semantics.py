@@ -15,6 +15,9 @@ def test_entry_status_kind_distinguishes_absent_dormant_transport_and_decode() -
     assert (
         entry_status_kind({"reply_hex": "", "flags_access": "dormant", "error": None}) == "dormant"
     )
+    assert entry_status_kind({"response_state": "empty_reply", "error": None}) == "dormant"
+    assert entry_status_kind({"response_state": "timeout", "error": None}) == "transport_failure"
+    assert entry_status_kind({"response_state": "nack", "error": None}) == "transport_failure"
     assert entry_status_kind({"error": "timeout"}) == "transport_failure"
     assert (
         entry_status_kind({"error": "transport_error: ERR: arbitration lost"})

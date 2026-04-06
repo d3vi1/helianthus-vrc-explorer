@@ -31,6 +31,7 @@ _PARSED_PROTO_RE = re.compile(
 _RECV_NO_RESPONSE_RE = re.compile(
     r"^#(?P<seq>\d+)\s+RECV_PROTO\s+(broadcast_or_no_response|initiator_initiator=no_response)$"
 )
+_RETRY_RE = re.compile(r"^#(?P<seq>\d+)\s+RETRY\s+type=(?P<kind>[a-zA-Z0-9_]+)(?:\s+|$)")
 _OP_LABEL_RE = re.compile(r"^OP\s+(?P<label>.+)$")
 _SUPPORTED_ENH_MARKERS: tuple[str, ...] = ("INIT ", "START ")
 
@@ -54,6 +55,7 @@ class _TraceExchange:
     payload: bytes
     response: bytes | None = None
     op_label: str | None = None
+    retry_kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +192,14 @@ def _parse_enhanced_trace_lines(
                 matched_exchange.response = b""
             continue
 
+        retry_match = _RETRY_RE.match(body)
+        if retry_match is not None:
+            seq = int(retry_match.group("seq"), 10)
+            matched_exchange = exchange_by_seq.get(seq)
+            if matched_exchange is not None:
+                matched_exchange.retry_kind = retry_match.group("kind").strip().lower()
+            continue
+
         if body.startswith("#") and ("SEND " in body or "PARSED " in body):
             raise UnsupportedTraceFormatError(
                 "Unsupported trace format. replay-trace currently supports ENH/ENS traces only."
@@ -274,6 +284,7 @@ def _decode_register_read_entry(
     opcode: Literal[0x02, 0x06],
     payload: bytes,
     response: bytes | None,
+    retry_kind: str | None = None,
 ) -> dict[str, Any]:
     read_opcode = _hex_u8(opcode)
     entry: dict[str, Any] = {
@@ -293,7 +304,7 @@ def _decode_register_read_entry(
     }
 
     if response is None:
-        entry["response_state"] = "timeout"
+        entry["response_state"] = "nack" if retry_kind == "nack_or_crc" else "timeout"
         return entry
     if len(response) == 0:
         entry["response_state"] = "empty_reply"
@@ -409,6 +420,7 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
                 opcode=cast(Literal[0x02, 0x06], opcode),
                 payload=payload,
                 response=response,
+                retry_kind=exchange.retry_kind,
             )
             entry["trace_seq"] = exchange.seq
             if exchange.op_label:

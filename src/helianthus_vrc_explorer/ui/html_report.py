@@ -1562,26 +1562,38 @@ __ARTIFACT_JSON__
 
         if (sectionKey === "register_constraints") {
           const dict = metaObj && typeof metaObj === "object" ? metaObj.constraint_dictionary : null;
-          if (!dict || typeof dict !== "object") {
-            container.innerHTML += "<div class='subtitle'>No Register Constraints entries in artifact.</div>";
-            mountTarget.innerHTML = "";
-            mountTarget.appendChild(container);
-            return;
-          }
           const rows = [];
-          for (const groupKey of sortedHexKeys(Object.keys(dict))) {
-            const groupObj = dict[groupKey];
-            if (!groupObj || typeof groupObj !== "object") continue;
-            for (const rrKey of sortedHexKeys(Object.keys(groupObj))) {
-              const constraint = groupObj[rrKey];
-              if (!constraint || typeof constraint !== "object") continue;
+          if (dict && typeof dict === "object") {
+            for (const groupKey of sortedHexKeys(Object.keys(dict))) {
+              const groupObj = dict[groupKey];
+              if (!groupObj || typeof groupObj !== "object") continue;
+              for (const rrKey of sortedHexKeys(Object.keys(groupObj))) {
+                const constraint = groupObj[rrKey];
+                if (!constraint || typeof constraint !== "object") continue;
+                rows.push({
+                  group: groupKey,
+                  register: rrKey,
+                  type: constraint.type || "n/a",
+                  min: typeof constraint.min !== "undefined" ? formatValue(constraint.min) : "n/a",
+                  max: typeof constraint.max !== "undefined" ? formatValue(constraint.max) : "n/a",
+                  step: typeof constraint.step !== "undefined" ? formatValue(constraint.step) : "n/a",
+                });
+              }
+            }
+          } else if (
+            operations
+            && typeof operations === "object"
+            && Array.isArray(operations.register_constraints)
+          ) {
+            for (const row of operations.register_constraints) {
+              if (!row || typeof row !== "object") continue;
               rows.push({
-                group: groupKey,
-                register: rrKey,
-                type: constraint.type || "n/a",
-                min: typeof constraint.min !== "undefined" ? formatValue(constraint.min) : "n/a",
-                max: typeof constraint.max !== "undefined" ? formatValue(constraint.max) : "n/a",
-                step: typeof constraint.step !== "undefined" ? formatValue(constraint.step) : "n/a",
+                group: typeof row.group === "string" ? row.group : "n/a",
+                register: typeof row.register_selector === "string" ? row.register_selector : "n/a",
+                type: "replayed",
+                min: "n/a",
+                max: "n/a",
+                step: typeof row.reply_hex === "string" && row.reply_hex ? row.reply_hex : "—",
               });
             }
           }

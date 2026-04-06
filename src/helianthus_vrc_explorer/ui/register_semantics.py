@@ -25,6 +25,14 @@ def entry_status_kind(entry: dict[str, Any] | None) -> RegisterStatusKind:
     if not isinstance(entry, dict):
         return "error"
 
+    response_state = entry.get("response_state")
+    if isinstance(response_state, str):
+        lowered_state = response_state.strip().lower()
+        if lowered_state == "empty_reply":
+            return "dormant"
+        if lowered_state in {"timeout", "nack"}:
+            return "transport_failure"
+
     error = entry.get("error")
     if isinstance(error, str) and error.strip():
         lowered = error.strip().lower()

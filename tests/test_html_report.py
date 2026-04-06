@@ -132,6 +132,24 @@ def test_html_report_includes_dormant_status_rendering_logic() -> None:
     assert "Dormant (feature inactive)" in html
 
 
+def test_html_report_register_constraints_has_replay_fallback_path() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {},
+        "b524_operations": {
+            "register_constraints": [
+                {"group": "0x02", "register_selector": "0x01", "reply_hex": "09020100000100020001"}
+            ]
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+
+    assert "Array.isArray(operations.register_constraints)" in html
+    expected = 'register: typeof row.register_selector === "string" ? row.register_selector : "n/a"'
+    assert expected in html
+
+
 def test_html_report_supports_b516_tab() -> None:
     artifact = {
         "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},

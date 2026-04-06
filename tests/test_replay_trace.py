@@ -176,3 +176,28 @@ def test_replay_trace_instance_presence_uses_response_state(tmp_path: Path) -> N
     assert instances["0x00"]["registers"]["0x0001"]["response_state"] == "timeout"
     assert instances["0x01"]["present"] is True
     assert instances["0x01"]["registers"]["0x0001"]["response_state"] == "empty_reply"
+
+
+def test_replay_trace_marks_nack_when_retry_evidence_is_nack_or_crc(tmp_path: Path) -> None:
+    trace_path = _write_trace(
+        tmp_path,
+        "nack.trace",
+        "\n".join(
+            [
+                "2026-04-06T10:00:00.000000Z INIT features=0x01",
+                "2026-04-06T10:00:00.050000Z START initiator=0xF7",
+                (
+                    "2026-04-06T10:00:00.100000Z #7 SEND_PROTO src=0xF7 dst=0x15 "
+                    "primary=0xB5 secondary=0x24 payload=060009000100"
+                ),
+                "2026-04-06T10:00:00.120000Z #7 RETRY type=nack_or_crc n=1/2",
+            ]
+        )
+        + "\n",
+    )
+
+    artifact = replay_trace_to_artifact(trace_path)
+    entry = artifact["groups"]["0x09"]["namespaces"]["0x06"]["instances"]["0x00"]["registers"][
+        "0x0001"
+    ]
+    assert entry["response_state"] == "nack"
