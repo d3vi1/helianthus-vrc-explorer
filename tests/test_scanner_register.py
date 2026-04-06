@@ -336,14 +336,14 @@ def test_is_instance_present_group_0c_requires_valid_register_response() -> None
     transport = _AlwaysDecodeErrorTransport()
 
     assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is False
-    assert transport.calls == 1
+    assert transport.calls == 4
 
 
 def test_is_instance_present_group_0c_transport_errors_do_not_count_as_present() -> None:
     transport = _AlwaysTransportErrorTransport()
 
     assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is False
-    assert transport.calls == 1
+    assert transport.calls == 4
 
 
 def test_is_instance_present_group_0c_true_on_first_valid_register_response() -> None:
@@ -354,11 +354,11 @@ def test_is_instance_present_group_0c_true_on_first_valid_register_response() ->
     assert transport.calls == 1
 
 
-def test_is_instance_present_group_0c_false_when_device_connected_is_false() -> None:
+def test_is_instance_present_group_0c_accepts_secondary_header_evidence() -> None:
     transport = _BoolFalseTransport()
 
-    assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is False
-    assert transport.calls == 1
+    assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is True
+    assert transport.calls == 2
 
 
 def test_instance_present_cylinder_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -429,7 +429,7 @@ def test_instance_present_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [(0x06, 0x08, 0x0001)]
 
 
-def test_is_instance_present_group_09_remote_requires_device_connected_true(
+def test_is_instance_present_group_09_remote_requires_all_header_registers_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import helianthus_vrc_explorer.scanner.register as register
@@ -439,11 +439,11 @@ def test_is_instance_present_group_09_remote_requires_device_connected_true(
     def _fake_read_register(*_args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(int(kwargs["register"]))
         return {
-            "raw_hex": "00",
-            "type": "BOOL",
-            "value": False,
+            "raw_hex": None,
+            "type": None,
+            "value": None,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "absent",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -458,7 +458,7 @@ def test_is_instance_present_group_09_remote_requires_device_connected_true(
         )
         is False
     )
-    assert calls == [0x0001]
+    assert calls == [0x0001, 0x0002, 0x0003, 0x0004]
 
 
 def test_is_instance_present_group_09_remote_accepts_device_connected_true(
@@ -487,6 +487,56 @@ def test_is_instance_present_group_09_remote_accepts_device_connected_true(
         )
         is True
     )
+
+
+def test_is_instance_present_group_09_remote_accepts_secondary_header_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, str | None]] = []
+
+    def _fake_read_register(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        type_hint = kwargs.get("type_hint")
+        calls.append((register_id, type_hint))
+        if register_id == 0x0001:
+            return {
+                "raw_hex": "00",
+                "type": "BOOL",
+                "value": False,
+                "error": None,
+                "flags_access": "stable_ro",
+            }
+        if register_id == 0x0002:
+            return {
+                "raw_hex": "15",
+                "type": "UCH",
+                "value": 0x15,
+                "error": None,
+                "flags_access": "stable_ro",
+            }
+        return {
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": "absent",
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    assert (
+        is_instance_present(
+            transport=_StatusOnlyTransport(),
+            dst=0x15,
+            group=0x09,
+            instance=0x00,
+            opcode=0x06,
+        )
+        is True
+    )
+    assert calls == [(0x0001, "BOOL"), (0x0002, "UCH")]
 
 
 def test_probe_instance_availability_group_09_local_uses_rr_0001(monkeypatch) -> None:
@@ -519,17 +569,25 @@ def test_probe_instance_availability_group_09_local_uses_rr_0001(monkeypatch) ->
     assert calls == [(0x02, 0x0001)]
 
 
-def test_probe_instance_availability_group_09_remote_uses_rr_0001_bool_probe(monkeypatch) -> None:
+def test_probe_instance_availability_group_09_remote_uses_generic_header_probe(monkeypatch) -> None:
     import helianthus_vrc_explorer.scanner.register as register
 
     calls: list[tuple[int, int, str | None]] = []
 
     def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
         calls.append((int(opcode), int(kwargs["register"]), kwargs.get("type_hint")))
+        if int(kwargs["register"]) == 0x0001:
+            return {
+                "raw_hex": "00",
+                "type": "BOOL",
+                "value": False,
+                "error": None,
+                "flags_access": "stable_ro",
+            }
         return {
-            "raw_hex": "01",
-            "type": "BOOL",
-            "value": True,
+            "raw_hex": "15",
+            "type": "UCH",
+            "value": 0x15,
             "error": None,
             "flags_access": "stable_ro",
         }
@@ -547,7 +605,7 @@ def test_probe_instance_availability_group_09_remote_uses_rr_0001_bool_probe(mon
     assert probe.present is True
     assert probe.contract.probe_register == 0x0001
     assert probe.contract.probe_type_hint == "BOOL"
-    assert calls == [(0x06, 0x0001, "BOOL")]
+    assert calls == [(0x06, 0x0001, "BOOL"), (0x06, 0x0002, "UCH")]
 
 
 def test_fw_not_added_to_inferred_type_selection() -> None:

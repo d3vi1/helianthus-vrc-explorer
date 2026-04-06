@@ -22,6 +22,12 @@ _PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x
 _EMPTY_REPLY_FLAGS_ACCESS: Final[str] = "dormant"
 _I32_INVALID_SENTINEL: Final[int] = 0x7FFFFFFF
 _I32_INVALID_SENTINEL_RAW_HEX: Final[str] = "ffffff7f"
+_REMOTE_HEADER_PROBE_REGISTERS: Final[tuple[tuple[int, str], ...]] = (
+    (0x0001, "BOOL"),
+    (0x0002, "UCH"),
+    (0x0003, "UCH"),
+    (0x0004, "FW"),
+)
 _KNOWN_DORMANT_EMPTY_REPLY_KEYS: Final[frozenset[tuple[int, int, int]]] = frozenset(
     {
         # OP=0x02 / GG=0x00 registers that are known to ACK with zero-length payloads
@@ -119,7 +125,11 @@ def namespace_opcodes_for_group(group: int) -> list[RegisterOpcode]:
 
 
 def _namespace_relationship(group: int) -> Literal["single_namespace", "independent"]:
-    return "independent" if len(opcodes_for_group(group)) > 1 else "single_namespace"
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return "single_namespace"
+    namespace_opcodes = config.get("namespace_opcodes", config["opcodes"])
+    return "independent" if len(namespace_opcodes) > 1 else "single_namespace"
 
 
 def namespace_availability_contract(
@@ -165,14 +175,17 @@ def namespace_availability_contract(
             description="Cylinder availability requires a decodable float payload.",
         )
 
-    if group in {0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+    if group in {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
         return NamespaceAvailabilityContract(
             source="heuristic_probe",
             namespace_relationship=relationship,
             probe_register=0x0001,
             probe_type_hint="BOOL",
-            positive_when="decoded BOOL value is true",
-            description="Remote namespace presence is derived from RR=0x0001 device-connected.",
+            positive_when="any generic header register RR=0x0001..0x0004 decodes and is not absent",
+            description=(
+                "Remote namespace presence is derived from the generic header block "
+                "RR=0x0001..0x0004; RR=0x0001 remains the primary probe anchor."
+            ),
         )
 
     if group in {0x09, 0x0A} and opcode == 0x02:
@@ -614,13 +627,33 @@ def probe_instance_availability(
         )
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
-    if group in {0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+    if group in {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+        header_evidence = entry
         present = (
             entry["error"] is None
             and entry.get("flags_access") != "absent"
             and entry["value"] is True
         )
-        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+        if not present:
+            for register_id, type_hint in _REMOTE_HEADER_PROBE_REGISTERS[1:]:
+                header_entry = read_register(
+                    transport,
+                    dst,
+                    opcode,
+                    group=group,
+                    instance=instance,
+                    register=register_id,
+                    type_hint=type_hint,
+                )
+                if header_entry["error"] is None and header_entry.get("flags_access") != "absent":
+                    present = True
+                    header_evidence = header_entry
+                    break
+        return InstanceAvailabilityProbe(
+            present=present,
+            contract=contract,
+            evidence=header_evidence,
+        )
 
     if group in {0x09, 0x0A} and opcode == 0x02:
         present = entry["error"] is None and entry.get("flags_access") != "absent"
