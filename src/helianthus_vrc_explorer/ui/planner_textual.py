@@ -261,6 +261,7 @@ def run_textual_scan_plan(
             self._states: dict[PlanKey, _EditableGroup] = {}
             self._row_groups: dict[str, list[PlanKey]] = {"local": [], "remote": []}
             self._editing_group: PlanKey | None = None
+            self._suppress_next_enter = False
             for group in self._groups:
                 group_plan = initial_plan.get(group.key)
                 if group_plan is None:
@@ -370,6 +371,12 @@ def run_textual_scan_plan(
                     return
             self.query_one("#planner-table-local", DataTable).focus()
 
+        def _suppress_enter_reactivation(self) -> None:
+            # A modal input dialog closes on Enter and immediately refocuses the
+            # table. Suppress the next planner-level Enter handling so the same
+            # keystroke doesn't reopen RR editing underneath the dismissed modal.
+            self._suppress_next_enter = True
+
         def _apply_preset(self, preset: PlannerPreset) -> None:
             preset_plan = build_plan_from_preset(self._groups, preset=preset)
             for group in self._groups:
@@ -394,10 +401,12 @@ def run_textual_scan_plan(
                 rr_max = parse_int_token(value)
             except ValueError as exc:
                 self._set_help(f"Invalid RR_max: {exc}")
+                self._suppress_enter_reactivation()
                 self._focus_table()
                 return
             if not (0x0000 <= rr_max <= 0xFFFF):
                 self._set_help("RR_max must be in 0x0000..0xFFFF")
+                self._suppress_enter_reactivation()
                 self._focus_table()
                 return
             self._states[self._editing_group].rr_max = rr_max
@@ -405,6 +414,7 @@ def run_textual_scan_plan(
             edited_group = self._states[self._editing_group].group
             self._set_help(f"Updated RR_max for {edited_group.prompt_label}")
             self._editing_group = None
+            self._suppress_enter_reactivation()
             self._focus_table()
 
         def _edit_instances(self, value: str | None) -> None:
@@ -423,12 +433,14 @@ def run_textual_scan_plan(
                 instances = _parse_instances_spec(value, group=group)
             except ValueError as exc:
                 self._set_help(f"Invalid instances: {exc}")
+                self._suppress_enter_reactivation()
                 self._focus_table()
                 return
             self._states[self._editing_group].instances = instances
             self._refresh_table()
             self._set_help(f"Updated instances for {group.prompt_label}")
             self._editing_group = None
+            self._suppress_enter_reactivation()
             self._focus_table()
 
         def action_focus_next(self) -> None:
@@ -455,6 +467,10 @@ def run_textual_scan_plan(
         def on_key(self, event: Key) -> None:
             # Accept Enter/Return variants for row edit while avoiding modal interference.
             if event.key not in {"enter", "ctrl+j", "ctrl+m"}:
+                return
+            if self._suppress_next_enter:
+                self._suppress_next_enter = False
+                event.stop()
                 return
             if len(self.screen_stack) > 1:
                 return
@@ -491,6 +507,9 @@ def run_textual_scan_plan(
 
         def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
             # Keep Enter behavior stable even if DataTable handles Enter locally.
+            if self._suppress_next_enter:
+                self._suppress_next_enter = False
+                return
             self.action_edit_rr_max()
 
         def action_edit_instances(self) -> None:

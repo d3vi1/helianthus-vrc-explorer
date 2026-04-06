@@ -238,3 +238,173 @@ def test_run_textual_scan_plan_rr_dialog_registers_enter_submit_binding(
     )
 
     assert "enter" in captured["key"]
+
+
+def test_run_textual_scan_plan_instances_dialog_registers_enter_submit_binding(
+    monkeypatch,
+) -> None:
+    from textual.app import App
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: App[object], *args: object, **kwargs: object) -> None:
+        key = next(iter(self._states))
+        self._focused_group = lambda: key  # type: ignore[method-assign]
+
+        def fake_push_screen(screen: object, *args: object, **kwargs: object) -> None:
+            for binding in screen.BINDINGS:
+                if binding.action == "submit":
+                    captured["key"] = binding.key
+                    return None
+            raise AssertionError("submit binding not found on instances dialog")
+
+        self.push_screen = fake_push_screen  # type: ignore[method-assign]
+        self.action_edit_instances()
+        return None
+
+    monkeypatch.setattr(App, "run", fake_run)
+
+    run_textual_scan_plan(
+        [
+            PlannerGroup(
+                group=0x02,
+                opcode=0x02,
+                name="Heating Circuits",
+                descriptor=1.0,
+                known=True,
+                ii_max=0x0A,
+                rr_max=0x0025,
+                rr_max_full=0x0025,
+                present_instances=(0x00, 0x02, 0x03),
+            )
+        ],
+        request_rate_rps=None,
+    )
+
+    assert "enter" in captured["key"]
+
+
+def test_instances_dialog_submit_suppresses_immediate_rr_reopen(monkeypatch) -> None:
+    from textual.app import App
+
+    captured: dict[str, bool] = {"reopened": False, "suppressed": False}
+
+    def fake_run(self: App[object], *args: object, **kwargs: object) -> None:
+        key = next(iter(self._states))
+        self._editing_group = key
+        self._focus_table = lambda: None  # type: ignore[method-assign]
+        self._refresh_table = lambda: None  # type: ignore[method-assign]
+        self._set_help = lambda _text: None  # type: ignore[method-assign]
+        self.action_edit_rr_max = lambda: captured.__setitem__("reopened", True)  # type: ignore[method-assign]
+
+        self._edit_instances("0-1")
+        captured["suppressed"] = self._suppress_next_enter
+
+        self.on_data_table_row_selected(None)  # type: ignore[arg-type]
+        return None
+
+    monkeypatch.setattr(App, "run", fake_run)
+
+    run_textual_scan_plan(
+        [
+            PlannerGroup(
+                group=0x02,
+                opcode=0x02,
+                name="Heating Circuits",
+                descriptor=1.0,
+                known=True,
+                ii_max=0x0A,
+                rr_max=0x0025,
+                rr_max_full=0x0025,
+                present_instances=(0x00, 0x02, 0x03),
+            )
+        ],
+        request_rate_rps=None,
+    )
+
+    assert captured["suppressed"] is True
+    assert captured["reopened"] is False
+
+
+def test_instances_dialog_cancel_does_not_suppress_next_enter(monkeypatch) -> None:
+    from textual.app import App
+
+    captured: dict[str, bool] = {"reopened": False, "suppressed": True}
+
+    def fake_run(self: App[object], *args: object, **kwargs: object) -> None:
+        key = next(iter(self._states))
+        self._editing_group = key
+        self._focus_table = lambda: None  # type: ignore[method-assign]
+        self._refresh_table = lambda: None  # type: ignore[method-assign]
+        self._set_help = lambda _text: None  # type: ignore[method-assign]
+        self.action_edit_rr_max = lambda: captured.__setitem__("reopened", True)  # type: ignore[method-assign]
+
+        self._edit_instances(None)
+        captured["suppressed"] = self._suppress_next_enter
+
+        self.on_data_table_row_selected(None)  # type: ignore[arg-type]
+        return None
+
+    monkeypatch.setattr(App, "run", fake_run)
+
+    run_textual_scan_plan(
+        [
+            PlannerGroup(
+                group=0x02,
+                opcode=0x02,
+                name="Heating Circuits",
+                descriptor=1.0,
+                known=True,
+                ii_max=0x0A,
+                rr_max=0x0025,
+                rr_max_full=0x0025,
+                present_instances=(0x00, 0x02, 0x03),
+            )
+        ],
+        request_rate_rps=None,
+    )
+
+    assert captured["suppressed"] is False
+    assert captured["reopened"] is True
+
+
+def test_instances_dialog_invalid_submit_suppresses_immediate_rr_reopen(monkeypatch) -> None:
+    from textual.app import App
+
+    captured: dict[str, bool] = {"reopened": False, "suppressed": False}
+
+    def fake_run(self: App[object], *args: object, **kwargs: object) -> None:
+        key = next(iter(self._states))
+        self._editing_group = key
+        self._focus_table = lambda: None  # type: ignore[method-assign]
+        self._refresh_table = lambda: None  # type: ignore[method-assign]
+        self._set_help = lambda _text: None  # type: ignore[method-assign]
+        self.action_edit_rr_max = lambda: captured.__setitem__("reopened", True)  # type: ignore[method-assign]
+
+        self._edit_instances("bogus")
+        captured["suppressed"] = self._suppress_next_enter
+
+        self.on_data_table_row_selected(None)  # type: ignore[arg-type]
+        return None
+
+    monkeypatch.setattr(App, "run", fake_run)
+
+    run_textual_scan_plan(
+        [
+            PlannerGroup(
+                group=0x02,
+                opcode=0x02,
+                name="Heating Circuits",
+                descriptor=1.0,
+                known=True,
+                ii_max=0x0A,
+                rr_max=0x0025,
+                rr_max_full=0x0025,
+                present_instances=(0x00, 0x02, 0x03),
+            )
+        ],
+        request_rate_rps=None,
+    )
+
+    assert captured["suppressed"] is True
+    assert captured["reopened"] is False

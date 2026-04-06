@@ -1979,7 +1979,7 @@ def test_scan_b524_textual_planner_includes_remote_exploratory_rows_for_groups_0
     assert by_key[(0x03, 0x06)].name == "Unknown 0x03 (remote)"
     assert by_key[(0x04, 0x06)].name == "Unknown 0x04 (remote)"
     assert by_key[(0x05, 0x06)].name == "Unknown 0x05 (remote)"
-    assert by_key[(0x04, 0x02)].ii_max == 0x0A
+    assert by_key[(0x04, 0x02)].ii_max == 0x01
     assert by_key[(0x02, 0x06)].ii_max == 0x07
     assert by_key[(0x03, 0x06)].ii_max == 0x0A
     assert by_key[(0x04, 0x06)].ii_max == 0x0A
@@ -2185,6 +2185,8 @@ def test_scan_b524_textual_planner_models_group_08_as_instanced_on_local_and_rem
     planner_groups = captured["groups"]
     assert isinstance(planner_groups, list)
     by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x08, 0x02)].name == "Unknown 0x08 (local)"
+    assert by_key[(0x08, 0x06)].name == "Unknown 0x08 (remote)"
     assert by_key[(0x08, 0x02)].ii_max == 0x0A
     assert by_key[(0x08, 0x06)].ii_max == 0x0A
 

@@ -481,6 +481,7 @@ def test_instance_present_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
             "value": True,
             "error": None,
             "flags_access": "stable_ro",
+            "reply_kind": "simple_valid",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -542,6 +543,7 @@ def test_is_instance_present_group_09_remote_accepts_device_connected_true(
             "value": True,
             "error": None,
             "flags_access": "stable_ro",
+            "reply_kind": "simple_valid",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -736,6 +738,123 @@ def test_probe_instance_availability_group_09_remote_ignores_invalid_header_fall
         (0x06, 0x0003, "UCH"),
         (0x06, 0x0004, "FW"),
     ]
+
+
+def test_probe_instance_availability_group_09_remote_ignores_invalid_primary_header(
+    monkeypatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int, str | None]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        calls.append((int(opcode), register_id, kwargs.get("type_hint")))
+        if register_id == 0x0001:
+            return {
+                "raw_hex": "01",
+                "type": "BOOL",
+                "value": True,
+                "error": None,
+                "flags_access": "stable_ro",
+                "reply_kind": "simple_invalid",
+            }
+        return {
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": "absent",
+            "reply_kind": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x09,
+        instance=0x01,
+        opcode=0x06,
+    )
+
+    assert probe.present is False
+    assert calls == [
+        (0x06, 0x0001, "BOOL"),
+        (0x06, 0x0002, "UCH"),
+        (0x06, 0x0003, "UCH"),
+        (0x06, 0x0004, "FW"),
+    ]
+
+
+def test_probe_instance_availability_remote_empty_reply_does_not_mark_slot_present(
+    monkeypatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int, str | None]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        calls.append((int(opcode), register_id, kwargs.get("type_hint")))
+        return {
+            "raw_hex": "",
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": None,
+            "response_state": "empty_reply",
+            "reply_kind": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x04,
+        instance=0x03,
+        opcode=0x06,
+    )
+
+    assert probe.present is False
+    assert calls == [
+        (0x06, 0x0001, "BOOL"),
+        (0x06, 0x0002, "UCH"),
+        (0x06, 0x0003, "UCH"),
+        (0x06, 0x0004, "FW"),
+    ]
+
+
+def test_probe_instance_availability_group_04_local_uses_rr_0004(monkeypatch) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((int(opcode), int(kwargs["register"])))
+        return {
+            "raw_hex": "0000803f",
+            "type": "EXP",
+            "value": 1.0,
+            "error": None,
+            "flags_access": "stable_ro",
+            "response_state": "active",
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x04,
+        instance=0x01,
+        opcode=0x02,
+    )
+
+    assert probe.present is True
+    assert probe.contract.probe_register == 0x0004
+    assert calls == [(0x02, 0x0004)]
 
 
 def test_fw_not_added_to_inferred_type_selection() -> None:

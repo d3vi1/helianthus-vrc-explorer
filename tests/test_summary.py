@@ -263,7 +263,7 @@ def test_render_summary_uses_namespace_specific_topology_for_instances(tmp_path:
         },
         "groups": {
             "0x08": {
-                "name": "Buffer / Solar Cylinder 2",
+                "name": "Unknown 0x08",
                 "descriptor_observed": 1.0,
                 "dual_namespace": True,
                 "namespaces": {
@@ -314,7 +314,7 @@ def test_render_summary_excludes_synthetic_namespace_slots_from_present_counts(
         },
         "groups": {
             "0x08": {
-                "name": "Buffer / Solar Cylinder 2",
+                "name": "Unknown 0x08",
                 "descriptor_observed": 1.0,
                 "dual_namespace": True,
                 "namespaces": {
@@ -405,7 +405,7 @@ def test_render_summary_ignores_synthetic_instance_slots_in_topology_ratios(
                 },
             },
             "0x08": {
-                "name": "Buffer / Solar Cylinder 2",
+                "name": "Unknown 0x08",
                 "descriptor_observed": 1.0,
                 "dual_namespace": True,
                 "namespaces": {
@@ -446,7 +446,7 @@ def test_render_summary_ignores_synthetic_instance_slots_in_topology_ratios(
     assert "Local Devices (0x02)" in text
     assert "Remote Devices (0x06)" in text
     assert "Unknown 0x69" in text and "1/11" in text
-    assert "Buffer / Solar Cylinder 2" in text and "singleton" in text
+    assert "Unknown 0x08" in text and "singleton" in text
 
 
 def test_render_summary_uses_discovery_namespace_for_omitted_single_namespace_group(

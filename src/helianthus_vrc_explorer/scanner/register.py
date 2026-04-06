@@ -171,6 +171,16 @@ def namespace_availability_contract(
             description="Cylinder availability requires a decodable float payload.",
         )
 
+    if group == 0x04 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0004,
+            probe_type_hint="EXP",
+            positive_when="decoded EXP value is not null",
+            description="Solar circuit availability requires a decodable float payload.",
+        )
+
     if group in {0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
         return NamespaceAvailabilityContract(
             source="heuristic_probe",
@@ -667,17 +677,24 @@ def probe_instance_availability(
         )
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
-    if group in {0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
-        header_evidence = entry
+    if group == 0x04 and opcode == 0x02:
         if response_state == "empty_reply":
-            return InstanceAvailabilityProbe(
-                present=True,
-                contract=contract,
-                evidence=header_evidence,
-            )
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
         present = (
             entry["error"] is None
             and entry.get("flags_access") != "absent"
+            and entry["value"] is not None
+        )
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group in {0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+        header_evidence = entry
+        entry_reply_kind = entry.get("reply_kind")
+        present = (
+            entry["error"] is None
+            and entry.get("flags_access") != "absent"
+            and isinstance(entry_reply_kind, str)
+            and entry_reply_kind.endswith("_valid")
             and entry["value"] is True
         )
         if not present:
@@ -691,10 +708,6 @@ def probe_instance_availability(
                     register=register_id,
                     type_hint=type_hint,
                 )
-                if header_entry.get("response_state") == "empty_reply":
-                    present = True
-                    header_evidence = header_entry
-                    break
                 header_reply_kind = header_entry.get("reply_kind")
                 if (
                     header_entry["error"] is None

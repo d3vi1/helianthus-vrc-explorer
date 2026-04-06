@@ -136,7 +136,7 @@ def test_plan_dual_namespace_presets_keep_namespace_specific_ii_max() -> None:
         PlannerGroup(
             group=0x08,
             opcode=0x02,
-            name="Buffer / Solar Cylinder 2",
+            name="Unknown 0x08 (local)",
             descriptor=1.0,
             known=True,
             ii_max=0x0A,
@@ -149,7 +149,7 @@ def test_plan_dual_namespace_presets_keep_namespace_specific_ii_max() -> None:
         PlannerGroup(
             group=0x08,
             opcode=0x06,
-            name="Buffer / Solar Cylinder 2",
+            name="Unknown 0x08 (remote)",
             descriptor=1.0,
             known=True,
             ii_max=0x0A,

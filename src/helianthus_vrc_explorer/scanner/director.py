@@ -94,7 +94,7 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "name_by_opcode": {0x02: "Solar Circuit", 0x06: "Unknown 0x04 (remote)"},
         "namespace_opcodes": [0x02, 0x06],
         "rr_max_by_opcode": {0x02: 0x000B, 0x06: 0x000B},
-        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
+        "ii_max_by_opcode": {0x02: 0x01, 0x06: 0x0A},
     },
     0x05: {
         "desc": 1.0,
@@ -108,10 +108,11 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max_by_opcode": {0x02: 0x01, 0x06: 0x0A},
     },
     0x08: {
-        "name": "Buffer / Solar Cylinder 2",
+        "name": "Unknown 0x08",
         "ii_max": 0x0A,
         "rr_max": 0x0007,
         "opcodes": [0x02, 0x06],
+        "name_by_opcode": {0x02: "Unknown 0x08 (local)", 0x06: "Unknown 0x08 (remote)"},
         "rr_max_by_opcode": {0x02: 0x0007, 0x06: 0x0004},
         "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
     },
@@ -139,6 +140,7 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x0A,
         "rr_max": 0x002F,
         "opcodes": [0x06],
+        "name_by_opcode": {0x02: "Unknown 0x0C", 0x06: "Functional Modules"},
     },
     0x06: {
         "name": "Unknown 0x06",
@@ -162,7 +164,7 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "exhaustive_only": True,
     },
     0x0D: {
-        "name": "Unknown 0x0D (VWZIO?)",
+        "name": "Unknown 0x0D",
         "ii_max": 0x0A,
         "rr_max": 0x0030,
         "opcodes": [0x02, 0x06],
