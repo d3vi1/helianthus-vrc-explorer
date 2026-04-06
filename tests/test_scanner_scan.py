@@ -521,6 +521,35 @@ def _write_fixture_group_02_dual_namespace(tmp_path: Path) -> Path:
     return path
 
 
+def _write_fixture_group_02_namespace_presence_divergence(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x03"}},
+        "groups": {
+            "0x02": {
+                "descriptor_type": 1.0,
+                "namespaces": {
+                    "0x02": {
+                        "instances": {
+                            "0x00": {"registers": {"0x0002": {"raw_hex": "0100"}}},
+                            "0x01": {"registers": {"0x0002": {"raw_hex": "0100"}}},
+                            "0x02": {"registers": {"0x0002": {"raw_hex": "0100"}}},
+                        }
+                    },
+                    "0x06": {
+                        "instances": {
+                            "0x00": {"registers": {"0x0001": {"raw_hex": "01"}}},
+                            "0x02": {"registers": {"0x0001": {"raw_hex": "01"}}},
+                        }
+                    },
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_group_02_namespace_presence_divergence.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
 def _write_fixture_group_08(tmp_path: Path) -> Path:
     fixture = {
         "meta": {"dummy_transport": {"directory_terminator_group": "0x09"}},
@@ -954,7 +983,7 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
         planner_ui="classic",
     )
 
-    group = artifact["groups"]["0x02"]
+    group = artifact["groups"]["0x02"]["namespaces"]["0x02"]
     assert group["instances"]["0x00"]["present"] is True
 
     absent = group["instances"]["0x01"]
@@ -962,7 +991,9 @@ def test_scan_b524_scans_absent_instances_when_planner_overrides(
     assert set(absent["registers"].keys()) == {"0x0000", "0x0001", "0x0002"}
 
     scanned_registers = {
-        rr for (_opcode, gg, ii, rr) in transport.register_reads if gg == 0x02 and ii == 0x01
+        rr
+        for (opcode, gg, ii, rr) in transport.register_reads
+        if opcode == 0x02 and gg == 0x02 and ii == 0x01
     }
     assert scanned_registers == set(range(0x0002 + 1))
 
@@ -1156,7 +1187,7 @@ def test_dual_namespace_presence_is_independent_and_retains_raw_probe_evidence(
     remote_reads = {
         rr for (opcode, gg, _ii, rr) in transport.register_reads if opcode == 0x06 and gg == 0x09
     }
-    assert remote_reads == {0x0001}
+    assert remote_reads == {0x0001, 0x0002, 0x0003, 0x0004}
 
 
 def test_artifact_single_namespace_unchanged(tmp_path: Path) -> None:
@@ -1900,8 +1931,8 @@ def test_scan_b524_textual_planner_receives_remote_heating_source_rows(
     assert isinstance(default_plan, dict)
     assert make_plan_key(0x00, 0x02) not in default_plan
     assert make_plan_key(0x01, 0x02) not in default_plan
-    assert make_plan_key(0x01, 0x06) not in default_plan
-    assert make_plan_key(0x00, 0x06) not in default_plan
+    assert make_plan_key(0x01, 0x06) in default_plan
+    assert make_plan_key(0x00, 0x06) in default_plan
     assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 0
 
 
@@ -1949,11 +1980,45 @@ def test_scan_b524_textual_planner_includes_remote_exploratory_rows_for_groups_0
 
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    assert make_plan_key(0x02, 0x06) not in default_plan
-    assert make_plan_key(0x03, 0x06) not in default_plan
-    assert make_plan_key(0x04, 0x06) not in default_plan
-    assert make_plan_key(0x05, 0x06) not in default_plan
+    assert make_plan_key(0x02, 0x06) in default_plan
+    assert make_plan_key(0x03, 0x06) in default_plan
+    assert make_plan_key(0x04, 0x06) in default_plan
+    assert make_plan_key(0x05, 0x06) in default_plan
     assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 0
+
+
+def test_scan_b524_textual_planner_uses_remote_presence_for_remote_namespace_rows(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        DummyTransport(_write_fixture_group_02_namespace_presence_divergence(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x02, 0x02)].present_instances == (0x00, 0x01, 0x02)
+    assert by_key[(0x02, 0x06)].present_instances == (0x00, 0x02)
 
 
 def test_scan_b524_textual_full_preset_keeps_exploratory_rows_visible_but_unselected(
@@ -2048,6 +2113,40 @@ def test_scan_b524_textual_full_preset_keeps_remote_only_group_selected_on_remot
     assert make_plan_key(0x0C, 0x02) not in default_plan
 
 
+def test_scan_b524_textual_planner_does_not_reuse_remote_presence_for_local_speculative_rows(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        DummyTransport(_write_fixture_group_0c_remote(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x0C, 0x06)].present_instances == (0x00,)
+    assert by_key[(0x0C, 0x02)].present_instances == ()
+
+
 def test_scan_b524_textual_planner_models_group_08_as_instanced_on_local_and_remote(
     monkeypatch,
     tmp_path: Path,
@@ -2119,6 +2218,138 @@ def test_scan_b524_textual_planner_uses_namespace_owned_labels_for_groups_09_and
     assert planner_label_map[(0x09, 0x02)] == ("Unknown 0x09 (local)", "local")
     assert planner_label_map[(0x09, 0x06)] == ("Regulators", "remote")
     assert artifact["groups"]["0x09"]["name"] == "Unknown 0x09 (local) / Regulators"
+
+
+def test_scan_b524_textual_planner_uses_remote_presence_for_op06_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+    from helianthus_vrc_explorer.scanner.director import DiscoveredGroup
+    from helianthus_vrc_explorer.scanner.register import (
+        InstanceAvailabilityProbe,
+        namespace_availability_contract,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    remote_present = {
+        (0x00, 0x06): {0x00},
+        (0x01, 0x06): {0x01},
+        (0x02, 0x06): {0x00, 0x01},
+        (0x03, 0x06): {0x02},
+        (0x05, 0x06): {0x01},
+        (0x0A, 0x06): {0x03},
+        (0x0C, 0x06): {0x04},
+    }
+    local_present = {
+        (0x02, 0x02): {0x00, 0x01, 0x02},
+        (0x03, 0x02): {0x00, 0x01},
+        (0x05, 0x02): {0x00},
+        (0x0A, 0x02): set(range(0x0B)),
+    }
+
+    def fake_probe_instance_availability(*_args, **kwargs):
+        group = kwargs["group"]
+        opcode = kwargs["opcode"]
+        instance = kwargs["instance"]
+        present = instance in remote_present.get(
+            (group, opcode), set()
+        ) or instance in local_present.get((group, opcode), set())
+        return InstanceAvailabilityProbe(
+            present=present,
+            contract=namespace_availability_contract(group=group, opcode=opcode),
+            evidence=None,
+        )
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "discover_groups",
+        lambda *_args, **_kwargs: [
+            DiscoveredGroup(group=0x00, descriptor=3.0),
+            DiscoveredGroup(group=0x01, descriptor=3.0),
+            DiscoveredGroup(group=0x02, descriptor=1.0),
+            DiscoveredGroup(group=0x03, descriptor=1.0),
+            DiscoveredGroup(group=0x05, descriptor=1.0),
+            DiscoveredGroup(group=0x0A, descriptor=1.0),
+            DiscoveredGroup(group=0x0C, descriptor=1.0),
+        ],
+    )
+    monkeypatch.setattr(scan_mod, "probe_instance_availability", fake_probe_instance_availability)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        DummyTransport(_write_fixture_groups_00_to_05(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+
+    assert by_key[(0x00, 0x06)].present_instances == (0x00,)
+    assert by_key[(0x01, 0x06)].present_instances == (0x01,)
+    assert by_key[(0x02, 0x06)].present_instances == (0x00, 0x01)
+    assert by_key[(0x03, 0x06)].present_instances == (0x02,)
+    assert by_key[(0x05, 0x06)].present_instances == (0x01,)
+    assert by_key[(0x0A, 0x06)].present_instances == (0x03,)
+    assert by_key[(0x0C, 0x06)].present_instances == (0x04,)
+
+    # Local rows keep their own namespace evidence.
+    assert by_key[(0x02, 0x02)].present_instances == (0x00, 0x01, 0x02)
+    assert by_key[(0x03, 0x02)].present_instances == (0x00, 0x01)
+    assert by_key[(0x05, 0x02)].present_instances == (0x00,)
+    assert by_key[(0x0A, 0x02)].present_instances == tuple(range(0x0B))
+
+
+def test_scan_b524_textual_planner_does_not_leak_remote_presence_into_local_mirror_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        DummyTransport(_write_fixture_group_0c_remote(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x0C, 0x06)].present_instances == (0x00,)
+    assert by_key[(0x0C, 0x02)].present_instances == ()
 
 
 def test_scan_b524_textual_failure_raises_in_forced_textual_mode(
@@ -2365,7 +2596,7 @@ def test_scan_b524_replan_back_to_single_preserves_promoted_dual_namespace_data(
     assert (
         group["namespaces"]["0x02"]["instances"]["0x00"]["registers"]["0x0000"]["raw_hex"] == "02"
     )
-    assert transport.register_reads[0] == (0x02, 0x01, 0x00, 0x0000)
+    assert (0x02, 0x01, 0x00, 0x0000) in transport.register_reads
 
 
 def test_scan_b524_replan_textual_failure_prompts_classic_immediately(
@@ -2437,7 +2668,7 @@ def test_scan_b524_replan_textual_failure_prompts_classic_immediately(
         planner_ui="auto",
     )
 
-    registers = artifact["groups"]["0x02"]["instances"]["0x00"]["registers"]
+    registers = artifact["groups"]["0x02"]["namespaces"]["0x02"]["instances"]["0x00"]["registers"]
     assert set(registers) == {"0x0000"}
     assert textual_calls["count"] == 2
     assert classic_calls["count"] == 1

@@ -63,6 +63,7 @@ from .register import (
     NamespaceAvailabilityContract,
     RegisterEntry,
     namespace_availability_contract,
+    namespace_opcodes_for_group,
     opcodes_for_group,
     probe_instance_availability,
     read_register,
@@ -588,6 +589,21 @@ def _present_instances_for_opcode(
     group: int,
     opcode: int,
 ) -> tuple[int, ...]:
+    group_obj = artifact["groups"].get(_hex_u8(group))
+    if isinstance(group_obj, dict) and not bool(group_obj.get("dual_namespace")):
+        discovery_advisory = group_obj.get("discovery_advisory")
+        proven_opcodes = (
+            discovery_advisory.get("proven_register_opcodes")
+            if isinstance(discovery_advisory, dict)
+            else None
+        )
+        if (
+            isinstance(proven_opcodes, list)
+            and proven_opcodes
+            and _hex_u8(opcode)
+            not in {opcode_key for opcode_key in proven_opcodes if isinstance(opcode_key, str)}
+        ):
+            return ()
     instances_obj = _instances_object(artifact, group=group, opcode=opcode)
     return tuple(
         sorted(
@@ -1515,12 +1531,30 @@ def scan_b524(
                 level="info",
             )
 
+        interactive = (
+            console is not None
+            and console.is_terminal
+            and sys.stdin.isatty()
+            and observer is not None
+        )
+        planner_mode = _resolve_planner_mode(
+            interactive=interactive,
+            planner_ui=planner_ui,
+            observer=observer,
+        )
+
         resolved_group_opcodes: dict[int, tuple[RegisterOpcode, ...]] = {}
+        availability_group_opcodes: dict[int, tuple[RegisterOpcode, ...]] = {}
         unknown_opcode_probe_map: dict[int, dict[str, Any]] = {}
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             if config is not None:
                 resolved_group_opcodes[group.group] = _group_opcodes(group.group)
+                availability_group_opcodes[group.group] = (
+                    _sorted_namespace_opcodes(namespace_opcodes_for_group(group.group))
+                    if planner_mode != "disabled"
+                    else resolved_group_opcodes[group.group]
+                )
                 continue
 
             opcodes, probe_summary = _probe_unknown_group_opcodes(
@@ -1530,6 +1564,7 @@ def scan_b524(
                 observer=observer,
             )
             resolved_group_opcodes[group.group] = opcodes
+            availability_group_opcodes[group.group] = opcodes
             unknown_opcode_probe_map[group.group] = probe_summary
             if observer is None:
                 continue
@@ -1547,7 +1582,7 @@ def scan_b524(
                 )
 
         group_dual_namespace_runtime: dict[int, bool] = {
-            group: len(opcodes) > 1 for group, opcodes in resolved_group_opcodes.items()
+            group: len(opcodes) > 1 for group, opcodes in availability_group_opcodes.items()
         }
         responsive_unknown_groups = sorted(
             group.group
@@ -1577,7 +1612,7 @@ def scan_b524(
 
         for group in classified:
             meta = metadata_map[group.group]
-            opcodes = resolved_group_opcodes.get(group.group, ())
+            opcodes = availability_group_opcodes.get(group.group, ())
             dual_namespace = len(opcodes) > 1
             # NaN descriptors come from synthetic research-mode injection;
             # store as None to keep JSON-serializable and avoid polluting analytics.
@@ -1617,7 +1652,7 @@ def scan_b524(
         instance_targets = _instance_discovery_targets(
             classified,
             metadata_map,
-            resolved_group_opcodes,
+            availability_group_opcodes,
         )
 
         # Phase C: instance discovery (groups with ii_max > 0 only).
@@ -1800,17 +1835,6 @@ def scan_b524(
         if measured_requests > 0 and measured_duration_s > 0:
             request_rate_rps = measured_requests / measured_duration_s
 
-        interactive = (
-            console is not None
-            and console.is_terminal
-            and sys.stdin.isatty()
-            and observer is not None
-        )
-        planner_mode = _resolve_planner_mode(
-            interactive=interactive,
-            planner_ui=planner_ui,
-            observer=observer,
-        )
         planner_groups: list[PlannerGroup] = []
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
