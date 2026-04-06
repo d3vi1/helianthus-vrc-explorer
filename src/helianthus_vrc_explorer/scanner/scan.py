@@ -128,13 +128,39 @@ def _sorted_namespace_opcodes(opcodes: Sequence[int]) -> tuple[RegisterOpcode, .
 
 
 def _planner_source_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
-    if group != 0x01:
-        return _group_opcodes(group)
+    """Return broad planner-visible opcode candidates for a group.
+
+    The planner intentionally exposes both local and remote opcode families so
+    users can include exploratory rows even when semantic modeling is still
+    conservative for that namespace.
+    """
+
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return _UNKNOWN_GROUP_OPCODE_CANDIDATES
 
     profiles = group_namespace_profiles(group)
-    if not profiles:
-        return _group_opcodes(group)
-    return _sorted_namespace_opcodes(tuple(profiles))
+    candidate_opcodes: set[int] = {int(opcode) for opcode in _UNKNOWN_GROUP_OPCODE_CANDIDATES}
+    if profiles:
+        candidate_opcodes.update(int(opcode) for opcode in profiles)
+    else:
+        candidate_opcodes.update(int(opcode) for opcode in config["opcodes"])
+    return _sorted_namespace_opcodes(tuple(candidate_opcodes))
+
+
+def _planner_primary_opcode(
+    *,
+    group: int,
+    planner_opcodes: tuple[RegisterOpcode, ...],
+    resolved_opcodes: tuple[RegisterOpcode, ...],
+) -> RegisterOpcode:
+    # Planner visibility can be broader than scan semantics. Preserve the
+    # semantic primary namespace from resolved opcodes when available.
+    if resolved_opcodes:
+        return resolved_opcodes[0]
+    if group in GROUP_CONFIG:
+        return _primary_opcode(group)
+    return planner_opcodes[0]
 
 
 def _primary_opcode(group: int) -> RegisterOpcode:
@@ -146,7 +172,7 @@ def _is_dual_namespace_group(group: int) -> bool:
 
 
 def _planner_group_is_recommended(*, group: int, opcode: RegisterOpcode) -> bool:
-    if group in KNOWN_CORE_GROUPS:
+    if group in KNOWN_CORE_GROUPS and opcode == _LOCAL_REGISTER_OPCODE:
         return True
     config = GROUP_CONFIG.get(group)
     if config is None or bool(config.get("exhaustive_only")):
@@ -515,6 +541,24 @@ def _apply_effective_namespace_topology(
     plan: Mapping[PlanKey, GroupScanPlan],
 ) -> dict[int, bool]:
     effective = dict(group_dual_namespace_runtime)
+    groups_obj = artifact.get("groups")
+    if isinstance(groups_obj, dict):
+        for group_key, group_obj in groups_obj.items():
+            if not isinstance(group_obj, dict):
+                continue
+            if not isinstance(group_key, str):
+                continue
+            namespaces_obj = group_obj.get("namespaces")
+            has_namespace_data = isinstance(namespaces_obj, dict) and bool(namespaces_obj)
+            if not (bool(group_obj.get("dual_namespace")) or has_namespace_data):
+                continue
+            try:
+                group_id = int(group_key, 0)
+            except ValueError:
+                continue
+            # Topology is monotonic once promoted: hotkey replans must not demote groups
+            # back to flat storage and drop already-captured namespace data.
+            effective[group_id] = True
     planned_opcodes_by_group: dict[int, set[RegisterOpcode]] = {}
     for group_plan in plan.values():
         group_id = group_plan.group
@@ -564,7 +608,8 @@ def _entry_is_readable(entry: RegisterEntry) -> bool:
 
 
 def _entry_is_opcode_responsive(entry: RegisterEntry) -> bool:
-    return entry["error"] is None and entry.get("flags_access") != "absent"
+    # Kept separate for intent clarity: responsiveness checks reuse readability semantics.
+    return _entry_is_readable(entry)
 
 
 def _probe_unknown_group_opcodes(
@@ -1770,12 +1815,17 @@ def scan_b524(
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             group_meta = metadata_map[group.group]
-            opcodes = resolved_group_opcodes.get(group.group, ())
-            if planner_mode != "disabled" and config is not None:
+            resolved_opcodes = resolved_group_opcodes.get(group.group, ())
+            opcodes = resolved_opcodes
+            if planner_mode != "disabled":
                 opcodes = _planner_source_opcodes(group.group)
             if not opcodes:
                 continue
-            primary_opcode = opcodes[0]
+            primary_opcode = _planner_primary_opcode(
+                group=group.group,
+                planner_opcodes=opcodes,
+                resolved_opcodes=resolved_opcodes,
+            )
             dual_namespace = len(opcodes) > 1
             for opcode in opcodes:
                 planner_ii_max = _planner_ii_max(
@@ -1818,6 +1868,9 @@ def scan_b524(
                             opcode=opcode,
                         ),
                         exhaustive_only=bool(config and config.get("exhaustive_only")),
+                        # Keep planner rows broadly visible, but allow `full`
+                        # preset defaults to remain scoped to resolved namespaces.
+                        full_default=(opcode in resolved_opcodes),
                     )
                 )
 

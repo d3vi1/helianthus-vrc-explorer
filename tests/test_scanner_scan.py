@@ -11,6 +11,7 @@ from helianthus_vrc_explorer.scanner.observer import ScanObserver
 from helianthus_vrc_explorer.scanner.plan import GroupScanPlan, make_plan_key
 from helianthus_vrc_explorer.scanner.scan import (
     _apply_contextual_enum_annotations,
+    _planner_primary_opcode,
     _planner_source_opcodes,
     _probe_unknown_group_opcodes,
     scan_b524,
@@ -178,6 +179,102 @@ def _write_fixture_groups_00_and_01(tmp_path: Path) -> Path:
         },
     }
     path = tmp_path / "fixture_groups_00_and_01.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
+def _write_fixture_groups_00_to_05(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x06"}},
+        "groups": {
+            "0x00": {
+                "descriptor_type": 3.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x01": {
+                "descriptor_type": 3.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x02": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0002": {"raw_hex": "0100"},
+                        }
+                    }
+                },
+            },
+            "0x03": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x001c": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x04": {
+                "descriptor_type": 6.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            },
+            "0x05": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0004": {"raw_hex": "0000803f"},
+                        }
+                    }
+                },
+            },
+        },
+    }
+    path = tmp_path / "fixture_groups_00_to_05.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    return path
+
+
+def _write_fixture_group_0c_remote(tmp_path: Path) -> Path:
+    fixture = {
+        "meta": {"dummy_transport": {"directory_terminator_group": "0x0d"}},
+        "groups": {
+            "0x0C": {
+                "descriptor_type": 1.0,
+                "namespaces": {
+                    "0x06": {
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {"raw_hex": "01"},
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    }
+    path = tmp_path / "fixture_group_0c_remote.json"
     path.write_text(json.dumps(fixture), encoding="utf-8")
     return path
 
@@ -1143,10 +1240,14 @@ def test_group_08_remote_namespace_only_marks_present_instances(
 
     group = artifact["groups"]["0x08"]
     assert group["dual_namespace"] is True
-    assert group["namespaces"]["0x02"]["ii_max"] == "0x00"
+    assert group["namespaces"]["0x02"]["ii_max"] == "0x0a"
     assert group["namespaces"]["0x06"]["ii_max"] == "0x0a"
-    assert set(group["namespaces"]["0x02"]["instances"]) == {"0x00"}
-    assert set(group["namespaces"]["0x06"]["instances"]) == {"0x00"}
+    local_instances = set(group["namespaces"]["0x02"]["instances"])
+    remote_instances = set(group["namespaces"]["0x06"]["instances"])
+    assert "0x00" in local_instances
+    assert "0x00" in remote_instances
+    # Regression guard: group 0x08 is no longer modeled as local singleton.
+    assert len(local_instances) > 1
 
 
 def test_type_hint_propagation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1543,11 +1644,29 @@ def test_scan_b524_instance_discovery_runs_local_namespace_before_remote(
     assert all(opcode == 0x06 for opcode in presence_reads[first_remote_index:])
 
 
-def test_planner_source_opcodes_include_staged_group_01_remote_but_keep_group_00_local_only() -> (
-    None
-):
-    assert _planner_source_opcodes(0x00) == (0x02,)
+def test_planner_source_opcodes_surface_both_local_and_remote_for_planner_visibility() -> None:
+    # Planner visibility is intentionally broad:
+    # "Grupurile trebuie sa apara toate. Pur si simplu."
+    assert _planner_source_opcodes(0x00) == (0x02, 0x06)
     assert _planner_source_opcodes(0x01) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x02) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x06) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x07) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x0B) == (0x02, 0x06)
+    assert _planner_source_opcodes(0x0C) == (0x02, 0x06)
+
+
+def test_planner_primary_opcode_prefers_resolved_remote_only_namespace() -> None:
+    planner_opcodes = _planner_source_opcodes(0x0C)
+
+    assert (
+        _planner_primary_opcode(
+            group=0x0C,
+            planner_opcodes=planner_opcodes,
+            resolved_opcodes=(0x06,),
+        )
+        == 0x06
+    )
 
 
 def test_scan_b524_disabled_planner_skips_interactive_planner_even_on_tty(
@@ -1709,7 +1828,7 @@ def test_scan_b524_textual_failure_falls_back_to_classic_in_auto_mode(
     assert classic_called["count"] >= 1
 
 
-def test_scan_b524_textual_planner_receives_group_01_remote_and_keeps_group_00_local_only(
+def test_scan_b524_textual_planner_receives_remote_heating_source_rows(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1741,14 +1860,18 @@ def test_scan_b524_textual_planner_receives_group_01_remote_and_keeps_group_00_l
     assert isinstance(planner_groups, list)
     planner_keys = {(group.group, group.opcode) for group in planner_groups}
     assert (0x00, 0x02) in planner_keys
-    assert (0x00, 0x06) not in planner_keys
+    assert (0x00, 0x06) in planner_keys
     assert (0x01, 0x02) in planner_keys
     assert (0x01, 0x06) in planner_keys
 
     name_by_key = {(group.group, group.opcode): group.name for group in planner_groups}
     assert name_by_key[(0x00, 0x02)] == "Regulator Parameters"
+    assert name_by_key[(0x00, 0x06)] == "Primary Heating Sources"
     assert name_by_key[(0x01, 0x02)] == "Hot Water Circuit"
     assert name_by_key[(0x01, 0x06)] == "Secondary Heating Sources"
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x00, 0x06)].ii_max == 0x07
+    assert by_key[(0x01, 0x06)].ii_max == 0x07
 
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
@@ -1757,6 +1880,184 @@ def test_scan_b524_textual_planner_receives_group_01_remote_and_keeps_group_00_l
     assert make_plan_key(0x01, 0x06) not in default_plan
     assert make_plan_key(0x00, 0x06) not in default_plan
     assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 0
+
+
+def test_scan_b524_textual_planner_includes_remote_exploratory_rows_for_groups_02_to_05(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        DummyTransport(_write_fixture_groups_00_to_05(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x02, 0x06)].name == "Unknown 0x02 (remote)"
+    assert by_key[(0x03, 0x06)].name == "Unknown 0x03 (remote)"
+    assert by_key[(0x04, 0x06)].name == "Unknown 0x04 (remote)"
+    assert by_key[(0x05, 0x06)].name == "Unknown 0x05 (remote)"
+    assert by_key[(0x04, 0x02)].ii_max == 0x0A
+    assert by_key[(0x02, 0x06)].ii_max == 0x0A
+    assert by_key[(0x03, 0x06)].ii_max == 0x0A
+    assert by_key[(0x04, 0x06)].ii_max == 0x0A
+    assert by_key[(0x05, 0x06)].ii_max == 0x0A
+
+    default_plan = captured["default_plan"]
+    assert isinstance(default_plan, dict)
+    assert make_plan_key(0x02, 0x06) not in default_plan
+    assert make_plan_key(0x03, 0x06) not in default_plan
+    assert make_plan_key(0x04, 0x06) not in default_plan
+    assert make_plan_key(0x05, 0x06) not in default_plan
+    assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 0
+
+
+def test_scan_b524_textual_full_preset_keeps_exploratory_rows_visible_but_unselected(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        DummyTransport(_write_fixture_groups_00_to_05(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="full",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    # Keep broad visibility in UI.
+    assert (0x02, 0x06) in by_key
+    assert (0x03, 0x06) in by_key
+    assert (0x04, 0x06) in by_key
+    assert (0x05, 0x06) in by_key
+
+    default_plan = captured["default_plan"]
+    assert isinstance(default_plan, dict)
+    # But full preset defaults remain resolved-only.
+    assert make_plan_key(0x02, 0x02) in default_plan
+    assert make_plan_key(0x03, 0x02) in default_plan
+    assert make_plan_key(0x04, 0x02) in default_plan
+    assert make_plan_key(0x05, 0x02) in default_plan
+    assert make_plan_key(0x02, 0x06) not in default_plan
+    assert make_plan_key(0x03, 0x06) not in default_plan
+    assert make_plan_key(0x04, 0x06) not in default_plan
+    assert make_plan_key(0x05, 0x06) not in default_plan
+
+
+def test_scan_b524_textual_full_preset_keeps_remote_only_group_selected_on_remote_opcode(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        DummyTransport(_write_fixture_group_0c_remote(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="full",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    keys = {(group.group, group.opcode) for group in planner_groups}
+    # Keep broad visibility in UI.
+    assert (0x0C, 0x02) in keys
+    assert (0x0C, 0x06) in keys
+
+    default_plan = captured["default_plan"]
+    assert isinstance(default_plan, dict)
+    # Full should keep remote-only group selected on its resolved namespace.
+    assert make_plan_key(0x0C, 0x06) in default_plan
+    assert make_plan_key(0x0C, 0x02) not in default_plan
+
+
+def test_scan_b524_textual_planner_models_group_08_as_instanced_on_local_and_remote(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(groups, **kwargs):
+        captured["groups"] = groups
+        captured["default_plan"] = kwargs["default_plan"]
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        DummyTransport(_write_fixture_group_08(tmp_path)),
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="recommended",
+    )
+
+    planner_groups = captured["groups"]
+    assert isinstance(planner_groups, list)
+    by_key = {(group.group, group.opcode): group for group in planner_groups}
+    assert by_key[(0x08, 0x02)].ii_max == 0x0A
+    assert by_key[(0x08, 0x06)].ii_max == 0x0A
 
 
 def test_scan_b524_textual_planner_uses_namespace_owned_labels_for_groups_09_and_0a(
@@ -1961,6 +2262,87 @@ def test_scan_b524_replan_promotes_group_01_to_dual_namespace_before_queue_rebui
     assert scan_plan["dual_namespace"] is True
     assert set(scan_plan["namespaces"]) == {"0x02", "0x06"}
     assert (0x06, 0x01, 0x00, 0x0000) in transport.register_reads
+
+
+def test_scan_b524_replan_back_to_single_preserves_promoted_dual_namespace_data(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+    from contextlib import contextmanager
+
+    import helianthus_vrc_explorer.scanner.scan as scan_mod
+
+    class _FakeHotkeys:
+        def __init__(self, *, enabled: bool) -> None:
+            self._enabled = enabled
+            self._poll_calls = 0
+
+        def __enter__(self) -> _FakeHotkeys:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def poll(self) -> bool:
+            if not self._enabled:
+                return False
+            self._poll_calls += 1
+            return self._poll_calls == 2
+
+        @contextmanager
+        def suspend(self):
+            yield None
+
+    transport = RecordingTransport(DummyTransport(_write_fixture_group_01_namespaces(tmp_path)))
+    planner_calls = {"count": 0}
+
+    def fake_prompt_scan_plan(*_args, **_kwargs):
+        planner_calls["count"] += 1
+        if planner_calls["count"] == 1:
+            return {
+                make_plan_key(0x01, 0x02): GroupScanPlan(
+                    group=0x01,
+                    opcode=0x02,
+                    rr_max=0x0001,
+                    instances=(0x00,),
+                ),
+                make_plan_key(0x01, 0x06): GroupScanPlan(
+                    group=0x01,
+                    opcode=0x06,
+                    rr_max=0x0000,
+                    instances=(0x00,),
+                ),
+            }
+        return {
+            make_plan_key(0x01, 0x02): GroupScanPlan(
+                group=0x01,
+                opcode=0x02,
+                rr_max=0x0001,
+                instances=(0x00,),
+            )
+        }
+
+    monkeypatch.setattr(scan_mod, "_PlannerHotkeyReader", _FakeHotkeys)
+    monkeypatch.setattr(scan_mod, "prompt_scan_plan", fake_prompt_scan_plan)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    artifact = scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="classic",
+    )
+
+    group = artifact["groups"]["0x01"]
+    assert group["dual_namespace"] is True
+    assert "namespaces" in group
+    assert "instances" not in group
+    assert (
+        group["namespaces"]["0x02"]["instances"]["0x00"]["registers"]["0x0000"]["raw_hex"] == "02"
+    )
+    assert transport.register_reads[0] == (0x02, 0x01, 0x00, 0x0000)
 
 
 def test_scan_b524_replan_textual_failure_prompts_classic_immediately(

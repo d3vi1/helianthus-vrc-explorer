@@ -112,9 +112,24 @@ def _estimate_footer(
 def _planner_pane_id(opcode: int) -> str:
     if opcode == 0x02:
         return "local"
-    if opcode == 0x06:
-        return "remote"
-    return "other"
+    # Keep the planner bounded to the two B524 namespace panes. Unexpected
+    # opcodes are routed to remote instead of being silently dropped.
+    return "remote"
+
+
+_PANE_TABLE_IDS: dict[str, str] = {
+    "local": "planner-table-local",
+    "remote": "planner-table-remote",
+}
+
+
+def _table_id_to_pane_key(table_id: str | None) -> str | None:
+    if table_id is None:
+        return None
+    for pane_key, pane_table_id in _PANE_TABLE_IDS.items():
+        if table_id == pane_table_id:
+            return pane_key
+    return None
 
 
 def run_textual_scan_plan(
@@ -131,7 +146,7 @@ def run_textual_scan_plan(
 
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Horizontal, Vertical
+    from textual.containers import Vertical
     from textual.events import Key
     from textual.screen import ModalScreen
     from textual.widgets import DataTable, Footer, Header, Input, Label, Static
@@ -199,6 +214,9 @@ def run_textual_scan_plan(
             background: #2e3436;
             color: #eeeeec;
         }
+        #planner-pane-local, #planner-pane-remote {
+            height: 1fr;
+        }
         DataTable {
             height: 1fr;
         }
@@ -223,7 +241,7 @@ def run_textual_scan_plan(
             preset_plan = build_plan_from_preset(self._groups, preset=default_preset)
             initial_plan = default_plan if default_plan is not None else preset_plan
             self._states: dict[PlanKey, _EditableGroup] = {}
-            self._row_groups: dict[str, list[PlanKey]] = {"local": [], "remote": [], "other": []}
+            self._row_groups: dict[str, list[PlanKey]] = {"local": [], "remote": []}
             self._editing_group: PlanKey | None = None
             for group in self._groups:
                 group_plan = initial_plan.get(group.key)
@@ -245,7 +263,7 @@ def run_textual_scan_plan(
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
-            yield Horizontal(
+            yield Vertical(
                 Vertical(
                     Label(planner_namespace_title(0x02)),
                     DataTable(id="planner-table-local"),
@@ -263,7 +281,7 @@ def run_textual_scan_plan(
             yield Footer()
 
         def on_mount(self) -> None:
-            for table_id in ("planner-table-local", "planner-table-remote"):
+            for table_id in _PANE_TABLE_IDS.values():
                 table = self.query_one(f"#{table_id}", DataTable)
                 table.cursor_type = "row"
                 table.add_columns("On", "GG", "Name", "Namespace", "Type", "Instances", "RR_max")
@@ -285,7 +303,9 @@ def run_textual_scan_plan(
         def _focused_group(self) -> PlanKey | None:
             if not isinstance(self.focused, DataTable):
                 return None
-            pane_key = "local" if self.focused.id == "planner-table-local" else "remote"
+            pane_key = _table_id_to_pane_key(self.focused.id)
+            if pane_key is None:
+                return None
             row_groups = self._row_groups[pane_key]
             if not row_groups:
                 return None
@@ -296,21 +316,22 @@ def run_textual_scan_plan(
 
         def _refresh_table(self) -> None:
             table_by_pane = {
-                "local": self.query_one("#planner-table-local", DataTable),
-                "remote": self.query_one("#planner-table-remote", DataTable),
+                pane_key: self.query_one(f"#{table_id}", DataTable)
+                for pane_key, table_id in _PANE_TABLE_IDS.items()
             }
             cursor_by_pane = {
                 pane: max(0, table.cursor_row) for pane, table in table_by_pane.items()
             }
             for table in table_by_pane.values():
                 table.clear(columns=False)
-            self._row_groups = {"local": [], "remote": [], "other": []}
+            self._row_groups = {pane_key: [] for pane_key in _PANE_TABLE_IDS}
             for group in self._groups:
                 pane_key = _planner_pane_id(group.opcode)
-                if pane_key not in table_by_pane:
+                pane_table = table_by_pane.get(pane_key)
+                if pane_table is None:
                     continue
                 state = self._states[group.key]
-                table_by_pane[pane_key].add_row(*_table_row_values(state))
+                pane_table.add_row(*_table_row_values(state))
                 self._row_groups[pane_key].append(group.key)
             for pane_key, table in table_by_pane.items():
                 row_groups = self._row_groups[pane_key]
@@ -319,13 +340,17 @@ def run_textual_scan_plan(
             self._set_status()
 
         def _focus_table(self) -> None:
-            if isinstance(self.focused, DataTable):
+            if (
+                isinstance(self.focused, DataTable)
+                and _table_id_to_pane_key(self.focused.id) is not None
+            ):
                 self.focused.focus()
                 return
-            if self._row_groups["local"]:
-                self.query_one("#planner-table-local", DataTable).focus()
-                return
-            self.query_one("#planner-table-remote", DataTable).focus()
+            for pane_key in ("local", "remote"):
+                if self._row_groups[pane_key]:
+                    self.query_one(f"#{_PANE_TABLE_IDS[pane_key]}", DataTable).focus()
+                    return
+            self.query_one("#planner-table-local", DataTable).focus()
 
         def _apply_preset(self, preset: PlannerPreset) -> None:
             preset_plan = build_plan_from_preset(self._groups, preset=preset)
@@ -393,16 +418,19 @@ def run_textual_scan_plan(
                 self.query_one("#planner-table-local", DataTable),
                 self.query_one("#planner-table-remote", DataTable),
             ]
-            if not self._row_groups["local"] and not self._row_groups["remote"]:
+            if not any(self._row_groups[pane_key] for pane_key in _PANE_TABLE_IDS):
                 return
             if isinstance(self.focused, DataTable):
-                current_idx = 0 if self.focused.id == "planner-table-local" else 1
+                current_idx = next(
+                    (index for index, table in enumerate(tables) if table.id == self.focused.id),
+                    0,
+                )
             else:
                 current_idx = 0
             for offset in range(1, len(tables) + 1):
                 candidate = tables[(current_idx + offset) % len(tables)]
-                pane_key = "local" if candidate.id == "planner-table-local" else "remote"
-                if self._row_groups[pane_key]:
+                pane_key = _table_id_to_pane_key(candidate.id)
+                if pane_key is not None and self._row_groups[pane_key]:
                     candidate.focus()
                     return
 
@@ -412,10 +440,9 @@ def run_textual_scan_plan(
                 return
             if len(self.screen_stack) > 1:
                 return
-            if isinstance(self.focused, DataTable) and self.focused.id in {
-                "planner-table-local",
-                "planner-table-remote",
-            }:
+            if isinstance(self.focused, DataTable) and self.focused.id in set(
+                _PANE_TABLE_IDS.values()
+            ):
                 event.stop()
                 self.action_edit_rr_max()
 
