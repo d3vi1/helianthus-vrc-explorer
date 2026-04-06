@@ -441,8 +441,9 @@ def run_browse_from_artifact(
             root.data = "root"
             self._tree_node_by_ref = {"root": root}
             protocols: dict[str, Any] = {}
-            groups: dict[tuple[str, str], Any] = {}
-            namespaces: dict[tuple[str, str, str], Any] = {}
+            sections: dict[tuple[str, str], Any] = {}
+            groups: dict[tuple[str, str, str], Any] = {}
+            namespaces: dict[tuple[str, str, str, str], Any] = {}
             for node in self._store.tree_nodes:
                 if node.level == "root":
                     continue
@@ -452,15 +453,30 @@ def run_browse_from_artifact(
                     self._tree_node_by_ref[node.node_id] = proto_node
                     continue
                 if (
-                    node.level == "group"
+                    node.level == "section"
                     and node.protocol is not None
-                    and node.group_key is not None
+                    and node.section_key is not None
                 ):
                     parent = protocols.get(node.protocol)
                     if parent is None:
                         continue
+                    section_node = parent.add(node.label, data=node.node_id)
+                    sections[(node.protocol, node.section_key)] = section_node
+                    self._tree_node_by_ref[node.node_id] = section_node
+                    continue
+                if (
+                    node.level == "group"
+                    and node.protocol is not None
+                    and node.group_key is not None
+                ):
+                    section_key = node.section_key or ""
+                    parent = sections.get(
+                        (node.protocol, section_key), protocols.get(node.protocol)
+                    )
+                    if parent is None:
+                        continue
                     group_node = parent.add(node.label, data=node.node_id)
-                    groups[(node.protocol, node.group_key)] = group_node
+                    groups[(node.protocol, section_key, node.group_key)] = group_node
                     self._tree_node_by_ref[node.node_id] = group_node
                     continue
                 if (
@@ -469,11 +485,14 @@ def run_browse_from_artifact(
                     and node.group_key is not None
                     and node.namespace_key is not None
                 ):
-                    parent = groups.get((node.protocol, node.group_key))
+                    section_key = node.section_key or ""
+                    parent = groups.get((node.protocol, section_key, node.group_key))
                     if parent is None:
                         continue
                     namespace_node = parent.add(node.label, data=node.node_id)
-                    namespaces[(node.protocol, node.group_key, node.namespace_key)] = namespace_node
+                    namespaces[(node.protocol, section_key, node.group_key, node.namespace_key)] = (
+                        namespace_node
+                    )
                     self._tree_node_by_ref[node.node_id] = namespace_node
                     continue
                 if (
@@ -481,10 +500,18 @@ def run_browse_from_artifact(
                     and node.group_key is not None
                     and node.protocol is not None
                 ):
+                    section_key = node.section_key or ""
                     parent = (
-                        namespaces.get((node.protocol, node.group_key, node.namespace_key))
+                        namespaces.get(
+                            (
+                                node.protocol,
+                                section_key,
+                                node.group_key,
+                                node.namespace_key,
+                            )
+                        )
                         if node.namespace_key is not None
-                        else groups.get((node.protocol, node.group_key))
+                        else groups.get((node.protocol, section_key, node.group_key))
                     )
                     if parent is None:
                         continue

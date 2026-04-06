@@ -117,27 +117,41 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
     assert by_register["0x0001"].access_flags == "user_rw"
     assert by_register["0x0001"].row_id == "0x00:0x02:0x00:0x0001"
     assert by_register["0x0002"].row_id == "0x00:0x06:0x00:0x0002"
-    assert by_register["0x0001"].path == "B524/Regulator Parameters/Local (0x02)/0x00/0x0001"
-    assert by_register["0x0002"].path == "B524/Regulator Parameters/Remote (0x06)/0x00/limit_value"
+    expected_local_path = (
+        "B524/Controller Registers/ReadControllerRegister/"
+        "Regulator Parameters/Local (0x02)/0x00/0x0001"
+    )
+    expected_remote_path = (
+        "B524/Device Slots/ReadDeviceSlotRegister/"
+        "Regulator Parameters/Remote (0x06)/0x00/limit_value"
+    )
+    assert by_register["0x0001"].path == expected_local_path
+    assert by_register["0x0002"].path == expected_remote_path
     assert all(":single:" not in row.row_id for row in store.rows if row.protocol == "b524")
 
     by_node_id = {node.node_id: node for node in store.tree_nodes}
     assert by_node_id["proto:b524"].label == "B524"
-    assert by_node_id["b524:group:0x00"].label == "Regulator Parameters (0x00)"
+    assert by_node_id["b524:section:controller_registers"].label == "Controller Registers"
+    assert by_node_id["b524:section:device_slots"].label == "Device Slots"
+    assert by_node_id["b524:group:controller_registers:0x00"].label == "Regulator Parameters (0x00)"
+    assert by_node_id["b524:group:device_slots:0x00"].label == "Regulator Parameters (0x00)"
     assert not any(node.level == "register" for node in store.tree_nodes)
 
 
 def test_browse_store_filters_rows_for_tree_selection() -> None:
     store = BrowseStore.from_artifact(_sample_artifact())
     protocol_node = next(node for node in store.tree_nodes if node.level == "protocol")
-    group_node = next(
-        node for node in store.tree_nodes if node.level == "group" and node.group_key == "0x00"
+    controller_group_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:group:controller_registers:0x00"
+    )
+    device_group_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:group:device_slots:0x00"
     )
 
     assert len(store.rows_for_selection(None, tab="state")) == 1
     assert len(store.rows_for_selection(protocol_node, tab="config")) == 1
-    assert len(store.rows_for_selection(group_node, tab="config_limits")) == 1
-    assert len(store.rows_for_selection(group_node, tab="state")) == 1
+    assert len(store.rows_for_selection(device_group_node, tab="config_limits")) == 1
+    assert len(store.rows_for_selection(controller_group_node, tab="state")) == 1
 
 
 def test_browse_store_single_namespace_instance_node_uses_opcode_identity() -> None:
@@ -164,7 +178,7 @@ def test_browse_store_single_namespace_instance_node_uses_opcode_identity() -> N
 
     store = BrowseStore.from_artifact(artifact)
     by_node_id = {node.node_id: node for node in store.tree_nodes}
-    assert "b524:inst:0x02:0x02:0x00" in by_node_id
+    assert "b524:inst:controller_registers:0x02:0x02:0x00" in by_node_id
     assert not any(
         ":single:" in node.node_id for node in store.tree_nodes if node.protocol == "b524"
     )
@@ -200,10 +214,12 @@ def test_browse_store_instance_selection_is_namespace_isolated_for_mixed_legacy_
 
     store = BrowseStore.from_artifact(artifact)
     local_instance_node = next(
-        node for node in store.tree_nodes if node.node_id == "b524:inst:0x02:0x02:0x00"
+        node
+        for node in store.tree_nodes
+        if node.node_id == "b524:inst:controller_registers:0x02:0x02:0x00"
     )
     remote_instance_node = next(
-        node for node in store.tree_nodes if node.node_id == "b524:inst:0x02:0x06:0x00"
+        node for node in store.tree_nodes if node.node_id == "b524:inst:device_slots:0x02:0x06:0x00"
     )
 
     local_rows = store.rows_for_selection(local_instance_node, tab="state")
@@ -250,10 +266,12 @@ def test_browse_store_drops_missing_namespace_entries_from_split_views() -> None
     assert all(row.register_key != "0x0003" for row in store.rows)
 
     local_instance_node = next(
-        node for node in store.tree_nodes if node.node_id == "b524:inst:0x02:0x02:0x00"
+        node
+        for node in store.tree_nodes
+        if node.node_id == "b524:inst:controller_registers:0x02:0x02:0x00"
     )
     remote_instance_node = next(
-        node for node in store.tree_nodes if node.node_id == "b524:inst:0x02:0x06:0x00"
+        node for node in store.tree_nodes if node.node_id == "b524:inst:device_slots:0x02:0x06:0x00"
     )
     local_rows = store.rows_for_selection(local_instance_node, tab="state")
     remote_rows = store.rows_for_selection(remote_instance_node, tab="state")
@@ -265,9 +283,10 @@ def test_browse_store_builds_namespace_nodes_for_dual_namespace_groups() -> None
     store = BrowseStore.from_artifact(_dual_namespace_artifact())
 
     by_node_id = {node.node_id: node for node in store.tree_nodes}
-    assert by_node_id["b524:group:0x09"].label == "Regulators (0x09)"
-    assert by_node_id["b524:ns:0x09:0x02"].label == "Local (0x02)"
-    assert by_node_id["b524:ns:0x09:0x06"].label == "Remote (0x06)"
+    assert by_node_id["b524:group:controller_registers:0x09"].label == "Regulators (0x09)"
+    assert by_node_id["b524:group:device_slots:0x09"].label == "Regulators (0x09)"
+    assert by_node_id["b524:ns:controller_registers:0x09:0x02"].label == "Local (0x02)"
+    assert by_node_id["b524:ns:device_slots:0x09:0x06"].label == "Remote (0x06)"
 
     row_ids = {row.row_id for row in store.rows}
     assert row_ids == {
@@ -315,16 +334,25 @@ def test_browse_store_remote_namespace_instance_label_drops_local_group_assumpti
 
     store = BrowseStore.from_artifact(artifact)
     by_node_id = {node.node_id: node for node in store.tree_nodes}
-    assert by_node_id["b524:ns:0x02:0x06"].label == "Remote (0x06)"
-    assert by_node_id["b524:inst:0x02:0x06:0x00"].label == "Remote Slot 1 (0x00)"
+    assert by_node_id["b524:ns:device_slots:0x02:0x06"].label == "Remote (0x06)"
+    assert by_node_id["b524:inst:device_slots:0x02:0x06:0x00"].label == "Remote Slot 1 (0x00)"
     row = store.rows[0]
-    assert row.path == "B524/Heating Circuits/Remote (0x06)/0x00/0x0001"
+    assert (
+        row.path
+        == "B524/Device Slots/ReadDeviceSlotRegister/Heating Circuits/Remote (0x06)/0x00/0x0001"
+    )
 
 
 def test_browse_store_filters_rows_for_namespace_selection() -> None:
     store = BrowseStore.from_artifact(_dual_namespace_artifact())
-    local_node = next(node for node in store.tree_nodes if node.node_id == "b524:ns:0x09:0x02")
-    remote_node = next(node for node in store.tree_nodes if node.node_id == "b524:ns:0x09:0x06")
+    local_node = next(
+        node
+        for node in store.tree_nodes
+        if node.node_id == "b524:ns:controller_registers:0x09:0x02"
+    )
+    remote_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:ns:device_slots:0x09:0x06"
+    )
 
     local_rows = store.rows_for_selection(local_node, tab="state")
     remote_rows = store.rows_for_selection(remote_node, tab="config")

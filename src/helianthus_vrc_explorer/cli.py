@@ -25,6 +25,11 @@ from .protocol.basv import (
     parse_scan_identification,
     parse_vaillant_scan_id_chunks,
 )
+from .replay_trace import (
+    TraceReplayError,
+    UnsupportedTraceFormatError,
+    replay_trace_to_artifact,
+)
 from .scanner.b509 import parse_b509_range
 from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
 from .scanner.register import is_instance_present
@@ -960,6 +965,92 @@ def scan(
     )
 
     # Summary to stderr; keep stdout stable for scripting (artifact path only).
+    render_summary(console, artifact, output_path=output_path)
+    typer.echo(str(output_path))
+
+
+@app.command("replay-trace")
+def replay_trace(
+    trace_file: Path = typer.Argument(  # noqa: B008
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help=(
+            "Path to an ENH/ENS trace file captured via --trace-file. "
+            "Only the current EnhancedTcpTransport trace format is supported."
+        ),
+    ),
+    output_dir: Path = typer.Option(  # noqa: B008
+        Path("."),
+        "--output-dir",
+        help="Directory where regenerated JSON+HTML artifacts will be written.",
+    ),
+    output: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output",
+        help=(
+            "Optional explicit JSON output path. If omitted, a standard "
+            "b524_scan_*.json filename is generated in --output-dir."
+        ),
+    ),
+) -> None:
+    """Replay an ENH/ENS trace into a fresh schema-2.2 JSON artifact + HTML report.
+
+    Limitations (v1):
+    - Supports only current enhanced/ENS trace lines emitted by EnhancedTcpTransport.
+    - Reconstructs only deterministically derivable artifact content from captured payloads.
+    - No live probing/identity enrichment is performed during replay.
+    """
+
+    try:
+        artifact = replay_trace_to_artifact(trace_file)
+    except UnsupportedTraceFormatError as exc:
+        typer.echo(f"Unsupported trace format: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    except TraceReplayError as exc:
+        typer.echo(f"Trace replay failed: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if output is not None:
+        output_path = output
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        meta_obj = artifact.get("meta")
+        dst_u8 = 0x00
+        scan_timestamp: str | None = None
+        if isinstance(meta_obj, dict):
+            dst_obj = meta_obj.get("destination_address")
+            if isinstance(dst_obj, str):
+                with contextlib.suppress(ValueError):
+                    dst_u8 = int(dst_obj, 0)
+            scan_ts_obj = meta_obj.get("scan_timestamp")
+            if isinstance(scan_ts_obj, str):
+                scan_timestamp = scan_ts_obj
+        output_path = output_dir / default_output_filename(
+            dst=dst_u8,
+            scan_timestamp=scan_timestamp,
+        )
+
+    output_path.write_text(
+        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    html_path = output_path.with_suffix(".html")
+    html_path.write_text(
+        render_html_report(
+            artifact,
+            title=f"helianthus-vrc-explorer replay report ({output_path.name})",
+        ),
+        encoding="utf-8",
+    )
+
+    console = Console(stderr=True)
     render_summary(console, artifact, output_path=output_path)
     typer.echo(str(output_path))
 

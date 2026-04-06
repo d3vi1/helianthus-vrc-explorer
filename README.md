@@ -78,7 +78,7 @@ Transport note:
 - Browse UI, CLI summary, and HTML report derive namespace labels from opcode identity and render them as qualified displays (for example `Local (0x02)`, `Remote (0x06)`).
 - Legacy artifacts that still carry mixed opcodes inside a single non-dual group are rendered per-namespace in browse/report surfaces to prevent local/remote intermixing and override bleed.
 - Persisted `groups[*].dual_namespace` topology is authoritative for consumers. Do not infer or rewrite namespace shape from descriptors.
-- B524 browse/report row identity is namespace-aware even for single-namespace groups: dedupe key `<group>:<namespace>:<instance>:<register>` and path format `B524/<group-name>/<namespace-display>/<instance>/<register-name>` are round-trip stable.
+- B524 browse/report row identity is namespace-aware even for single-namespace groups: dedupe key `<group>:<namespace>:<instance>:<register>` and path format `B524/<section>/<operation>/<group-name>/<namespace-display>/<instance>/<register-name>` are round-trip stable.
 - Artifact schema contract is versioned (`schema_version: "2.2"` current). Readers keep backward compatibility by migrating unversioned, `2.0`, and `2.1` artifacts in-memory.
 - CI enforces these rules with `python scripts/check_b524_namespace_guardrails.py`.
 
@@ -93,6 +93,16 @@ Output:
 - JSON artifact: `b524_scan_0x??_<timestamp>.json`
 - HTML report: `b524_scan_0x??_<timestamp>.html`
 - Interactive terminals: after scan, the new fullscreen browse UI opens automatically (`q` to exit back to summary).
+
+Replay an ENH/ENS trace (no live bus I/O) into a fresh schema-2.2 JSON artifact plus matching HTML:
+```bash
+python -m helianthus_vrc_explorer replay-trace /path/to/captured.trace --output-dir .
+```
+
+Replay limitations (v1):
+- Only current `EnhancedTcpTransport` ENH/ENS trace format is supported.
+- Reconstruction is deterministic and only for fields derivable from captured request/response bytes.
+- Metadata requiring live probing (for example runtime identity enrichment) is not replayed.
 
 Browse a saved artifact in fullscreen Textual UI:
 ```bash
@@ -125,7 +135,13 @@ device writes are planned.
 - Interactive planner (`textual` or classic) with presets and per-group overrides.
 - Register decoding with raw payload retention and TT/metadata annotations in JSON.
 - Auto-generated HTML report alongside JSON scan output.
-- Fullscreen register browser with tree navigation by category/group/instance/register.
+- Fullscreen register browser with B524 operation-first sections:
+  - Group Directory
+  - Register Constraints
+  - Controller Registers
+  - Timer Programs
+  - Device Slots
+  - Register Tables
 - Tabbed register views: `Config`, `Config-Limits`, `State`.
 - Watch/pin/rate controls and safe write workflow (`--allow-write` + confirmation).
 

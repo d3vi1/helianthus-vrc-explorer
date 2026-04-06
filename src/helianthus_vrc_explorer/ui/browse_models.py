@@ -39,6 +39,7 @@ class RegisterRow:
     group_key: str | None
     namespace_key: str | None
     namespace_label: str | None
+    section_key: str | None
     group_name: str
     instance_key: str | None
     register_key: str
@@ -58,7 +59,7 @@ class RegisterRow:
     search_blob: str
 
 
-TreeNodeLevel = Literal["root", "protocol", "group", "namespace", "instance", "range"]
+TreeNodeLevel = Literal["root", "protocol", "section", "group", "namespace", "instance", "range"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,7 @@ class TreeNodeRef:
     label: str
     level: TreeNodeLevel
     protocol: ProtocolKey | None = None
+    section_key: str | None = None
     group_key: str | None = None
     namespace_key: str | None = None
     namespace_label: str | None = None

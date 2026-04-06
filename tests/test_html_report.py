@@ -35,10 +35,13 @@ def test_html_report_supports_b509_tab_and_dual_naming() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B509 Dump" in html
+    assert 'btn.textContent = "B509";' in html
     assert "Hide timeouts" in html
     assert "hideAbsent" in html
     assert "ebusd: " in html
+    assert "Group Directory" in html
+    assert "Controller Registers" in html
+    assert "Device Slots" in html
 
 
 def test_html_report_supports_b555_tab() -> None:
@@ -90,7 +93,7 @@ def test_html_report_supports_b555_tab() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B555 Dump" in html
+    assert 'btn.textContent = "B555";' in html
     assert "No B555 dump in artifact." in html
     assert "request_hex=" in html
     assert '"zone":"0x00"' in html
@@ -158,7 +161,7 @@ def test_html_report_supports_b516_tab() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B516 Dump" in html
+    assert 'btn.textContent = "B516";' in html
     assert "No B516 dump in artifact." in html
     assert "System Gas Heating" in html
     assert '"period":"system"' in html
@@ -207,7 +210,7 @@ def test_html_report_supports_b516_tab_with_raw_evidence() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B516 Dump" in html
+    assert 'btn.textContent = "B516";' in html
     assert "No B516 dump in artifact." in html
     assert "No B516 entries in artifact." in html
     assert '"system.gas.heating"' in html

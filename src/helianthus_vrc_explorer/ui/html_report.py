@@ -695,8 +695,19 @@ __ARTIFACT_JSON__
         return String(v);
       }
 
+      const B524_SECTIONS = [
+        { key: "group_directory", label: "Group Directory" },
+        { key: "register_constraints", label: "Register Constraints" },
+        { key: "controller_registers", label: "Controller Registers" },
+        { key: "timer_programs", label: "Timer Programs" },
+        { key: "device_slots", label: "Device Slots" },
+        { key: "register_tables", label: "Register Tables" },
+      ];
+
       const state = {
         activeTab: null,
+        activeB524Section: "controller_registers",
+        activeB524GroupBySection: {},
         activeNamespaceByGroup: {},
         overrides: (meta && typeof meta === "object" && meta.type_overrides) || {},
         b524Filters: {
@@ -772,6 +783,30 @@ __ARTIFACT_JSON__
         return `${raw.charAt(0).toUpperCase()}${raw.slice(1)} (${namespaceKey})`;
       }
 
+      function operationLabelForOpcode(namespaceKey) {
+        if (namespaceKey === "0x00") return "QueryGroupDirectory";
+        if (namespaceKey === "0x01") return "QueryRegisterConstraints";
+        if (namespaceKey === "0x02") return "ReadControllerRegister";
+        if (namespaceKey === "0x03") return "ReadTimerProgram";
+        if (namespaceKey === "0x04") return "WriteTimerProgram";
+        if (namespaceKey === "0x06") return "ReadDeviceSlotRegister";
+        if (namespaceKey === "0x0b") return "ReadRegisterTable";
+        return namespaceKey || "UnknownOperation";
+      }
+
+      function sectionLabel(sectionKey) {
+        for (const section of B524_SECTIONS) {
+          if (section.key === sectionKey) return section.label;
+        }
+        return sectionKey;
+      }
+
+      function requiredNamespaceForSection(sectionKey) {
+        if (sectionKey === "controller_registers") return "0x02";
+        if (sectionKey === "device_slots") return "0x06";
+        return null;
+      }
+
       function namespaceKeyFromEntry(entry, fallbackNamespaceKey = null) {
         if (!entry || typeof entry !== "object") return fallbackNamespaceKey;
         return (
@@ -809,6 +844,11 @@ __ARTIFACT_JSON__
 
       function entryStatusKind(entry) {
         if (!entry || typeof entry !== "object") return "error";
+        const responseState = typeof entry.response_state === "string"
+          ? entry.response_state.trim().toLowerCase()
+          : "";
+        if (responseState === "empty_reply") return "dormant";
+        if (responseState === "timeout" || responseState === "nack") return "transport_failure";
         const errTxt = typeof entry.error === "string" ? entry.error.trim() : "";
         if (errTxt) {
           const lower = errTxt.toLowerCase();
@@ -988,12 +1028,7 @@ __ARTIFACT_JSON__
       }
 
       function _isB524Tab(tabId) {
-        return typeof tabId === "string" && tabId.startsWith("b524:");
-      }
-
-      function _groupKeyFromTab(tabId) {
-        if (!_isB524Tab(tabId)) return null;
-        return tabId.slice("b524:".length);
+        return tabId === "b524";
       }
 
       function _syncActiveTabClasses() {
@@ -1003,15 +1038,42 @@ __ARTIFACT_JSON__
         }
       }
 
-      function buildTabs(groupKeys, hasB555, hasB516, hasB509) {
+      function buildTabs(hasB524, hasB555, hasB516, hasB509) {
         tabsEl.innerHTML = "";
-        const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
         const orderedTabIds = [];
+
+        if (hasB524) {
+          const btn = document.createElement("div");
+          btn.className = "tab";
+          btn.textContent = "B524";
+          btn.dataset.tabId = "b524";
+          btn.addEventListener("click", () => {
+            state.activeTab = "b524";
+            _syncActiveTabClasses();
+            renderActiveTab();
+          });
+          tabsEl.appendChild(btn);
+          orderedTabIds.push("b524");
+        }
+
+        if (hasB509) {
+          const btn = document.createElement("div");
+          btn.className = "tab";
+          btn.textContent = "B509";
+          btn.dataset.tabId = "b509";
+          btn.addEventListener("click", () => {
+            state.activeTab = "b509";
+            _syncActiveTabClasses();
+            renderActiveTab();
+          });
+          tabsEl.appendChild(btn);
+          orderedTabIds.push("b509");
+        }
 
         if (hasB555) {
           const btn = document.createElement("div");
           btn.className = "tab";
-          btn.textContent = "B555 Dump";
+          btn.textContent = "B555";
           btn.dataset.tabId = "b555";
           btn.addEventListener("click", () => {
             state.activeTab = "b555";
@@ -1025,7 +1087,7 @@ __ARTIFACT_JSON__
         if (hasB516) {
           const btn = document.createElement("div");
           btn.className = "tab";
-          btn.textContent = "B516 Dump";
+          btn.textContent = "B516";
           btn.dataset.tabId = "b516";
           btn.addEventListener("click", () => {
             state.activeTab = "b516";
@@ -1034,37 +1096,6 @@ __ARTIFACT_JSON__
           });
           tabsEl.appendChild(btn);
           orderedTabIds.push("b516");
-        }
-
-        if (hasB509) {
-          const btn = document.createElement("div");
-          btn.className = "tab";
-          btn.textContent = "B509 Dump";
-          btn.dataset.tabId = "b509";
-          btn.addEventListener("click", () => {
-            state.activeTab = "b509";
-            _syncActiveTabClasses();
-            renderActiveTab();
-          });
-          tabsEl.appendChild(btn);
-          orderedTabIds.push("b509");
-        }
-
-        for (const key of groupKeys) {
-          const btn = document.createElement("div");
-          btn.className = "tab";
-          const groupObj = getGroupObject(groupsRoot[key]);
-          const groupName = typeof groupObj.name === "string" && groupObj.name ? groupObj.name : "Unknown";
-          btn.textContent = groupName !== "Unknown" ? `${key} (${groupName})` : key;
-          const tabId = `b524:${key}`;
-          btn.dataset.tabId = tabId;
-          btn.addEventListener("click", () => {
-            state.activeTab = tabId;
-            _syncActiveTabClasses();
-            renderActiveTab();
-          });
-          tabsEl.appendChild(btn);
-          orderedTabIds.push(tabId);
         }
 
         if (!state.activeTab || !orderedTabIds.includes(state.activeTab)) {
@@ -1452,10 +1483,156 @@ __ARTIFACT_JSON__
         sheetArea.appendChild(card);
       }
 
-      function renderActiveGroup(groupKey) {
+      function groupHasNamespace(groupObj, targetNamespaceKey) {
+        if (!groupObj || typeof groupObj !== "object" || !targetNamespaceKey) return false;
+        if (groupObj.dual_namespace && groupObj.namespaces && typeof groupObj.namespaces === "object") {
+          return !!groupObj.namespaces[targetNamespaceKey];
+        }
+        const split = splitInstancesByNamespace(groupObj.instances || {}, null);
+        return !!split[targetNamespaceKey];
+      }
+
+      function b524GroupKeysForSection(groupsRoot, sectionKey) {
+        const required = requiredNamespaceForSection(sectionKey);
+        if (!required) return [];
+        const keys = [];
+        for (const groupKey of sortedHexKeys(Object.keys(groupsRoot || {}))) {
+          const groupObj = getGroupObject(groupsRoot[groupKey]);
+          if (groupHasNamespace(groupObj, required)) keys.push(groupKey);
+        }
+        return keys;
+      }
+
+      function renderB524OperationRows(sectionKey, mountTarget) {
+        const operations = artifact && typeof artifact === "object" ? artifact.b524_operations : null;
+        const metaObj = artifact && typeof artifact === "object" ? artifact.meta : null;
+        const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+        const container = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "section-title";
+        title.textContent = sectionLabel(sectionKey);
+        container.appendChild(title);
+
+        if (sectionKey === "group_directory") {
+          const rows = [];
+          if (operations && typeof operations === "object" && Array.isArray(operations.group_directory)) {
+            for (const row of operations.group_directory) rows.push(row);
+          } else {
+            for (const groupKey of sortedHexKeys(Object.keys(groupsRoot))) {
+              const groupObj = getGroupObject(groupsRoot[groupKey]);
+              rows.push({
+                group: groupKey,
+                descriptor: groupObj.descriptor_observed,
+                reply_hex: null,
+              });
+            }
+          }
+          if (!rows.length) {
+            container.innerHTML += "<div class='subtitle'>No Group Directory entries in artifact.</div>";
+            mountTarget.innerHTML = "";
+            mountTarget.appendChild(container);
+            return;
+          }
+          const wrap = document.createElement("div");
+          wrap.className = "table-wrap";
+          const table = document.createElement("table");
+          table.innerHTML =
+            "<thead><tr><th>Group</th><th>Descriptor</th><th>Reply</th></tr></thead>";
+          const tbody = document.createElement("tbody");
+          for (const row of rows) {
+            const tr = document.createElement("tr");
+            for (const value of [
+              String(row.group || "n/a"),
+              typeof row.descriptor === "number" ? formatValue(row.descriptor) : "n/a",
+              typeof row.reply_hex === "string" && row.reply_hex ? row.reply_hex : "—",
+            ]) {
+              const td = document.createElement("td");
+              td.textContent = value;
+              tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+          }
+          table.appendChild(tbody);
+          wrap.appendChild(table);
+          container.appendChild(wrap);
+          mountTarget.innerHTML = "";
+          mountTarget.appendChild(container);
+          return;
+        }
+
+        if (sectionKey === "register_constraints") {
+          const dict = metaObj && typeof metaObj === "object" ? metaObj.constraint_dictionary : null;
+          if (!dict || typeof dict !== "object") {
+            container.innerHTML += "<div class='subtitle'>No Register Constraints entries in artifact.</div>";
+            mountTarget.innerHTML = "";
+            mountTarget.appendChild(container);
+            return;
+          }
+          const rows = [];
+          for (const groupKey of sortedHexKeys(Object.keys(dict))) {
+            const groupObj = dict[groupKey];
+            if (!groupObj || typeof groupObj !== "object") continue;
+            for (const rrKey of sortedHexKeys(Object.keys(groupObj))) {
+              const constraint = groupObj[rrKey];
+              if (!constraint || typeof constraint !== "object") continue;
+              rows.push({
+                group: groupKey,
+                register: rrKey,
+                type: constraint.type || "n/a",
+                min: typeof constraint.min !== "undefined" ? formatValue(constraint.min) : "n/a",
+                max: typeof constraint.max !== "undefined" ? formatValue(constraint.max) : "n/a",
+                step: typeof constraint.step !== "undefined" ? formatValue(constraint.step) : "n/a",
+              });
+            }
+          }
+          if (!rows.length) {
+            container.innerHTML += "<div class='subtitle'>No Register Constraints rows in artifact.</div>";
+            mountTarget.innerHTML = "";
+            mountTarget.appendChild(container);
+            return;
+          }
+          const wrap = document.createElement("div");
+          wrap.className = "table-wrap";
+          const table = document.createElement("table");
+          table.innerHTML =
+            "<thead><tr><th>Group</th><th>Register</th><th>Type</th><th>Min</th><th>Max</th><th>Step</th></tr></thead>";
+          const tbody = document.createElement("tbody");
+          for (const row of rows) {
+            const tr = document.createElement("tr");
+            for (const value of [row.group, row.register, row.type, row.min, row.max, row.step]) {
+              const td = document.createElement("td");
+              td.textContent = String(value);
+              tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+          }
+          table.appendChild(tbody);
+          wrap.appendChild(table);
+          container.appendChild(wrap);
+          mountTarget.innerHTML = "";
+          mountTarget.appendChild(container);
+          return;
+        }
+
+        const opRows = operations && typeof operations === "object" ? operations[sectionKey] : null;
+        if (!Array.isArray(opRows) || !opRows.length) {
+          container.innerHTML += `<div class='subtitle'>No ${sectionLabel(sectionKey)} entries in artifact.</div>`;
+          mountTarget.innerHTML = "";
+          mountTarget.appendChild(container);
+          return;
+        }
+        const pre = document.createElement("pre");
+        pre.className = "cell-raw";
+        pre.textContent = JSON.stringify(opRows, null, 2);
+        container.appendChild(pre);
+        mountTarget.innerHTML = "";
+        mountTarget.appendChild(container);
+      }
+
+      function renderActiveGroup(groupKey, forcedNamespaceKey = null, mountTarget = sheetArea) {
         const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
         if (!groupKey || !groupsRoot[groupKey]) {
-          sheetArea.innerHTML = "<div class='subtitle'>No groups.</div>";
+          mountTarget.innerHTML = "<div class='subtitle'>No groups.</div>";
           return;
         }
 
@@ -1695,7 +1872,7 @@ __ARTIFACT_JSON__
         hideAbsentCb.checked = !!state.b524Filters.hideAbsent;
         hideAbsentCb.addEventListener("change", () => {
           state.b524Filters.hideAbsent = !!hideAbsentCb.checked;
-          renderActiveGroup(groupKey);
+          renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
         });
         hideAbsentLabel.appendChild(hideAbsentCb);
         hideAbsentLabel.appendChild(document.createTextNode("Hide absent"));
@@ -1703,7 +1880,10 @@ __ARTIFACT_JSON__
         container.appendChild(filters);
 
         if (groupObj.dual_namespace && groupObj.namespaces && typeof groupObj.namespaces === "object") {
-          const namespaceKeys = sortedHexKeys(Object.keys(groupObj.namespaces));
+          let namespaceKeys = sortedHexKeys(Object.keys(groupObj.namespaces));
+          if (forcedNamespaceKey) {
+            namespaceKeys = namespaceKeys.filter((key) => key === forcedNamespaceKey);
+          }
           if (!namespaceKeys.length) {
             const empty = document.createElement("div");
             empty.className = "subtitle";
@@ -1712,9 +1892,10 @@ __ARTIFACT_JSON__
           } else {
             const subtabs = document.createElement("div");
             subtabs.className = "subtabs";
-            let activeNamespace = state.activeNamespaceByGroup[groupKey];
+            const namespaceStateKey = forcedNamespaceKey ? `${groupKey}|${forcedNamespaceKey}` : groupKey;
+            let activeNamespace = state.activeNamespaceByGroup[namespaceStateKey];
             if (!namespaceKeys.includes(activeNamespace)) activeNamespace = namespaceKeys[0];
-            state.activeNamespaceByGroup[groupKey] = activeNamespace;
+            state.activeNamespaceByGroup[namespaceStateKey] = activeNamespace;
 
             for (const namespaceKey of namespaceKeys) {
               const namespaceObj = groupObj.namespaces[namespaceKey];
@@ -1725,8 +1906,8 @@ __ARTIFACT_JSON__
               if (namespaceKey === activeNamespace) btn.classList.add("active");
               btn.textContent = namespaceLabel(normalizedKey, namespaceObj.label);
               btn.addEventListener("click", () => {
-                state.activeNamespaceByGroup[groupKey] = namespaceKey;
-                renderActiveGroup(groupKey);
+                state.activeNamespaceByGroup[namespaceStateKey] = namespaceKey;
+                renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
               });
               subtabs.appendChild(btn);
             }
@@ -1735,19 +1916,26 @@ __ARTIFACT_JSON__
             const namespaceObj = groupObj.namespaces[activeNamespace];
             if (namespaceObj && typeof namespaceObj === "object") {
               const normalizedKey = normalizeOpcodeKey(activeNamespace) || activeNamespace;
-              const tableTitle = `${namespaceLabel(normalizedKey, namespaceObj.label)} Registers`;
+              const tableTitle = `${operationLabelForOpcode(normalizedKey)} · ${namespaceLabel(
+                normalizedKey,
+                namespaceObj.label,
+              )} Registers`;
               container.appendChild(buildGroupTable(tableTitle, namespaceObj.instances || {}, activeNamespace));
             }
           }
         } else {
           const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);
-          const namespaceKeys = sortedHexKeys(Object.keys(splitNamespaces));
+          let namespaceKeys = sortedHexKeys(Object.keys(splitNamespaces));
+          if (forcedNamespaceKey) {
+            namespaceKeys = namespaceKeys.filter((key) => key === forcedNamespaceKey);
+          }
           if (namespaceKeys.length > 1) {
             const subtabs = document.createElement("div");
             subtabs.className = "subtabs";
-            let activeNamespace = state.activeNamespaceByGroup[groupKey];
+            const namespaceStateKey = forcedNamespaceKey ? `${groupKey}|${forcedNamespaceKey}` : groupKey;
+            let activeNamespace = state.activeNamespaceByGroup[namespaceStateKey];
             if (!namespaceKeys.includes(activeNamespace)) activeNamespace = namespaceKeys[0];
-            state.activeNamespaceByGroup[groupKey] = activeNamespace;
+            state.activeNamespaceByGroup[namespaceStateKey] = activeNamespace;
 
             for (const namespaceKey of namespaceKeys) {
               const btn = document.createElement("div");
@@ -1755,15 +1943,15 @@ __ARTIFACT_JSON__
               if (namespaceKey === activeNamespace) btn.classList.add("active");
               btn.textContent = namespaceLabel(namespaceKey, namespaceKey);
               btn.addEventListener("click", () => {
-                state.activeNamespaceByGroup[groupKey] = namespaceKey;
-                renderActiveGroup(groupKey);
+                state.activeNamespaceByGroup[namespaceStateKey] = namespaceKey;
+                renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
               });
               subtabs.appendChild(btn);
             }
             container.appendChild(subtabs);
             container.appendChild(
               buildGroupTable(
-                `${namespaceLabel(activeNamespace, activeNamespace)} Registers`,
+                `${operationLabelForOpcode(activeNamespace)} · ${namespaceLabel(activeNamespace, activeNamespace)} Registers`,
                 splitNamespaces[activeNamespace] || {},
                 activeNamespace,
               ),
@@ -1772,7 +1960,7 @@ __ARTIFACT_JSON__
             const namespaceKey = namespaceKeys[0];
             container.appendChild(
               buildGroupTable(
-                `${namespaceLabel(namespaceKey, namespaceKey)} Registers`,
+                `${operationLabelForOpcode(namespaceKey)} · ${namespaceLabel(namespaceKey, namespaceKey)} Registers`,
                 splitNamespaces[namespaceKey] || {},
                 namespaceKey,
               ),
@@ -1782,11 +1970,83 @@ __ARTIFACT_JSON__
           }
         }
 
+        mountTarget.innerHTML = "";
+        mountTarget.appendChild(container);
+      }
+
+      function renderB524Tab() {
+        const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+        const host = document.createElement("div");
+        const sectionTabs = document.createElement("div");
+        sectionTabs.className = "subtabs";
+
+        const allowedSections = B524_SECTIONS.map((item) => item.key);
+        if (!allowedSections.includes(state.activeB524Section)) {
+          state.activeB524Section = "controller_registers";
+        }
+
+        for (const section of B524_SECTIONS) {
+          const btn = document.createElement("div");
+          btn.className = "tab";
+          if (state.activeB524Section === section.key) btn.classList.add("active");
+          btn.textContent = section.label;
+          btn.addEventListener("click", () => {
+            state.activeB524Section = section.key;
+            renderB524Tab();
+          });
+          sectionTabs.appendChild(btn);
+        }
+
+        host.appendChild(sectionTabs);
+        const sectionBody = document.createElement("div");
+        host.appendChild(sectionBody);
         sheetArea.innerHTML = "";
-        sheetArea.appendChild(container);
+        sheetArea.appendChild(host);
+
+        const sectionKey = state.activeB524Section;
+        const requiredNamespace = requiredNamespaceForSection(sectionKey);
+        if (requiredNamespace) {
+          const groupKeys = b524GroupKeysForSection(groupsRoot, sectionKey);
+          if (!groupKeys.length) {
+            sectionBody.innerHTML = `<div class='subtitle'>No ${sectionLabel(sectionKey)} groups in artifact.</div>`;
+            return;
+          }
+
+          let activeGroup = state.activeB524GroupBySection[sectionKey];
+          if (!groupKeys.includes(activeGroup)) activeGroup = groupKeys[0];
+          state.activeB524GroupBySection[sectionKey] = activeGroup;
+
+          const groupTabs = document.createElement("div");
+          groupTabs.className = "subtabs";
+          for (const groupKey of groupKeys) {
+            const btn = document.createElement("div");
+            btn.className = "tab";
+            if (groupKey === activeGroup) btn.classList.add("active");
+            const groupObj = getGroupObject(groupsRoot[groupKey]);
+            const groupName = typeof groupObj.name === "string" && groupObj.name ? groupObj.name : "Unknown";
+            btn.textContent = `${groupKey} (${groupName})`;
+            btn.addEventListener("click", () => {
+              state.activeB524GroupBySection[sectionKey] = groupKey;
+              renderB524Tab();
+            });
+            groupTabs.appendChild(btn);
+          }
+          sectionBody.appendChild(groupTabs);
+
+          const groupMount = document.createElement("div");
+          sectionBody.appendChild(groupMount);
+          renderActiveGroup(activeGroup, requiredNamespace, groupMount);
+          return;
+        }
+
+        renderB524OperationRows(sectionKey, sectionBody);
       }
 
       function renderActiveTab() {
+        if (_isB524Tab(state.activeTab)) {
+          renderB524Tab();
+          return;
+        }
         if (_isB555Tab(state.activeTab)) {
           renderB555Tab();
           return;
@@ -1799,17 +2059,20 @@ __ARTIFACT_JSON__
           renderB509Tab();
           return;
         }
-        const groupKey = _groupKeyFromTab(state.activeTab);
-        renderActiveGroup(groupKey);
+        sheetArea.innerHTML = "<div class='subtitle'>No tab selected.</div>";
       }
 
       const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
-      const groupKeys = sortedHexKeys(Object.keys(groupsRoot));
+      const hasB524 = !!(
+        (groupsRoot && typeof groupsRoot === "object" && Object.keys(groupsRoot).length > 0)
+        || (artifact && typeof artifact === "object" && artifact.b524_operations && typeof artifact.b524_operations === "object")
+        || (meta && typeof meta === "object" && meta.constraint_dictionary && typeof meta.constraint_dictionary === "object")
+      );
       const hasB555 = !!(artifact && typeof artifact === "object" && artifact.b555_dump && typeof artifact.b555_dump === "object");
       const hasB516 = !!(artifact && typeof artifact === "object" && artifact.b516_dump && typeof artifact.b516_dump === "object");
       const hasB509 = !!(artifact && typeof artifact === "object" && artifact.b509_dump && typeof artifact.b509_dump === "object");
       renderSummaryChips(groupsRoot);
-      buildTabs(groupKeys, hasB555, hasB516, hasB509);
+      buildTabs(hasB524, hasB555, hasB516, hasB509);
       renderActiveTab();
     </script>
   </body>
