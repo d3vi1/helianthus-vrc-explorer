@@ -682,7 +682,13 @@ def probe_instance_availability(
                     register=register_id,
                     type_hint=type_hint,
                 )
-                if header_entry["error"] is None and header_entry.get("flags_access") != "absent":
+                header_reply_kind = header_entry.get("reply_kind")
+                if (
+                    header_entry["error"] is None
+                    and header_entry.get("flags_access") != "absent"
+                    and isinstance(header_reply_kind, str)
+                    and header_reply_kind.endswith("_valid")
+                ):
                     present = True
                     header_evidence = header_entry
                     break

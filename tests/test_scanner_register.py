@@ -543,6 +543,7 @@ def test_is_instance_present_group_09_remote_accepts_secondary_header_evidence(
                 "value": False,
                 "error": None,
                 "flags_access": "stable_ro",
+                "reply_kind": "simple_valid",
             }
         if register_id == 0x0002:
             return {
@@ -551,6 +552,7 @@ def test_is_instance_present_group_09_remote_accepts_secondary_header_evidence(
                 "value": 0x15,
                 "error": None,
                 "flags_access": "stable_ro",
+                "reply_kind": "simple_valid",
             }
         return {
             "raw_hex": None,
@@ -558,6 +560,7 @@ def test_is_instance_present_group_09_remote_accepts_secondary_header_evidence(
             "value": None,
             "error": None,
             "flags_access": "absent",
+            "reply_kind": None,
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -619,6 +622,7 @@ def test_probe_instance_availability_group_09_remote_uses_generic_header_probe(m
                 "value": False,
                 "error": None,
                 "flags_access": "stable_ro",
+                "reply_kind": "simple_valid",
             }
         return {
             "raw_hex": "15",
@@ -626,6 +630,7 @@ def test_probe_instance_availability_group_09_remote_uses_generic_header_probe(m
             "value": 0x15,
             "error": None,
             "flags_access": "stable_ro",
+            "reply_kind": "simple_valid",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -642,6 +647,62 @@ def test_probe_instance_availability_group_09_remote_uses_generic_header_probe(m
     assert probe.contract.probe_register == 0x0001
     assert probe.contract.probe_type_hint == "BOOL"
     assert calls == [(0x06, 0x0001, "BOOL"), (0x06, 0x0002, "UCH")]
+
+
+def test_probe_instance_availability_group_09_remote_ignores_invalid_header_fallback(
+    monkeypatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int, str | None]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        calls.append((int(opcode), register_id, kwargs.get("type_hint")))
+        if register_id == 0x0001:
+            return {
+                "raw_hex": "00",
+                "type": "BOOL",
+                "value": False,
+                "error": None,
+                "flags_access": "stable_ro",
+                "reply_kind": "simple_valid",
+            }
+        if register_id == 0x0002:
+            return {
+                "raw_hex": "ff",
+                "type": "UCH",
+                "value": 0xFF,
+                "error": None,
+                "flags_access": "stable_ro",
+                "reply_kind": "simple_invalid",
+            }
+        return {
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": "absent",
+            "reply_kind": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x09,
+        instance=0x01,
+        opcode=0x06,
+    )
+
+    assert probe.present is False
+    assert calls == [
+        (0x06, 0x0001, "BOOL"),
+        (0x06, 0x0002, "UCH"),
+        (0x06, 0x0003, "UCH"),
+        (0x06, 0x0004, "FW"),
+    ]
 
 
 def test_fw_not_added_to_inferred_type_selection() -> None:
