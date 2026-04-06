@@ -496,7 +496,7 @@ def read_register(
     if type_hint is not None:
         try:
             value = parse_typed_value(type_hint, value_bytes)
-            entry: RegisterEntry = {
+            typed_entry: RegisterEntry = {
                 "read_opcode": read_opcode,
                 "read_opcode_label": read_opcode_label,
                 "reply_hex": reply_hex,
@@ -515,8 +515,8 @@ def read_register(
                 value_type=type_hint,
             )
             if sentinel_display is not None:
-                entry["value_display"] = sentinel_display
-            return entry
+                typed_entry["value_display"] = sentinel_display
+            return typed_entry
         except ValueParseError as exc:
             return {
                 "read_opcode": read_opcode,
