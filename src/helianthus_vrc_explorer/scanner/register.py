@@ -19,6 +19,9 @@ from .identity import make_register_identity, opcode_label
 logger = logging.getLogger(__name__)
 
 _PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100))
+_EMPTY_REPLY_FLAGS_ACCESS: Final[str] = "dormant"
+_I32_INVALID_SENTINEL: Final[int] = 0x7FFFFFFF
+_I32_INVALID_SENTINEL_RAW_HEX: Final[str] = "ffffff7f"
 
 
 class RegisterEntry(TypedDict):
@@ -328,6 +331,16 @@ def _parse_inferred_value(value_bytes: bytes) -> tuple[str | None, object | None
     return _hex_fallback()
 
 
+def _sentinel_value_display(*, value: object | None, raw_hex: str | None) -> str | None:
+    if raw_hex != _I32_INVALID_SENTINEL_RAW_HEX:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value == _I32_INVALID_SENTINEL:
+        return "sentinel_invalid_i32 (0x7FFFFFFF)"
+    return None
+
+
 def read_register(
     transport: TransportInterface,
     dst: int,
@@ -386,6 +399,21 @@ def read_register(
             "error": f"transport_error: {exc}",
         }
 
+    if len(response) == 0:
+        return {
+            "read_opcode": read_opcode,
+            "read_opcode_label": read_opcode_label,
+            "reply_hex": "",
+            "flags": None,
+            "flags_access": _EMPTY_REPLY_FLAGS_ACCESS,
+            "ebusd_name": None,
+            "myvaillant_name": None,
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+        }
+
     reply_hex = response.hex()
     flags: int | None = response[0] if response else None
     flags_access: str | None = (
@@ -430,7 +458,7 @@ def read_register(
     if type_hint is not None:
         try:
             value = parse_typed_value(type_hint, value_bytes)
-            return {
+            entry: RegisterEntry = {
                 "read_opcode": read_opcode,
                 "read_opcode_label": read_opcode_label,
                 "reply_hex": reply_hex,
@@ -443,6 +471,10 @@ def read_register(
                 "value": value,
                 "error": None,
             }
+            sentinel_display = _sentinel_value_display(value=value, raw_hex=raw_hex)
+            if sentinel_display is not None:
+                entry["value_display"] = sentinel_display
+            return entry
         except ValueParseError as exc:
             return {
                 "read_opcode": read_opcode,
@@ -459,7 +491,7 @@ def read_register(
             }
 
     inferred_type, inferred_value, inferred_error = _parse_inferred_value(value_bytes)
-    return {
+    entry: RegisterEntry = {
         "read_opcode": read_opcode,
         "read_opcode_label": read_opcode_label,
         "reply_hex": reply_hex,
@@ -472,6 +504,10 @@ def read_register(
         "value": inferred_value,
         "error": inferred_error,
     }
+    sentinel_display = _sentinel_value_display(value=inferred_value, raw_hex=raw_hex)
+    if sentinel_display is not None:
+        entry["value_display"] = sentinel_display
+    return entry
 
 
 def probe_instance_availability(
