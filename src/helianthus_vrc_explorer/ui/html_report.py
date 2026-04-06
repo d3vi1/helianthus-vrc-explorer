@@ -6,6 +6,7 @@ import json
 from html import escape as _escape_html
 from typing import Any
 
+from ..scanner.director import group_name_for_opcode
 from .emphasis import html_star_bold
 
 
@@ -476,6 +477,7 @@ __ARTIFACT_JSON__
 
     <script>
       const artifact = JSON.parse(document.getElementById("artifact-data").textContent || "{}");
+      const B524_GROUP_NAMES = __B524_GROUP_NAMES__;
 
       const metaDst = document.getElementById("metaDst");
       const metaTs = document.getElementById("metaTs");
@@ -667,9 +669,15 @@ __ARTIFACT_JSON__
             }
             case "FW": {
               expectLen(3);
-              const major = decodeBcdByte(bytes[0]);
-              const minor = decodeBcdByte(bytes[1]);
-              const patch = decodeBcdByte(bytes[2]);
+              const decodeFwComponent = (value) => {
+                const bcd = decodeBcdByte(value);
+                if (bcd !== null) return bcd;
+                if (Number.isInteger(value) && value >= 0 && value <= 99) return value;
+                return null;
+              };
+              const major = decodeFwComponent(bytes[0]);
+              const minor = decodeFwComponent(bytes[1]);
+              const patch = decodeFwComponent(bytes[2]);
               if (major === null || minor === null || patch === null) {
                 throw new Error("invalid FW version");
               }
@@ -777,10 +785,19 @@ __ARTIFACT_JSON__
         if (!namespaceKey) return raw;
         const canonical = canonicalNamespaceLabel(namespaceKey);
         if (canonical) {
-          return `${canonical.charAt(0).toUpperCase()}${canonical.slice(1)} (${namespaceKey})`;
+          return "";
         }
         if (raw.startsWith("0x")) return namespaceKey;
         return `${raw.charAt(0).toUpperCase()}${raw.slice(1)} (${namespaceKey})`;
+      }
+
+      function groupLabelForSection(groupKey, sectionKey, fallbackName) {
+        const opcode = requiredNamespaceForSection(sectionKey);
+        if (!opcode) return fallbackName;
+        const entry = B524_GROUP_NAMES && typeof B524_GROUP_NAMES === "object" ? B524_GROUP_NAMES[groupKey] : null;
+        if (!entry || typeof entry !== "object") return fallbackName;
+        const scoped = entry[opcode];
+        return typeof scoped === "string" && scoped ? scoped : fallbackName;
       }
 
       function operationLabelForOpcode(namespaceKey) {
@@ -1503,6 +1520,24 @@ __ARTIFACT_JSON__
         return keys;
       }
 
+      function b524SectionHasContent(sectionKey, groupsRoot, operations, metaObj) {
+        if (sectionKey === "controller_registers" || sectionKey === "device_slots") {
+          return b524GroupKeysForSection(groupsRoot, sectionKey).length > 0;
+        }
+        if (sectionKey === "group_directory") {
+          return !!(operations && typeof operations === "object" && Array.isArray(operations.group_directory) && operations.group_directory.length);
+        }
+        if (sectionKey === "register_constraints") {
+          return !!(metaObj && typeof metaObj === "object" && metaObj.constraint_dictionary && Object.keys(metaObj.constraint_dictionary).length)
+            || !!(operations && typeof operations === "object" && Array.isArray(operations.register_constraints) && operations.register_constraints.length);
+        }
+        return !!(operations && typeof operations === "object" && Array.isArray(operations[sectionKey]) && operations[sectionKey].length);
+      }
+
+      function visibleB524Sections(groupsRoot, operations, metaObj) {
+        return B524_SECTIONS.filter((section) => b524SectionHasContent(section.key, groupsRoot, operations, metaObj));
+      }
+
       function renderB524OperationRows(sectionKey, mountTarget) {
         const operations = artifact && typeof artifact === "object" ? artifact.b524_operations : null;
         const metaObj = artifact && typeof artifact === "object" ? artifact.meta : null;
@@ -1650,6 +1685,11 @@ __ARTIFACT_JSON__
 
         const groupObj = getGroupObject(groupsRoot[groupKey]);
         const groupName = typeof groupObj.name === "string" && groupObj.name ? groupObj.name : "Unknown";
+        const resolvedGroupName = forcedNamespaceKey === "0x02"
+          ? groupLabelForSection(groupKey, "controller_registers", groupName)
+          : forcedNamespaceKey === "0x06"
+            ? groupLabelForSection(groupKey, "device_slots", groupName)
+            : groupName;
 
         function buildGroupTable(title, instancesObj, namespaceKey = null) {
           const instanceKeys = sortedHexKeys(Object.keys(instancesObj || {}));
@@ -1680,7 +1720,7 @@ __ARTIFACT_JSON__
           const trHead = document.createElement("tr");
           const th0 = document.createElement("th");
           th0.className = "offset-cell";
-          th0.innerHTML = `Register <span style="opacity:.7;font-weight:500">(${groupKey} · ${groupName})</span>`;
+          th0.innerHTML = `Register <span style="opacity:.7;font-weight:500">(${groupKey} · ${resolvedGroupName})</span>`;
           trHead.appendChild(th0);
 
           const flagsTh = document.createElement("th");
@@ -1872,7 +1912,7 @@ __ARTIFACT_JSON__
         const container = document.createElement("div");
         const title = document.createElement("div");
         title.className = "section-title";
-        title.textContent = `${groupKey} · ${groupName}`;
+        title.textContent = `${groupKey} · ${resolvedGroupName}`;
         container.appendChild(title);
 
         const filters = document.createElement("div");
@@ -1928,10 +1968,7 @@ __ARTIFACT_JSON__
             const namespaceObj = groupObj.namespaces[activeNamespace];
             if (namespaceObj && typeof namespaceObj === "object") {
               const normalizedKey = normalizeOpcodeKey(activeNamespace) || activeNamespace;
-              const tableTitle = `${operationLabelForOpcode(normalizedKey)} · ${namespaceLabel(
-                normalizedKey,
-                namespaceObj.label,
-              )} Registers`;
+              const tableTitle = `${operationLabelForOpcode(normalizedKey)} Registers`;
               container.appendChild(buildGroupTable(tableTitle, namespaceObj.instances || {}, activeNamespace));
             }
           }
@@ -1963,7 +2000,7 @@ __ARTIFACT_JSON__
             container.appendChild(subtabs);
             container.appendChild(
               buildGroupTable(
-                `${operationLabelForOpcode(activeNamespace)} · ${namespaceLabel(activeNamespace, activeNamespace)} Registers`,
+                `${operationLabelForOpcode(activeNamespace)} Registers`,
                 splitNamespaces[activeNamespace] || {},
                 activeNamespace,
               ),
@@ -1972,7 +2009,7 @@ __ARTIFACT_JSON__
             const namespaceKey = namespaceKeys[0];
             container.appendChild(
               buildGroupTable(
-                `${operationLabelForOpcode(namespaceKey)} · ${namespaceLabel(namespaceKey, namespaceKey)} Registers`,
+                `${operationLabelForOpcode(namespaceKey)} Registers`,
                 splitNamespaces[namespaceKey] || {},
                 namespaceKey,
               ),
@@ -1988,16 +2025,25 @@ __ARTIFACT_JSON__
 
       function renderB524Tab() {
         const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+        const operations = artifact && typeof artifact === "object" ? artifact.b524_operations : null;
+        const metaObj = artifact && typeof artifact === "object" ? artifact.meta : null;
         const host = document.createElement("div");
         const sectionTabs = document.createElement("div");
         sectionTabs.className = "subtabs";
 
-        const allowedSections = B524_SECTIONS.map((item) => item.key);
+        const renderedSections = visibleB524Sections(groupsRoot, operations, metaObj);
+        const allowedSections = renderedSections.map((item) => item.key);
+        if (!allowedSections.length) {
+          host.innerHTML = "<div class='subtitle'>No B524 sections with scanned content in artifact.</div>";
+          sheetArea.innerHTML = "";
+          sheetArea.appendChild(host);
+          return;
+        }
         if (!allowedSections.includes(state.activeB524Section)) {
-          state.activeB524Section = "controller_registers";
+          state.activeB524Section = allowedSections[0];
         }
 
-        for (const section of B524_SECTIONS) {
+        for (const section of renderedSections) {
           const btn = document.createElement("div");
           btn.className = "tab";
           if (state.activeB524Section === section.key) btn.classList.add("active");
@@ -2036,7 +2082,7 @@ __ARTIFACT_JSON__
             if (groupKey === activeGroup) btn.classList.add("active");
             const groupObj = getGroupObject(groupsRoot[groupKey]);
             const groupName = typeof groupObj.name === "string" && groupObj.name ? groupObj.name : "Unknown";
-            btn.textContent = `${groupKey} (${groupName})`;
+            btn.textContent = `${groupKey} (${groupLabelForSection(groupKey, sectionKey, groupName)})`;
             btn.addEventListener("click", () => {
               state.activeB524GroupBySection[sectionKey] = groupKey;
               renderB524Tab();
@@ -2094,6 +2140,20 @@ __ARTIFACT_JSON__
 
 def render_html_report(artifact: dict[str, Any], *, title: str | None = None) -> str:
     meta = artifact.get("meta")
+    groups = artifact.get("groups")
+    group_name_map: dict[str, dict[str, str]] = {}
+    if isinstance(groups, dict):
+        for group_key in groups:
+            if not isinstance(group_key, str):
+                continue
+            try:
+                group = int(group_key, 0)
+            except ValueError:
+                continue
+            group_name_map[group_key] = {
+                "0x02": group_name_for_opcode(group, 0x02),
+                "0x06": group_name_for_opcode(group, 0x06),
+            }
     identity_html = ""
     if isinstance(meta, dict):
         identity_obj = meta.get("identity")
@@ -2135,6 +2195,7 @@ def render_html_report(artifact: dict[str, Any], *, title: str | None = None) ->
         _TEMPLATE.replace("__TITLE__", _escape_html(page_title))
         .replace("__IDENTITY_CARD__", identity_html)
         .replace("__ARTIFACT_JSON__", _json_for_html(artifact))
+        .replace("__B524_GROUP_NAMES__", _json_for_html(group_name_map))
         .rstrip()
         + "\n"
     )

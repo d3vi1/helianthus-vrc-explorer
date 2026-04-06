@@ -419,7 +419,7 @@ def test_html_report_splits_mixed_legacy_group_by_namespace_and_scopes_overrides
         "const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);" in html
     )
     assert "if (namespaceKeys.length > 1) {" in html
-    assert "${namespaceLabel(activeNamespace, activeNamespace)} Registers" in html
+    assert "${operationLabelForOpcode(activeNamespace)} Registers" in html
     assert "if (namespaceKey) {" in html
     assert "return null;" in html
 

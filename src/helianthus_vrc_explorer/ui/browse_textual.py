@@ -546,6 +546,7 @@ def run_browse_from_artifact(
         def _refresh_table(self) -> None:
             table = self.query_one("#browse-table", DataTable)
             selected = self._current_node()
+            self._sync_tabs_for_selection(selected)
             self._table_rows = self._store.rows_for_selection(selected, tab=self._active_tab)
             cursor = max(0, table.cursor_row)
             table.clear(columns=False)
@@ -584,6 +585,34 @@ def run_browse_from_artifact(
                 f"Namespace: {self._selection_namespace_label(selected)} | Tab: {self._active_tab}"
             )
             self._set_status(status_text)
+
+        def _allowed_tabs_for_selection(self, node: TreeNodeRef | None) -> tuple[BrowseTab, ...]:
+            if node is None:
+                return ("config", "config_limits", "state")
+            if node.protocol != "b524":
+                return ("state",)
+            section_key = node.section_key
+            if section_key is None and node.level != "protocol":
+                return ("config", "config_limits", "state")
+            if section_key == "controller_registers" or (
+                node.level == "protocol" and node.protocol == "b524"
+            ):
+                return ("config", "config_limits", "state")
+            return ("state",)
+
+        def _sync_tabs_for_selection(self, node: TreeNodeRef | None) -> None:
+            tabs_widget = self.query_one("#browse-tabs", Tabs)
+            allowed = set(self._allowed_tabs_for_selection(node))
+            tab_map = {
+                "config": self.query_one("#tab-config", Tab),
+                "config_limits": self.query_one("#tab-config-limits", Tab),
+                "state": self.query_one("#tab-state", Tab),
+            }
+            for key, tab in tab_map.items():
+                tab.disabled = key not in allowed
+            if self._active_tab not in allowed:
+                self._active_tab = "state"
+                tabs_widget.active = _tab_id("state")
 
         def _selected_table_row(self) -> RegisterRow | None:
             if not self._table_rows:
@@ -681,9 +710,15 @@ def run_browse_from_artifact(
             self._focus_by_index()
 
         def action_tab_config(self) -> None:
+            if "config" not in self._allowed_tabs_for_selection(self._current_node()):
+                self._set_status("Config tab is not available for this B524 operation.")
+                return
             self.query_one("#browse-tabs", Tabs).active = _tab_id("config")
 
         def action_tab_config_limits(self) -> None:
+            if "config_limits" not in self._allowed_tabs_for_selection(self._current_node()):
+                self._set_status("Config-Limits tab is not available for this B524 operation.")
+                return
             self.query_one("#browse-tabs", Tabs).active = _tab_id("config_limits")
 
         def action_tab_state(self) -> None:

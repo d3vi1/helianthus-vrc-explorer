@@ -62,6 +62,7 @@ def test_parse_hti_time_u24le_hhmmss() -> None:
 def test_parse_fw_valid() -> None:
     assert parse_typed_value("FW", bytes.fromhex("080500")) == "08.05.00"
     assert parse_typed_value("FW", bytes.fromhex("021703")) == "02.17.03"
+    assert parse_typed_value("FW", bytes.fromhex("0c0100")) == "12.01.00"
 
 
 @pytest.mark.parametrize(

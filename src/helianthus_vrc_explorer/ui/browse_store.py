@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..artifact_schema import migrate_artifact_schema
-from ..scanner.director import GROUP_CONFIG
+from ..scanner.director import GROUP_CONFIG, group_name_for_opcode, group_namespace_profiles
 from ..scanner.identity import operation_label
 from .browse_models import BrowseTab, RegisterAddress, RegisterRow, TreeNodeRef
 from .register_semantics import entry_display_value_text, visible_rr_keys
@@ -54,6 +54,10 @@ def _parse_timestamp(meta: dict[str, Any]) -> datetime | None:
 
 
 def _tab_from_entry(entry: dict[str, Any]) -> BrowseTab:
+    namespace_key = _entry_namespace_key(entry)
+    if namespace_key is not None and namespace_key != "0x02":
+        return "state"
+
     register_class = str(entry.get("register_class") or "").strip().lower()
     if register_class == "config":
         return "config"
@@ -72,6 +76,15 @@ def _tab_from_entry(entry: dict[str, Any]) -> BrowseTab:
 
 def _fmt_group_label(group_key: str, group_name: str) -> str:
     return f"{group_name} ({group_key})"
+
+
+def _group_display_name(group_key: str, fallback_name: str, namespace_key: str | None) -> str:
+    if namespace_key is None:
+        return fallback_name
+    try:
+        return group_name_for_opcode(_safe_int_hex(group_key), _safe_int_hex(namespace_key))
+    except Exception:
+        return fallback_name
 
 
 def _instance_display_base(*, group_key: str, group_name: str, namespace_key: str | None) -> str:
@@ -202,13 +215,55 @@ def _namespace_display_label(namespace_key: str | None, namespace_label: str | N
         return None
     canonical_label = _namespace_label_for_key(namespace_key)
     if canonical_label in {"local", "remote"}:
-        return f"{canonical_label[:1].upper()}{canonical_label[1:]} ({namespace_key})"
+        return None
     label = namespace_label.strip() if isinstance(namespace_label, str) else ""
     if label and label.lower() != namespace_key.lower():
         if label.startswith("0x"):
             return namespace_key
         return f"{label[:1].upper()}{label[1:]} ({namespace_key})"
     return namespace_key
+
+
+def _expected_instance_keys(
+    *,
+    group_key: str,
+    namespace_key: str | None,
+    instances: dict[str, Any],
+) -> list[str]:
+    keys = {key for key in instances if isinstance(key, str)}
+    if namespace_key is None:
+        return sorted(keys, key=_safe_int_hex)
+
+    profiles = group_namespace_profiles(_safe_int_hex(group_key))
+    profile = profiles.get(_safe_int_hex(namespace_key))
+    if profile is not None and profile.ii_max > 0:
+        for ii in range(profile.ii_max + 1):
+            keys.add(_hex_u8(ii))
+    return sorted(keys, key=_safe_int_hex)
+
+
+def _b524_operation_rows_present(
+    *,
+    artifact: dict[str, Any],
+    group_keys: list[str],
+    section_key: str,
+) -> bool:
+    meta = artifact.get("meta")
+    meta_obj = meta if isinstance(meta, dict) else {}
+    operations = artifact.get("b524_operations")
+    operations_obj = operations if isinstance(operations, dict) else {}
+
+    if section_key == "group_directory":
+        rows = operations_obj.get("group_directory")
+        return isinstance(rows, list) and bool(rows)
+    if section_key == "register_constraints":
+        constraint_dict = meta_obj.get("constraint_dictionary")
+        if isinstance(constraint_dict, dict) and bool(constraint_dict):
+            return True
+        rows = operations_obj.get("register_constraints")
+        return isinstance(rows, list) and bool(rows)
+    rows = operations_obj.get(section_key)
+    return isinstance(rows, list) and bool(rows)
 
 
 def _normalize_opcode_hex(value: object) -> str | None:
@@ -576,6 +631,11 @@ class BrowseStore:
                 section_key = _b524_section_key_for_opcode(effective_namespace_key)
                 if section_key not in {"controller_registers", "device_slots"}:
                     continue
+                section_group_name = _group_display_name(
+                    group_key,
+                    group_name,
+                    effective_namespace_key,
+                )
 
                 group_node_id = f"b524:group:{section_key}:{group_key}"
                 if group_node_id not in seen_group_nodes:
@@ -583,7 +643,7 @@ class BrowseStore:
                     tree_nodes.append(
                         TreeNodeRef(
                             node_id=group_node_id,
-                            label=_fmt_group_label(group_key, group_name),
+                            label=_fmt_group_label(group_key, section_group_name),
                             level="group",
                             protocol="b524",
                             section_key=section_key,
@@ -611,15 +671,16 @@ class BrowseStore:
                             )
                         )
 
-                instance_keys = sorted(
-                    (k for k in instances if isinstance(k, str)),
-                    key=_safe_int_hex,
+                instance_keys = _expected_instance_keys(
+                    group_key=group_key,
+                    namespace_key=effective_namespace_key,
+                    instances=instances,
                 )
                 visible_registers = set(visible_rr_keys(instances))
                 for instance_key in instance_keys:
                     instance_obj = instances.get(instance_key)
                     if not isinstance(instance_obj, dict):
-                        continue
+                        instance_obj = {"present": False, "registers": {}}
                     # For instanced groups, list instances as the leaf nodes (do not expand to RR).
                     if is_instanced:
                         node_id = _build_b524_instance_node_id(
@@ -635,7 +696,7 @@ class BrowseStore:
                                     node_id=node_id,
                                     label=_instance_label(
                                         group_key=group_key,
-                                        group_name=group_name,
+                                        group_name=section_group_name,
                                         namespace_key=effective_namespace_key,
                                         instance_key=instance_key,
                                         instance_obj=instance_obj,
@@ -678,6 +739,11 @@ class BrowseStore:
                             entry_namespace_label = _namespace_label_for_key(entry_namespace_key)
                         else:
                             entry_namespace_label = None
+                        entry_group_name = _group_display_name(
+                            group_key,
+                            group_name,
+                            entry_namespace_key,
+                        )
                         address = RegisterAddress(
                             protocol="b524",
                             group_key=group_key,
@@ -699,7 +765,7 @@ class BrowseStore:
                             "B524",
                             _b524_section_label(entry_section_key),
                             operation_name,
-                            group_name,
+                            entry_group_name,
                         ]
                         if entry_namespace_display is not None:
                             path_parts.append(entry_namespace_display)
@@ -719,7 +785,7 @@ class BrowseStore:
                             namespace_key=entry_namespace_key,
                             namespace_label=entry_namespace_label,
                             section_key=entry_section_key,
-                            group_name=group_name,
+                            group_name=entry_group_name,
                             instance_key=instance_key,
                             register_key=register_key,
                             name=name,
@@ -753,6 +819,29 @@ class BrowseStore:
                         )
                         rows.append(row)
                         row_by_id[row_id] = row
+
+        b524_sections_present = {
+            row.section_key
+            for row in rows
+            if row.protocol == "b524" and isinstance(row.section_key, str)
+        }
+        for section_key in _B524_SECTION_ORDER:
+            if _b524_operation_rows_present(
+                artifact=artifact,
+                group_keys=group_keys,
+                section_key=section_key,
+            ):
+                b524_sections_present.add(section_key)
+        if b524_sections_present:
+            tree_nodes = [
+                node
+                for node in tree_nodes
+                if node.protocol != "b524"
+                or node.section_key is None
+                or node.section_key in b524_sections_present
+            ]
+        else:
+            tree_nodes = [node for node in tree_nodes if node.protocol != "b524"]
 
         b509_dump = artifact.get("b509_dump")
         if isinstance(b509_dump, dict):

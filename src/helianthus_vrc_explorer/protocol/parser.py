@@ -178,9 +178,16 @@ def parse_fw(data: bytes) -> str:
     """
 
     _expect_len("FW", data, 3)
-    major = _decode_bcd("FW", "major", data[0])
-    minor = _decode_bcd("FW", "minor", data[1])
-    patch = _decode_bcd("FW", "patch", data[2])
+    components: list[int] = []
+    for field, raw in (("major", data[0]), ("minor", data[1]), ("patch", data[2])):
+        try:
+            components.append(_decode_bcd("FW", field, raw))
+        except ValueParseError:
+            if 0 <= raw <= 99:
+                components.append(raw)
+                continue
+            raise
+    major, minor, patch = components
     return f"{major:02d}.{minor:02d}.{patch:02d}"
 
 
