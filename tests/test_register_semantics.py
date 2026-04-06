@@ -13,8 +13,7 @@ def test_entry_status_kind_distinguishes_absent_dormant_transport_and_decode() -
         entry_status_kind({"reply_hex": "00", "flags_access": "absent", "error": None}) == "absent"
     )
     assert (
-        entry_status_kind({"reply_hex": "", "flags_access": "dormant", "error": None})
-        == "dormant"
+        entry_status_kind({"reply_hex": "", "flags_access": "dormant", "error": None}) == "dormant"
     )
     assert entry_status_kind({"error": "timeout"}) == "transport_failure"
     assert (

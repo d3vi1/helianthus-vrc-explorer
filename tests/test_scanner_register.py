@@ -162,7 +162,7 @@ class _I32SentinelTransport(TransportInterface):
     def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
         group = payload[2]
         rr = payload[4:6]
-        return bytes((0x01, group)) + rr + b"\xFF\xFF\xFF\x7F"
+        return bytes((0x01, group)) + rr + b"\xff\xff\xff\x7f"
 
 
 class _UnparseableU24Transport(TransportInterface):
