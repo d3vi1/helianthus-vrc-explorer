@@ -15,6 +15,7 @@ from helianthus_vrc_explorer.transport.base import (
     TransportCommandNotEnabled,
     TransportError,
     TransportInterface,
+    TransportNack,
     TransportTimeout,
 )
 
@@ -43,6 +44,15 @@ class _AlwaysTimeoutTransport(TransportInterface):
         raise TransportTimeout("boom")
 
 
+class _AlwaysNackTransport(TransportInterface):
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        self.calls += 1
+        raise TransportNack("nack")
+
+
 def test_read_register_surfaces_timeout_without_local_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -62,7 +72,8 @@ def test_read_register_surfaces_timeout_without_local_retry(
     # Scanner layer now delegates retry policy to transport, so a timeout from this dummy
     # transport is surfaced directly.
     assert transport.calls == 1
-    assert entry["error"] == "timeout"
+    assert entry["response_state"] == "timeout"
+    assert entry["error"] is None
     assert entry["raw_hex"] is None
 
 
@@ -83,7 +94,27 @@ def test_read_register_timeout_returns_timeout_entry_without_local_retry(
     )
 
     assert transport.calls == 1
-    assert entry["error"] == "timeout"
+    assert entry["response_state"] == "timeout"
+    assert entry["error"] is None
+    assert entry["raw_hex"] is None
+
+
+def test_read_register_nack_returns_nack_response_state() -> None:
+    transport = _AlwaysNackTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x02,
+        instance=0x00,
+        register=0x0002,
+        type_hint="UIN",
+    )
+
+    assert transport.calls == 1
+    assert entry["response_state"] == "nack"
+    assert entry["error"] is None
     assert entry["raw_hex"] is None
 
 
@@ -205,7 +236,7 @@ def test_read_register_status_only_response_is_not_decode_error() -> None:
     assert entry["error"] is None
 
 
-def test_read_register_empty_response_is_dormant_not_decode_error() -> None:
+def test_read_register_empty_response_is_classified_as_empty_reply() -> None:
     transport = _EmptyResponseTransport()
 
     entry = read_register(
@@ -219,14 +250,15 @@ def test_read_register_empty_response_is_dormant_not_decode_error() -> None:
 
     assert entry["reply_hex"] == ""
     assert entry["flags"] is None
-    assert entry["flags_access"] == "dormant"
+    assert entry["flags_access"] is None
+    assert entry["response_state"] == "empty_reply"
     assert entry["raw_hex"] is None
     assert entry["type"] is None
     assert entry["value"] is None
     assert entry["error"] is None
 
 
-def test_read_register_empty_response_without_dormant_identity_is_transport_no_response() -> None:
+def test_read_register_empty_response_without_whitelist_is_still_empty_reply() -> None:
     transport = _EmptyResponseTransport()
 
     entry = read_register(
@@ -238,13 +270,14 @@ def test_read_register_empty_response_without_dormant_identity_is_transport_no_r
         register=0x0000,
     )
 
-    assert entry["reply_hex"] is None
+    assert entry["reply_hex"] == ""
     assert entry["flags"] is None
     assert entry["flags_access"] is None
+    assert entry["response_state"] == "empty_reply"
     assert entry["raw_hex"] is None
     assert entry["type"] is None
     assert entry["value"] is None
-    assert entry["error"] == "transport_error: no_response"
+    assert entry["error"] is None
 
 
 def test_read_register_i32_sentinel_adds_value_display_annotation() -> None:

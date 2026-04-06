@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
-from .base import TransportError, TransportInterface, TransportTimeout
+from .base import TransportError, TransportInterface, TransportNack, TransportTimeout
 
 _EBUS_ESCAPE = 0xA9
 _EBUS_SYN = 0xAA
@@ -326,7 +326,7 @@ class _EnhancedCollision(TransportError):
     """Retryable collision or unexpected bus-ownership event."""
 
 
-class _EnhancedNack(TransportError):
+class _EnhancedNack(TransportNack):
     """Retryable NACK from the bus peer."""
 
 
@@ -757,9 +757,12 @@ class EnhancedTcpTransport(TransportInterface):
                 nack_retries += 1
                 if nack_retries > self._config.nack_max_retries:
                     self.close()
-                    raise TransportError(
+                    message = (
                         f"{exc} (nack/crc retries exhausted ({self._config.nack_max_retries}))"
-                    ) from exc
+                    )
+                    if isinstance(exc, _EnhancedNack):
+                        raise TransportNack(message) from exc
+                    raise TransportError(message) from exc
                 self._reset_parser()
                 self._trace(
                     f"#{seq} RETRY type=nack_or_crc "

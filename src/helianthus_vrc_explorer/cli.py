@@ -648,7 +648,15 @@ def scan(
         "--b509-range",
         help=(
             "B509 register range to dump (repeatable), format: 0x0000..0x00FF. "
-            "If omitted, defaults to 0x0000..0x00FF."
+            "Requires --b509-dump. If omitted, defaults to 0x0000..0x00FF."
+        ),
+    ),
+    b509_dump: bool = typer.Option(  # noqa: B008
+        False,
+        "--b509-dump/--no-b509-dump",
+        help=(
+            "Opt-in B509 register dump (disabled by default). "
+            "Use --b509-range to narrow/expand ranges."
         ),
     ),
     b555_dump: bool = typer.Option(  # noqa: B008
@@ -803,15 +811,22 @@ def scan(
         )
         allow_transport_retry = _is_default_transport_settings(transport_settings)
         b509_ranges: list[tuple[int, int]] = []
-        if b509_range:
-            for spec in b509_range:
-                try:
-                    b509_ranges.append(parse_b509_range(spec))
-                except ValueError as exc:
-                    typer.echo(f"Invalid --b509-range {spec!r}: {exc}", err=True)
-                    raise typer.Exit(2) from exc
-        else:
-            b509_ranges = [(0x0000, 0x00FF)]
+        if b509_range and not b509_dump:
+            typer.echo(
+                "--b509-range requires --b509-dump.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if b509_dump:
+            if b509_range:
+                for spec in b509_range:
+                    try:
+                        b509_ranges.append(parse_b509_range(spec))
+                    except ValueError as exc:
+                        typer.echo(f"Invalid --b509-range {spec!r}: {exc}", err=True)
+                        raise typer.Exit(2) from exc
+            else:
+                b509_ranges = [(0x0000, 0x00FF)]
         while True:
             _emit_scan_status(
                 console,
@@ -860,6 +875,7 @@ def scan(
                             transport,
                             dst=dst_u8,
                             b509_ranges=b509_ranges,
+                            b509_dump=b509_dump,
                             b555_dump=b555_dump,
                             b516_dump=b516_dump,
                             ebusd_host=transport_settings.host,

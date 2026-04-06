@@ -208,5 +208,52 @@ def test_migrate_legacy_empty_namespaces_preserves_flat_instances() -> None:
     assert "namespaces" not in group
     assert group["instances"]["0x00"]["registers"]["0x000f"]["raw_hex"] == "3412"
     assert entries == [
-        ("0x02", None, "0x00", "0x000f", {"raw_hex": "3412"}),
+        ("0x02", None, "0x00", "0x000f", {"raw_hex": "3412", "response_state": "active"}),
     ]
+
+
+def test_migrate_21_entries_derives_response_state_and_cleans_known_errors() -> None:
+    artifact_21 = {
+        "schema_version": "2.1",
+        "meta": {},
+        "groups": {
+            "0x02": {
+                "descriptor_observed": 1.0,
+                "dual_namespace": False,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {
+                                "error": "timeout",
+                                "flags_access": None,
+                                "raw_hex": None,
+                            },
+                            "0x0002": {
+                                "error": "transport_error: no_response",
+                                "flags_access": "dormant",
+                                "reply_hex": None,
+                            },
+                            "0x0003": {
+                                "error": "transport_error: nack received while reading",
+                                "flags_access": None,
+                            },
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    migrated, report = migrate_artifact_schema(artifact_21)
+    regs = migrated["groups"]["0x02"]["instances"]["0x00"]["registers"]
+
+    assert report.source_schema_version == "2.1"
+    assert migrated["schema_version"] == CURRENT_ARTIFACT_SCHEMA_VERSION
+    assert regs["0x0001"]["response_state"] == "timeout"
+    assert regs["0x0001"]["error"] is None
+    assert regs["0x0002"]["response_state"] == "empty_reply"
+    assert regs["0x0002"]["error"] is None
+    assert regs["0x0002"]["flags_access"] is None
+    assert regs["0x0002"]["reply_hex"] == ""
+    assert regs["0x0003"]["response_state"] == "nack"
+    assert regs["0x0003"]["error"] is None

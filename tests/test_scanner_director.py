@@ -334,7 +334,7 @@ def test_group_namespace_profiles_support_opcode_first_identity() -> None:
     buffer = group_namespace_profiles(0x08)
     assert buffer[0x02].ii_max == 0x0A
     assert buffer[0x06].ii_max == 0x0A
-    assert regulators[0x02].name == "Unknown 0x09 (local)"
+    assert regulators[0x02].name == "System"
     assert regulators[0x06].name == "Regulators"
     assert thermostats[0x02].name == "Unknown 0x0A (local)"
     assert thermostats[0x06].name == "Thermostats"
@@ -349,7 +349,7 @@ def test_group_name_for_opcode_uses_namespace_owned_labels_for_09_and_0a() -> No
     assert group_name_for_opcode(0x03, 0x06) == "Unknown 0x03 (remote)"
     assert group_name_for_opcode(0x04, 0x06) == "Unknown 0x04 (remote)"
     assert group_name_for_opcode(0x05, 0x06) == "Unknown 0x05 (remote)"
-    assert group_name_for_opcode(0x09, 0x02) == "Unknown 0x09 (local)"
+    assert group_name_for_opcode(0x09, 0x02) == "System"
     assert group_name_for_opcode(0x09, 0x06) == "Regulators"
     assert group_name_for_opcode(0x0A, 0x02) == "Unknown 0x0A (local)"
     assert group_name_for_opcode(0x0A, 0x06) == "Thermostats"

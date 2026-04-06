@@ -7,7 +7,7 @@ from typing import Any
 
 from ..artifact_schema import migrate_artifact_schema
 from ..scanner.director import GROUP_CONFIG
-from .base import TransportError, TransportInterface, TransportTimeout
+from .base import TransportError, TransportInterface, TransportNack, TransportTimeout
 
 
 class DummyTransport(TransportInterface):
@@ -25,6 +25,8 @@ class DummyTransport(TransportInterface):
         self._group_descriptor: dict[int, float] = {}
         self._register_values: dict[tuple[int, int, int, int], bytes] = {}
         self._register_timeouts: set[tuple[int, int, int, int]] = set()
+        self._register_nacks: set[tuple[int, int, int, int]] = set()
+        self._register_empty_replies: set[tuple[int, int, int, int]] = set()
         self._directory_terminator_group: int | None = None
         self._load_fixture()
 
@@ -75,12 +77,20 @@ class DummyTransport(TransportInterface):
         instance = payload[3]
         register = int.from_bytes(payload[4:6], byteorder="little", signed=False)
 
-        value = self._register_values.get((opcode, group, instance, register))
-        if (opcode, group, instance, register) in self._register_timeouts:
+        key = (opcode, group, instance, register)
+        value = self._register_values.get(key)
+        if key in self._register_nacks:
+            raise TransportNack(
+                "Fixture marks register as nack for "
+                f"opcode=0x{opcode:02X}, GG=0x{group:02X}, II=0x{instance:02X}, RR=0x{register:04X}"
+            )
+        if key in self._register_timeouts:
             raise TransportTimeout(
                 "Fixture marks register as timeout for "
                 f"opcode=0x{opcode:02X}, GG=0x{group:02X}, II=0x{instance:02X}, RR=0x{register:04X}"
             )
+        if key in self._register_empty_replies:
+            return b""
         if value is None:
             raise TransportTimeout(
                 "Fixture missing register raw_hex for "
@@ -192,14 +202,48 @@ class DummyTransport(TransportInterface):
                         self._register_values[(opcode, group, instance, register)] = value_bytes
                     continue
 
+                response_state_raw = register_value.get("response_state")
+                response_state = (
+                    response_state_raw.strip().lower()
+                    if isinstance(response_state_raw, str)
+                    else None
+                )
+                if response_state == "timeout":
+                    for opcode in opcodes:
+                        self._register_timeouts.add((opcode, group, instance, register))
+                    continue
+                if response_state == "nack":
+                    for opcode in opcodes:
+                        self._register_nacks.add((opcode, group, instance, register))
+                    continue
+                if response_state == "empty_reply":
+                    for opcode in opcodes:
+                        self._register_empty_replies.add((opcode, group, instance, register))
+                    continue
+
                 error = register_value.get("error")
                 if isinstance(error, str) and error == "timeout":
                     for opcode in opcodes:
                         self._register_timeouts.add((opcode, group, instance, register))
                     continue
+                if (
+                    isinstance(error, str)
+                    and error.strip().lower() == "transport_error: no_response"
+                ):
+                    for opcode in opcodes:
+                        self._register_empty_replies.add((opcode, group, instance, register))
+                    continue
+                if (
+                    isinstance(register_value.get("reply_hex"), str)
+                    and register_value.get("reply_hex") == ""
+                ):
+                    for opcode in opcodes:
+                        self._register_empty_replies.add((opcode, group, instance, register))
+                    continue
 
                 raise ValueError(
-                    f'Register {register_key!r} must contain raw_hex string or have error="timeout"'
+                    f"Register {register_key!r} must contain raw_hex, response_state "
+                    "or timeout/empty-reply metadata."
                 )
 
     def _load_fixture(self) -> None:

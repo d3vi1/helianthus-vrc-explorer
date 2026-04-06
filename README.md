@@ -49,6 +49,7 @@ Key scan UX flags:
 - `--planner-ui auto|textual|classic`
 - `--preset conservative|recommended|full|custom`
 - `--probe-constraints` (optional live opcode `0x01` GG/RR rescan; off by default and research-only)
+- `--b509-dump` (B509 is opt-in; `--b509-range` requires this flag)
 - `--no-tips`
 - `--redact` (redact identity fields like serial number from console output)
 - `--trace-file /path/to/trace.log`
@@ -64,7 +65,7 @@ Transport note:
 - Classic GG directory-probe results are retained as advisory metadata for semantic identity and namespace topology. They are useful evidence for reverse-engineering and debugging, but they do not define those semantics once a group is a scan candidate (see `docs/b524-namespace-invariants.md`). A `descriptor_type == 0.0` result is still used as a discovery-time negative hint for non-core/unknown groups in Phase A.
 - Instance availability is namespace-specific. Dual-namespace radio groups (`0x09`, `0x0A`) are discovered independently per opcode namespace instead of sharing remote results across local and remote.
 - Artifacts retain the availability contract plus raw per-slot probe evidence under `availability_contract` and `availability_probes`, including the opcode `0x06` generic header block (`RR=0x0001..0x0004`) used for remote namespace occupancy.
-- Empty ACK / 0-byte B524 register replies are preserved as `flags_access="dormant"` (feature inactive) rather than treated as generic decode errors for known dormant identities.
+- Empty ACK / 0-byte B524 register replies are preserved as `response_state="empty_reply"` (rendered as “empty reply / dormant”), not as transport errors.
 - B524 register replies expose protocol-level `reply_kind` annotations derived from the DT byte (`RK`, effective 2-bit domain `0..3`).
   - `OP=0x02`: bit1=config, bit0=volatile/stable (`simple_volatile`, `simple_stable`, `config_volatile`, `config_stable`)
   - `OP=0x06`: bit1=config, bit0=invalid/valid (`simple_invalid`, `simple_valid`, `config_invalid`, `config_valid`)
@@ -78,7 +79,7 @@ Transport note:
 - Legacy artifacts that still carry mixed opcodes inside a single non-dual group are rendered per-namespace in browse/report surfaces to prevent local/remote intermixing and override bleed.
 - Persisted `groups[*].dual_namespace` topology is authoritative for consumers. Do not infer or rewrite namespace shape from descriptors.
 - B524 browse/report row identity is namespace-aware even for single-namespace groups: dedupe key `<group>:<namespace>:<instance>:<register>` and path format `B524/<group-name>/<namespace-display>/<instance>/<register-name>` are round-trip stable.
-- Artifact schema contract is versioned (`schema_version: "2.1"` current). Readers keep backward compatibility by migrating unversioned and `2.0` artifacts in-memory.
+- Artifact schema contract is versioned (`schema_version: "2.2"` current). Readers keep backward compatibility by migrating unversioned, `2.0`, and `2.1` artifacts in-memory.
 - CI enforces these rules with `python scripts/check_b524_namespace_guardrails.py`.
 
 Constraint note:

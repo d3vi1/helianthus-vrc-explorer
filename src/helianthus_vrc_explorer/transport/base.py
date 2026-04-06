@@ -12,6 +12,13 @@ class TransportTimeout(TransportError):
     """Raised when a transport request times out."""
 
 
+class TransportNack(TransportError):
+    """Raised when the slave explicitly NACKs (0xFF) the request.
+
+    This is a definitive protocol-level rejection for the specific telegram.
+    """
+
+
 class TransportCommandNotEnabled(TransportError):
     """Raised when ebusd rejects a command because it is not enabled.
 

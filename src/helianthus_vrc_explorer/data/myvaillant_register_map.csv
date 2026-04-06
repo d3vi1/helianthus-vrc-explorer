@@ -104,10 +104,12 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x01,0x00,0x000F,hwc_status,,state,,
 0x01,0x00,0x0010,hwc_holiday_start_time,,config,HTI,
 0x01,0x00,0x0011,hwc_holiday_end_time,,config,HTI,
+0x01,*,0x0001,heat_source_device_connected,,state,UCH,0x06
 0x01,*,0x0002,heat_source_device_address,,state,UCH,0x06
 0x01,*,0x0003,heat_source_device_status,,state,UCH,0x06
 0x01,*,0x0012,heat_source_active_errors,,state,UCH,0x06
 0x01,*,0x0015,heat_source_flow_temperature,,state,EXP,0x06
+0x02,*,0x0001,heat_source_device_connected,,state,UCH,0x06
 0x02,*,0x0002,heat_source_device_address,,state,UCH,0x06
 0x02,*,0x0003,heat_source_device_status,,state,UCH,0x06
 0x02,*,0x0012,heat_source_active_errors,,state,UCH,0x06
@@ -155,6 +157,7 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x03,*,0x0004,holiday_end_date,Zone{zone}HolidayEndPeriod,config,HDA:3,
 0x03,*,0x0005,holiday_setpoint,Zone{zone}HolidayTemp,config,,
 0x03,*,0x0006,heating_operation_mode,Zone{zone}HeatingOpMode,config,,
+0x03,*,0x0007,zone_window_open,,state,EXP,
 0x03,*,0x0008,quick_veto_temperature,Zone{zone}QuickVetoTemp,config,,
 0x03,*,0x0009,heating_set_back_temperature,Zone{zone}HeatingSetbackTemp,config,,
 0x03,*,0x000E,current_special_function,Zone{zone}SpecialFunction,state,,

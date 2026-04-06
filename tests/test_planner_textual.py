@@ -121,7 +121,7 @@ def test_split_planner_groups_by_namespace_prefers_local_then_remote() -> None:
     local_group = PlannerGroup(
         group=0x09,
         opcode=0x02,
-        name="Unknown 0x09 (local)",
+        name="System",
         descriptor=1.0,
         known=True,
         ii_max=0x0A,

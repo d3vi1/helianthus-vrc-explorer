@@ -33,8 +33,8 @@ behavior that is already stable in code/tests.
    - Path contract: `B524/<group-name>/<namespace-display>/<instance>/<register-name>`.
 
 5. Fixture compatibility is migration-based, not semantic rewrite.
-   - Current artifact schema: `2.1`.
-   - Legacy unversioned/`2.0` fixtures are migrated in-memory with register-count preservation.
+   - Current artifact schema: `2.2`.
+   - Legacy unversioned/`2.0`/`2.1` fixtures are migrated in-memory with register-count preservation.
    - Migration may normalize container shape, but must not drop register entries or collapse namespace identity.
    - Legacy mixed-opcode single-group artifacts are rendered split-by-namespace in browse/report consumers.
 
@@ -80,12 +80,33 @@ They are observational and do not replace the opcode-first identity contract abo
      - `3`: `config_valid`
    - Scanner artifacts expose `reply_kind` while preserving legacy `flags_access` labels for compatibility.
 
-4. Empty ACK/0-byte replies are treated as `dormant` in scanner artifacts only for known dormant identities.
-   - Meaning: register exists but feature is currently inactive (not an absent-register NACK/timeout class).
-   - This status is rendered distinctly from `absent` in explorer UI/report consumers.
+4. Register response-state is wire-level and explicit (`active | empty_reply | nack | timeout`).
+   - `empty_reply` (ACK + `NN=0`) is canonical artifact state; it is rendered as “empty reply / dormant”.
+   - `nack` and `timeout` are protocol states, not generic transport-error strings.
+   - `error` is reserved for genuine transport/decode failures outside those four states.
 
 5. Sentinel `0x7FFFFFFF` is annotated when decoded as integer payload.
    - Artifact entries expose `value_display="sentinel_invalid_i32 (0x7FFFFFFF)"` for this case.
    - This is scanner-layer annotation only; semantic/runtime policy outside explorer belongs to gateway/poller repos.
 
 6. The previous ISC KNX heat-source assumption is corrected for BASV2: the remote heat-source groups are 1-indexed, not 0-indexed.
+
+7. Register-map notes carried in explorer:
+   - `GG=0x03`, `RR=0x0007` is mapped as hypothesis `zone_window_open` with provisional `F32` decoding.
+   - `OP=0x06`, `GG=0x01` heat-source notes are tracked for:
+     - `RR=0x0001` (`heat_source_device_connected`)
+     - `RR=0x0002` (`heat_source_device_address`)
+     - `RR=0x0003` (`heat_source_device_status`)
+     - `RR=0x0012` (`heat_source_active_errors`)
+     - `RR=0x0015` (`heat_source_flow_temperature`)
+
+8. Canonical operation labels are opcode-first:
+   - `0x00`: `QueryGroupDirectory`
+   - `0x01`: `QueryRegisterConstraints`
+   - `0x02/0x00`: `ReadControllerRegister`
+   - `0x02/0x01`: `WriteControllerRegister`
+   - `0x03`: `ReadTimerProgram`
+   - `0x04`: `WriteTimerProgram`
+   - `0x06/0x00`: `ReadDeviceSlotRegister`
+   - `0x06/0x01`: `WriteDeviceSlotRegister`
+   - `0x0B`: `ReadRegisterTable`

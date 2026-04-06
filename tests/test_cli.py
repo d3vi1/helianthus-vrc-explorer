@@ -408,6 +408,125 @@ def test_scan_cli_passes_b555_dump_flag(monkeypatch, tmp_path: Path) -> None:
     assert captured["b555_dump"] is True
 
 
+def test_scan_cli_b509_is_disabled_by_default(monkeypatch, tmp_path: Path) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    captured: dict[str, object] = {}
+
+    class _OkTransport:
+        @contextmanager
+        def session(self):
+            yield self
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = settings
+        _ = trace_file
+        return _OkTransport()
+
+    @contextmanager
+    def _fake_observer(*_args, **_kwargs):
+        yield None
+
+    def _fake_scan_vrc(*_args, **kwargs):
+        captured["b509_dump"] = kwargs["b509_dump"]
+        captured["b509_ranges"] = kwargs["b509_ranges"]
+        return {
+            "meta": {
+                "scan_timestamp": "2026-02-13T00:00:00Z",
+                "destination_address": "0x15",
+                "incomplete": False,
+                "schema_sources": [],
+            },
+            "groups": {},
+        }
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_probe_scan_identity", lambda _transport, *, dst: {})
+    monkeypatch.setattr(cli_mod, "make_scan_observer", _fake_observer)
+    monkeypatch.setattr(cli_mod, "scan_vrc", _fake_scan_vrc)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", "--dst", "0x15", "--output-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    assert captured["b509_dump"] is False
+    assert captured["b509_ranges"] == []
+
+
+def test_scan_cli_b509_range_requires_b509_dump(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dst",
+            "0x15",
+            "--b509-range",
+            "0x0000..0x0001",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--b509-range requires --b509-dump." in result.stderr
+
+
+def test_scan_cli_passes_b509_dump_and_ranges(monkeypatch, tmp_path: Path) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    captured: dict[str, object] = {}
+
+    class _OkTransport:
+        @contextmanager
+        def session(self):
+            yield self
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = settings
+        _ = trace_file
+        return _OkTransport()
+
+    @contextmanager
+    def _fake_observer(*_args, **_kwargs):
+        yield None
+
+    def _fake_scan_vrc(*_args, **kwargs):
+        captured["b509_dump"] = kwargs["b509_dump"]
+        captured["b509_ranges"] = kwargs["b509_ranges"]
+        return {
+            "meta": {
+                "scan_timestamp": "2026-02-13T00:00:00Z",
+                "destination_address": "0x15",
+                "incomplete": False,
+                "schema_sources": [],
+            },
+            "groups": {},
+        }
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_probe_scan_identity", lambda _transport, *, dst: {})
+    monkeypatch.setattr(cli_mod, "make_scan_observer", _fake_observer)
+    monkeypatch.setattr(cli_mod, "scan_vrc", _fake_scan_vrc)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dst",
+            "0x15",
+            "--b509-dump",
+            "--b509-range",
+            "0x0000..0x0001",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["b509_dump"] is True
+    assert captured["b509_ranges"] == [(0x0000, 0x0001)]
+
+
 def test_scan_cli_passes_b516_dump_flag(monkeypatch, tmp_path: Path) -> None:
     import helianthus_vrc_explorer.cli as cli_mod
 

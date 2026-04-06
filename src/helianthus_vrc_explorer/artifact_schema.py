@@ -4,9 +4,9 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-CURRENT_ARTIFACT_SCHEMA_VERSION = "2.1"
+CURRENT_ARTIFACT_SCHEMA_VERSION = "2.2"
 LEGACY_UNVERSIONED_SCHEMA = "legacy-unversioned"
-LEGACY_VERSIONED_SCHEMAS = frozenset({"2.0"})
+LEGACY_VERSIONED_SCHEMAS = frozenset({"2.0", "2.1"})
 
 
 class ArtifactSchemaError(ValueError):
@@ -115,6 +115,78 @@ def _migrate_group(group_obj: dict[str, Any]) -> bool:
     return changed
 
 
+def _derive_response_state(entry: dict[str, Any]) -> str | None:
+    response_state = entry.get("response_state")
+    if isinstance(response_state, str):
+        normalized = response_state.strip().lower()
+        if normalized in {"active", "empty_reply", "nack", "timeout"}:
+            return normalized
+
+    error = entry.get("error")
+    if isinstance(error, str):
+        lowered = error.strip().lower()
+        if lowered == "timeout":
+            return "timeout"
+        if lowered == "transport_error: no_response":
+            return "empty_reply"
+        if lowered.startswith("transport_error:") and "nack" in lowered:
+            return "nack"
+
+    flags_access = entry.get("flags_access")
+    if isinstance(flags_access, str) and flags_access.strip().lower() == "dormant":
+        return "empty_reply"
+
+    if entry.get("reply_hex") == "":
+        return "empty_reply"
+
+    if (
+        entry.get("flags") is not None
+        or entry.get("reply_hex") is not None
+        or entry.get("raw_hex") is not None
+        or entry.get("type") is not None
+        or "value" in entry
+    ):
+        return "active"
+
+    return None
+
+
+def _migrate_entry(entry: dict[str, Any]) -> bool:
+    changed = False
+    response_state = _derive_response_state(entry)
+    if entry.get("response_state") != response_state:
+        entry["response_state"] = response_state
+        changed = True
+
+    if response_state in {"timeout", "nack", "empty_reply"}:
+        error = entry.get("error")
+        if isinstance(error, str):
+            lowered = error.strip().lower()
+            if (
+                lowered == "timeout"
+                or lowered == "transport_error: no_response"
+                or (lowered.startswith("transport_error:") and "nack" in lowered)
+            ):
+                entry["error"] = None
+                changed = True
+
+    if response_state == "empty_reply":
+        if entry.get("reply_hex") != "":
+            entry["reply_hex"] = ""
+            changed = True
+        if entry.get("flags_access") is not None:
+            entry["flags_access"] = None
+            changed = True
+        if entry.get("flags") is not None:
+            entry["flags"] = None
+            changed = True
+        if entry.get("reply_kind") is not None:
+            entry["reply_kind"] = None
+            changed = True
+
+    return changed
+
+
 def migrate_artifact_schema(
     artifact: dict[str, Any],
 ) -> tuple[dict[str, Any], ArtifactMigrationReport]:
@@ -145,6 +217,10 @@ def migrate_artifact_schema(
             for group_obj in groups.values():
                 if isinstance(group_obj, dict):
                     changed = _migrate_group(group_obj) or changed
+
+    for *_path, entry in iter_register_entries(migrated):
+        if isinstance(entry, dict):
+            changed = _migrate_entry(entry) or changed
 
     register_count_after = count_register_entries(migrated)
     if register_count_before != register_count_after:

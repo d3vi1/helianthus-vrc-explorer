@@ -1094,7 +1094,7 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     )
 
     group = artifact["groups"]["0x09"]
-    assert group["name"] == "Unknown 0x09 (local) / Regulators"
+    assert group["name"] == "System / Regulators"
     assert group["dual_namespace"] is True
     assert "instances" not in group
     assert set(group["namespaces"]) == {"0x02", "0x06"}
@@ -1103,7 +1103,7 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     remote_ns = group["namespaces"]["0x06"]
     assert local_ns["label"] == "local"
     assert remote_ns["label"] == "remote"
-    assert local_ns["group_name"] == "Unknown 0x09 (local)"
+    assert local_ns["group_name"] == "System"
     assert remote_ns["group_name"] == "Regulators"
     assert local_ns["ii_max"] == "0x0a"
     assert remote_ns["ii_max"] == "0x0a"
@@ -1117,9 +1117,15 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     assert local_ns["availability_probes"]["0x00"]["raw_hex"] == "34"
     assert remote_ns["availability_probes"]["0x00"]["raw_hex"] == "01"
     assert local_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode"] == "0x02"
-    assert local_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode_label"] == "local"
+    assert (
+        local_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode_label"]
+        == "ReadControllerRegister"
+    )
     assert remote_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode"] == "0x06"
-    assert remote_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode_label"] == "remote"
+    assert (
+        remote_ns["instances"]["0x00"]["registers"]["0x0000"]["read_opcode_label"]
+        == "ReadDeviceSlotRegister"
+    )
 
     scan_plan = artifact["meta"]["scan_plan"]["groups"]["0x09"]
     assert scan_plan["dual_namespace"] is True
@@ -1207,7 +1213,7 @@ def test_artifact_register_flags_present(tmp_path: Path) -> None:
 
     assert entry["flags"] == 0x01
     assert entry["flags_access"] == "stable_ro"
-    assert entry["read_opcode_label"] == "local"
+    assert entry["read_opcode_label"] == "ReadControllerRegister"
 
 
 def test_contextual_enum_annotations_do_not_relabel_remote_namespace(tmp_path: Path) -> None:
@@ -1467,7 +1473,7 @@ def test_scan_b524_replays_dual_namespace_fixture_end_to_end(
     assert remote_fw["myvaillant_name"] == "radio_device_firmware"
     assert accessory_fw["type"] == "FW"
     assert accessory_fw["value"] == "08.05.00"
-    assert accessory_fw["read_opcode_label"] == "remote"
+    assert accessory_fw["read_opcode_label"] == "ReadDeviceSlotRegister"
     assert accessory_fw["myvaillant_name"] == "device_firmware_version"
     assert (0x02, 0x09, 0x00, 0x0004) in transport.register_reads
     assert (0x06, 0x09, 0x00, 0x0004) in transport.register_reads
@@ -1782,7 +1788,7 @@ def test_probe_unknown_group_opcodes_ignores_absent_flags_access() -> None:
     assert probe_summary["candidates"]["0x02"]["responsive"] is False
 
 
-def test_probe_unknown_group_opcodes_ignores_empty_transport_no_response() -> None:
+def test_probe_unknown_group_opcodes_treats_empty_reply_as_responsive() -> None:
     class _NoResponseProbeTransport(TransportInterface):
         def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
             if payload == bytes((0x02, 0x00, 0x69, 0x00, 0x00, 0x00)):
@@ -1798,11 +1804,12 @@ def test_probe_unknown_group_opcodes_ignores_empty_transport_no_response() -> No
         observer=None,
     )
 
-    assert opcodes == (0x06,)
-    assert probe_summary["responsive_opcodes"] == ["0x06"]
-    assert probe_summary["candidates"]["0x02"]["error"] == "transport_error: no_response"
+    assert opcodes == (0x02, 0x06)
+    assert probe_summary["responsive_opcodes"] == ["0x02", "0x06"]
+    assert probe_summary["candidates"]["0x02"]["response_state"] == "empty_reply"
+    assert probe_summary["candidates"]["0x02"]["error"] is None
     assert probe_summary["candidates"]["0x02"]["flags_access"] is None
-    assert probe_summary["candidates"]["0x02"]["responsive"] is False
+    assert probe_summary["candidates"]["0x02"]["responsive"] is True
 
 
 def test_scan_unknown_group_expands_to_instance_ff_after_readable_probe(tmp_path: Path) -> None:
@@ -2215,9 +2222,9 @@ def test_scan_b524_textual_planner_uses_namespace_owned_labels_for_groups_09_and
     planner_label_map = {
         (group.group, group.opcode): (group.name, group.namespace_label) for group in planner_groups
     }
-    assert planner_label_map[(0x09, 0x02)] == ("Unknown 0x09 (local)", "local")
+    assert planner_label_map[(0x09, 0x02)] == ("System", "local")
     assert planner_label_map[(0x09, 0x06)] == ("Regulators", "remote")
-    assert artifact["groups"]["0x09"]["name"] == "Unknown 0x09 (local) / Regulators"
+    assert artifact["groups"]["0x09"]["name"] == "System / Regulators"
 
 
 def test_scan_b524_textual_planner_uses_remote_presence_for_op06_rows(

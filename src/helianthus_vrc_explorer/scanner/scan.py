@@ -48,7 +48,7 @@ from .director import (
     group_name_for_opcode,
     group_namespace_profiles,
 )
-from .identity import make_register_identity, opcode_label
+from .identity import make_register_identity, opcode_label, operation_label
 from .observer import ScanObserver
 from .plan import (
     GroupScanPlan,
@@ -279,6 +279,7 @@ def _namespace_plan_meta(group_plan: GroupScanPlan) -> tuple[str, dict[str, obje
     payload = group_plan.to_meta()
     payload["namespace_key"] = namespace_key
     payload["label"] = opcode_label(group_plan.opcode)
+    payload["operation_label"] = operation_label(opcode=group_plan.opcode, optype=0x00)
     return namespace_key, payload
 
 
@@ -385,11 +386,13 @@ def _ensure_namespace_artifact(
         namespace_key,
         {
             "label": opcode_label(opcode),
+            "operation_label": operation_label(opcode=opcode, optype=0x00),
             "group_name": namespace_group_name,
             "instances": {},
         },
     )
     namespace_obj.setdefault("label", opcode_label(opcode))
+    namespace_obj.setdefault("operation_label", operation_label(opcode=opcode, optype=0x00))
     if namespace_group_name is not None:
         namespace_obj.setdefault("group_name", namespace_group_name)
     namespace_obj.setdefault("instances", {})
@@ -624,6 +627,11 @@ def _mark_present_instances(instances_obj: dict[str, Any], *, instances: tuple[i
 
 
 def _entry_is_readable(entry: RegisterEntry) -> bool:
+    response_state = entry.get("response_state")
+    if response_state in {"nack", "timeout"}:
+        return False
+    if response_state not in {"active", "empty_reply"}:
+        return False
     return entry["error"] is None and entry.get("flags_access") != "absent"
 
 
@@ -661,6 +669,7 @@ def _probe_unknown_group_opcodes(
             responsive.append(opcode)
         evidence[_hex_u8(opcode)] = {
             "responsive": is_responsive,
+            "response_state": entry.get("response_state"),
             "error": entry.get("error"),
             "flags_access": entry.get("flags_access"),
             "reply_hex": entry.get("reply_hex"),
@@ -1042,6 +1051,8 @@ def _constraint_mismatch_reason(
     constraint: ConstraintEntry | StaticConstraintEntry,
 ) -> str | None:
     if constraint.source != "static_catalog":
+        return None
+    if entry.get("response_state") != "active":
         return None
     if entry.get("error") is not None or entry.get("flags_access") == "absent":
         return None
@@ -2235,6 +2246,7 @@ def scan_vrc(
     *,
     dst: int,
     b509_ranges: list[tuple[int, int]],
+    b509_dump: bool = False,
     b555_dump: bool = False,
     b516_dump: bool = False,
     ebusd_host: str | None = None,
@@ -2247,7 +2259,7 @@ def scan_vrc(
     planner_preset: PlannerPreset = "recommended",
     probe_constraints: bool = False,
 ) -> dict[str, Any]:
-    """Run the full VRC scan flow: B524 primary scan, optional B555/B516 dumps, then B509."""
+    """Run VRC scan flow: B524 primary scan, optional B555/B516/B509 dumps."""
 
     artifact = scan_b524(
         transport,
@@ -2312,16 +2324,19 @@ def scan_vrc(
                     meta["incomplete_reason"] = f"b516_{reason}"
             return artifact
 
-    b509_dump = scan_b509(
+    if not b509_dump:
+        return artifact
+
+    b509_artifact = scan_b509(
         transport,  # type: ignore[arg-type]
         dst=dst,
         ranges=b509_ranges,
         ebusd_schema=ebusd_schema,
         observer=observer,
     )
-    artifact["b509_dump"] = b509_dump
+    artifact["b509_dump"] = b509_artifact
 
-    b509_meta = b509_dump.get("meta", {})
+    b509_meta = b509_artifact.get("meta", {})
     if isinstance(b509_meta, dict) and bool(b509_meta.get("incomplete")) and isinstance(meta, dict):
         meta["incomplete"] = True
         if "incomplete_reason" not in meta:

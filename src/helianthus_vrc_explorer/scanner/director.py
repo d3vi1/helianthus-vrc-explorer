@@ -121,7 +121,7 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x0A,
         "rr_max": 0x0035,
         "opcodes": [0x02, 0x06],
-        "name_by_opcode": {0x02: "Unknown 0x09 (local)", 0x06: "Regulators"},
+        "name_by_opcode": {0x02: "System", 0x06: "Regulators"},
         "rr_max_by_opcode": {0x02: 0x000F, 0x06: 0x0035},
     },
     0x0A: {

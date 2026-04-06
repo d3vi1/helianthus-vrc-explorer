@@ -10,16 +10,16 @@ from ..transport.base import (
     TransportCommandNotEnabled,
     TransportError,
     TransportInterface,
+    TransportNack,
     TransportTimeout,
     emit_trace_label,
 )
 from .director import GROUP_CONFIG
-from .identity import make_register_identity, opcode_label
+from .identity import make_register_identity, operation_label
 
 logger = logging.getLogger(__name__)
 
 _PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100))
-_EMPTY_REPLY_FLAGS_ACCESS: Final[str] = "dormant"
 _I32_INVALID_SENTINEL: Final[int] = 0x7FFFFFFF
 _I32_INVALID_SENTINEL_RAW_HEX: Final[str] = "ffffff7f"
 _REMOTE_HEADER_PROBE_REGISTERS: Final[tuple[tuple[int, str], ...]] = (
@@ -27,17 +27,6 @@ _REMOTE_HEADER_PROBE_REGISTERS: Final[tuple[tuple[int, str], ...]] = (
     (0x0002, "UCH"),
     (0x0003, "UCH"),
     (0x0004, "FW"),
-)
-_KNOWN_DORMANT_EMPTY_REPLY_KEYS: Final[frozenset[tuple[int, int, int]]] = frozenset(
-    {
-        # OP=0x02 / GG=0x00 registers that are known to ACK with zero-length payloads
-        # while the related feature is inactive.
-        (0x02, 0x00, 0x0006),  # manual_cooling_days
-        (0x02, 0x00, 0x0016),  # system_quick_mode_active
-        (0x02, 0x00, 0x0074),  # system_quick_mode_value
-        (0x02, 0x00, 0x00DA),  # manual_cooling_date_start
-        (0x02, 0x00, 0x00DB),  # manual_cooling_date_end
-    }
 )
 
 
@@ -56,6 +45,10 @@ class RegisterEntry(TypedDict):
     reply_kind: str | None
     # Access semantics derived from FLAGS and payload shape.
     flags_access: str | None
+    # Wire-level response state for the request.
+    # One of: "active", "empty_reply", "nack", "timeout", or None for non-protocol transport
+    # failures where a state could not be determined.
+    response_state: NotRequired[str | None]
     # Optional register name annotations.
     ebusd_name: str | None
     myvaillant_name: str | None
@@ -396,15 +389,6 @@ def _sentinel_value_display(
     return None
 
 
-def _is_known_dormant_empty_reply(
-    *,
-    opcode: RegisterOpcode,
-    group: int,
-    register: int,
-) -> bool:
-    return (opcode, group, register) in _KNOWN_DORMANT_EMPTY_REPLY_KEYS
-
-
 def read_register(
     transport: TransportInterface,
     dst: int,
@@ -421,7 +405,7 @@ def read_register(
         opcode=opcode, group=group, instance=instance, register=register
     )
     read_opcode = f"0x{opcode:02x}"
-    read_opcode_label = opcode_label(opcode)
+    read_opcode_label = operation_label(opcode=opcode, optype=0x00)
     emit_trace_label(
         transport,
         "Reading "
@@ -432,6 +416,22 @@ def read_register(
     payload = build_register_read_payload(opcode, group=group, instance=instance, register=register)
     try:
         response = transport.send(dst, payload)
+    except TransportNack:
+        return {
+            "read_opcode": read_opcode,
+            "read_opcode_label": read_opcode_label,
+            "reply_hex": None,
+            "flags": None,
+            "reply_kind": None,
+            "flags_access": None,
+            "response_state": "nack",
+            "ebusd_name": None,
+            "myvaillant_name": None,
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+        }
     except TransportTimeout:
         return {
             "read_opcode": read_opcode,
@@ -440,12 +440,13 @@ def read_register(
             "flags": None,
             "reply_kind": None,
             "flags_access": None,
+            "response_state": "timeout",
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
             "type": None,
             "value": None,
-            "error": "timeout",
+            "error": None,
         }
     except TransportError as exc:
         if isinstance(exc, TransportCommandNotEnabled):
@@ -457,6 +458,7 @@ def read_register(
             "flags": None,
             "reply_kind": None,
             "flags_access": None,
+            "response_state": None,
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
@@ -466,34 +468,20 @@ def read_register(
         }
 
     if len(response) == 0:
-        if _is_known_dormant_empty_reply(opcode=opcode, group=group, register=register):
-            return {
-                "read_opcode": read_opcode,
-                "read_opcode_label": read_opcode_label,
-                "reply_hex": "",
-                "flags": None,
-                "reply_kind": None,
-                "flags_access": _EMPTY_REPLY_FLAGS_ACCESS,
-                "ebusd_name": None,
-                "myvaillant_name": None,
-                "raw_hex": None,
-                "type": None,
-                "value": None,
-                "error": None,
-            }
         return {
             "read_opcode": read_opcode,
             "read_opcode_label": read_opcode_label,
-            "reply_hex": None,
+            "reply_hex": "",
             "flags": None,
             "reply_kind": None,
             "flags_access": None,
+            "response_state": "empty_reply",
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
             "type": None,
             "value": None,
-            "error": "transport_error: no_response",
+            "error": None,
         }
 
     reply_hex = response.hex()
@@ -513,6 +501,7 @@ def read_register(
             "flags": flags,
             "reply_kind": reply_kind,
             "flags_access": flags_access,
+            "response_state": "active",
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
@@ -531,6 +520,7 @@ def read_register(
             "flags": flags,
             "reply_kind": reply_kind,
             "flags_access": flags_access,
+            "response_state": "active",
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
@@ -550,6 +540,7 @@ def read_register(
                 "flags": flags,
                 "reply_kind": reply_kind,
                 "flags_access": flags_access,
+                "response_state": "active",
                 "ebusd_name": None,
                 "myvaillant_name": None,
                 "raw_hex": raw_hex,
@@ -573,6 +564,7 @@ def read_register(
                 "flags": flags,
                 "reply_kind": reply_kind,
                 "flags_access": flags_access,
+                "response_state": "active",
                 "ebusd_name": None,
                 "myvaillant_name": None,
                 "raw_hex": raw_hex,
@@ -589,6 +581,7 @@ def read_register(
         "flags": flags,
         "reply_kind": reply_kind,
         "flags_access": flags_access,
+        "response_state": "active",
         "ebusd_name": None,
         "myvaillant_name": None,
         "raw_hex": raw_hex,
@@ -635,8 +628,14 @@ def probe_instance_availability(
     )
 
     present = False
+    response_state = entry.get("response_state")
+
+    if response_state in {"nack", "timeout"}:
+        return InstanceAvailabilityProbe(present=False, contract=contract, evidence=entry)
 
     if group == 0x02 and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
         if entry["error"] is None and entry.get("flags_access") != "absent":
             value = entry["value"]
             present = (
@@ -651,12 +650,16 @@ def probe_instance_availability(
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
     if group == 0x03 and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
         if entry["error"] is None and entry.get("flags_access") != "absent":
             value = entry["value"]
             present = isinstance(value, int) and not isinstance(value, bool) and value != 0xFF
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
     if group == 0x05 and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
         present = (
             entry["error"] is None
             and entry.get("flags_access") != "absent"
@@ -666,6 +669,12 @@ def probe_instance_availability(
 
     if group in {0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
         header_evidence = entry
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(
+                present=True,
+                contract=contract,
+                evidence=header_evidence,
+            )
         present = (
             entry["error"] is None
             and entry.get("flags_access") != "absent"
@@ -682,6 +691,10 @@ def probe_instance_availability(
                     register=register_id,
                     type_hint=type_hint,
                 )
+                if header_entry.get("response_state") == "empty_reply":
+                    present = True
+                    header_evidence = header_entry
+                    break
                 header_reply_kind = header_entry.get("reply_kind")
                 if (
                     header_entry["error"] is None
@@ -699,6 +712,8 @@ def probe_instance_availability(
         )
 
     if group in {0x09, 0x0A} and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
         present = entry["error"] is None and entry.get("flags_access") != "absent"
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 

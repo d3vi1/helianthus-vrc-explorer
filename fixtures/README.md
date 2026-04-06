@@ -54,7 +54,7 @@ Each register entry contains:
 
 ```json
 {
-  "schema_version": "2.1",
+  "schema_version": "2.2",
   "meta": {},
   "groups": {
     "0x02": {

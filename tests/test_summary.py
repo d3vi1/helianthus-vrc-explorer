@@ -39,7 +39,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                 "namespaces": {
                     "0x02": {
                         "label": "local",
-                        "group_name": "Unknown 0x09 (local)",
+                        "group_name": "System",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -90,9 +90,9 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
     assert "b555 reads=4 errors=1 programs=2" in text
     assert "Local Devices (0x02)" in text
     assert "Remote Devices (0x06)" in text
-    assert "Unknown 0x09 (local)" in text
+    assert "System" in text
     assert "Regulators" in text
-    assert "Unknown 0x09 (local) / Regulators" not in text
+    assert "System / Regulators" not in text
 
 
 def test_render_summary_shows_b516_stats(tmp_path: Path) -> None:

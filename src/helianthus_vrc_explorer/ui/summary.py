@@ -98,6 +98,10 @@ def _namespace_key_from_label(value: object) -> str | None:
         return "0x02"
     if raw == "remote":
         return "0x06"
+    if raw in {"readcontrollerregister", "writecontrollerregister"}:
+        return "0x02"
+    if raw in {"readdeviceslotregister", "writedeviceslotregister"}:
+        return "0x06"
     return _normalize_namespace_key(value)
 
 
