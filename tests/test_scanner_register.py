@@ -254,6 +254,24 @@ def test_read_register_i32_sentinel_adds_value_display_annotation() -> None:
     assert entry["value_display"] == "sentinel_invalid_i32 (0x7FFFFFFF)"
 
 
+def test_read_register_u32_max_does_not_add_i32_sentinel_annotation() -> None:
+    transport = _I32SentinelTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0048,
+        type_hint="U32",
+    )
+
+    assert entry["raw_hex"] == "ffffff7f"
+    assert entry["value"] == 0x7FFFFFFF
+    assert "value_display" not in entry
+
+
 def test_flags_interpretation_single_byte() -> None:
     assert _interpret_flags(0x00, response_len=1) == "absent"
 

@@ -342,7 +342,11 @@ def _parse_inferred_value(value_bytes: bytes) -> tuple[str | None, object | None
     return _hex_fallback()
 
 
-def _sentinel_value_display(*, value: object | None, raw_hex: str | None) -> str | None:
+def _sentinel_value_display(
+    *, value: object | None, raw_hex: str | None, value_type: str | None
+) -> str | None:
+    if value_type != "I32":
+        return None
     if raw_hex != _I32_INVALID_SENTINEL_RAW_HEX:
         return None
     if isinstance(value, bool):
@@ -505,7 +509,11 @@ def read_register(
                 "value": value,
                 "error": None,
             }
-            sentinel_display = _sentinel_value_display(value=value, raw_hex=raw_hex)
+            sentinel_display = _sentinel_value_display(
+                value=value,
+                raw_hex=raw_hex,
+                value_type=type_hint,
+            )
             if sentinel_display is not None:
                 entry["value_display"] = sentinel_display
             return entry
@@ -538,7 +546,11 @@ def read_register(
         "value": inferred_value,
         "error": inferred_error,
     }
-    sentinel_display = _sentinel_value_display(value=inferred_value, raw_hex=raw_hex)
+    sentinel_display = _sentinel_value_display(
+        value=inferred_value,
+        raw_hex=raw_hex,
+        value_type=inferred_type,
+    )
     if sentinel_display is not None:
         entry["value_display"] = sentinel_display
     return entry
