@@ -7,6 +7,7 @@ from helianthus_vrc_explorer.ui.planner_textual import (
     _parse_instances_spec,
     _planner_pane_id,
     _table_row_values,
+    run_textual_scan_plan,
 )
 
 
@@ -157,3 +158,39 @@ def test_planner_pane_id_routes_unexpected_namespaces_into_remote_pane() -> None
     assert _planner_pane_id(0x02) == "local"
     assert _planner_pane_id(0x06) == "remote"
     assert _planner_pane_id(0x08) == "remote"
+
+
+def test_run_textual_scan_plan_registers_enter_binding_for_rr_max(
+    monkeypatch,
+) -> None:
+    from textual.app import App
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: App[object], *args: object, **kwargs: object) -> None:
+        for binding in self.BINDINGS:
+            if binding.action == "edit_rr_max":
+                captured["key"] = binding.key
+                return None
+        raise AssertionError("edit_rr_max binding not found")
+
+    monkeypatch.setattr(App, "run", fake_run)
+
+    run_textual_scan_plan(
+        [
+            PlannerGroup(
+                group=0x00,
+                opcode=0x02,
+                name="Regulator Parameters",
+                descriptor=3.0,
+                known=True,
+                ii_max=None,
+                rr_max=0x00FF,
+                rr_max_full=0x00FF,
+                present_instances=(0x00,),
+            )
+        ],
+        request_rate_rps=None,
+    )
+
+    assert "enter" in captured["key"]

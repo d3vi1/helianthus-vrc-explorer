@@ -1677,7 +1677,7 @@ def test_scan_b524_instance_discovery_runs_local_namespace_before_remote(
 
 def test_planner_source_opcodes_surface_both_local_and_remote_for_planner_visibility() -> None:
     # Planner visibility is intentionally broad:
-    # "Grupurile trebuie sa apara toate. Pur si simplu."
+    # "All groups must appear. Plain and simple."
     assert _planner_source_opcodes(0x00) == (0x02, 0x06)
     assert _planner_source_opcodes(0x01) == (0x02, 0x06)
     assert _planner_source_opcodes(0x02) == (0x02, 0x06)

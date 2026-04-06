@@ -198,6 +198,13 @@ def run_textual_scan_plan(
     class _PlannerApp(App[dict[PlanKey, GroupScanPlan] | None]):
         BINDINGS = [
             Binding("space", "toggle_enabled", "Toggle"),
+            Binding(
+                "enter,return,ctrl+j,ctrl+m",
+                "edit_rr_max",
+                "Edit RR",
+                show=False,
+                priority=True,
+            ),
             Binding("tab", "focus_next", "Next"),
             Binding("i", "edit_instances", "Edit II"),
             Binding("1", "preset_conservative", "Preset 1"),
