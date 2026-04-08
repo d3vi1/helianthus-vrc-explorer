@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .artifact_schema import CURRENT_ARTIFACT_SCHEMA_VERSION
+from .protocol.parser import ValueParseError, parse_typed_value
 from .scanner.director import (
     GROUP_CONFIG,
     NamespaceProfile,
@@ -16,7 +17,6 @@ from .scanner.director import (
     group_namespace_profiles,
 )
 from .scanner.identity import opcode_label, operation_label
-from .protocol.parser import ValueParseError, parse_typed_value
 from .scanner.register import (
     _interpret_flags,
     _parse_inferred_value,
@@ -458,7 +458,11 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
                 entry["trace_label"] = exchange.op_label
             # Keep the entry with the best response (active > empty > timeout)
             existing = registers.get(register_key)
-            if existing is None or entry.get("response_state") == "active" or existing.get("response_state") in {None, "timeout", "nack"}:
+            if (
+                existing is None
+                or entry.get("response_state") == "active"
+                or existing.get("response_state") in {None, "timeout", "nack"}
+            ):
                 registers[register_key] = entry
             if _response_state_implies_present(entry.get("response_state")):
                 instance_obj["present"] = True

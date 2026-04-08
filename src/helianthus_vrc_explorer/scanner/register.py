@@ -534,7 +534,9 @@ def read_register(
     flags: int | None = response[0] if response else None
     reply_kind = _reply_kind(flags, response_len=len(response), opcode=opcode)
     flags_access: str | None = (
-        _interpret_flags(flags, response_len=len(response), opcode=opcode) if flags is not None else None
+        _interpret_flags(flags, response_len=len(response), opcode=opcode)
+        if flags is not None
+        else None
     )
 
     # Some registers respond with a single status byte (no GG/RR echo and no value bytes).

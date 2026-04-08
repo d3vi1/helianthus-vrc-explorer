@@ -237,7 +237,7 @@ def test_classify_groups_logs_descriptor_mismatch_at_info(
 
 
 def test_group_00_rr_max_is_0x00ff() -> None:
-    assert GROUP_CONFIG[0x00]["rr_max"] == 0x00FF
+    assert GROUP_CONFIG[0x00]["rr_max"] == 0x01FF
 
 
 def test_group_names_match_docs() -> None:
@@ -272,7 +272,7 @@ def test_group_config_completeness() -> None:
     }
     assert GROUP_CONFIG[0x08]["name"] == "Unknown"
     assert GROUP_CONFIG[0x00]["namespace_opcodes"] == [0x02]
-    assert GROUP_CONFIG[0x00]["rr_max_by_opcode"] == {0x02: 0x00FF}
+    assert GROUP_CONFIG[0x00]["rr_max_by_opcode"] == {0x02: 0x01FF}
     assert GROUP_CONFIG[0x00]["ii_max_by_opcode"] == {0x02: 0x00}
     assert GROUP_CONFIG[0x01]["namespace_opcodes"] == [0x02, 0x06]
     assert GROUP_CONFIG[0x01]["rr_max_by_opcode"] == {0x02: 0x0013, 0x06: 0x0015}

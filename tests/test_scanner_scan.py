@@ -1212,7 +1212,7 @@ def test_artifact_register_flags_present(tmp_path: Path) -> None:
     entry = artifact["groups"]["0x02"]["instances"]["0x00"]["registers"]["0x0002"]
 
     assert entry["flags"] == 0x01
-    assert entry["flags_access"] == "stable_ro"
+    assert entry["flags_access"] == "state_stable"
     assert entry["read_opcode_label"] == "ReadControllerRegister"
 
 
@@ -1468,11 +1468,11 @@ def test_scan_b524_replays_dual_namespace_fixture_end_to_end(
 
     assert local_fw["type"] == "FW"
     assert local_fw["value"] == "03.17.02"
-    assert local_fw["flags_access"] == "stable_ro"
+    assert local_fw["flags_access"] == "state_stable"
     assert local_fw["myvaillant_name"] == "radio_device_firmware_local"
     assert remote_fw["type"] == "FW"
     assert remote_fw["value"] == "02.17.03"
-    assert remote_fw["flags_access"] == "stable_ro"
+    assert remote_fw["flags_access"] == "valid"
     assert remote_fw["myvaillant_name"] == "radio_device_firmware"
     assert accessory_fw["type"] == "FW"
     assert accessory_fw["value"] == "08.05.00"

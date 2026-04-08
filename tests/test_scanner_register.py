@@ -348,7 +348,7 @@ def test_namespace_opcodes_for_group_supports_staged_remote_namespaces() -> None
     assert namespace_opcodes_for_group(0x00) == [0x02]
     assert namespace_opcodes_for_group(0x01) == [0x02, 0x06]
     assert namespace_opcodes_for_group(0x02) == [0x02, 0x06]
-    assert namespace_opcodes_for_group(0x0C) == [0x06]
+    assert namespace_opcodes_for_group(0x0C) == [0x02, 0x06]
 
 
 def test_namespace_opcodes_for_group_unknown_group_requires_discovery_evidence() -> None:

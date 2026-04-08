@@ -152,7 +152,16 @@ def test_issue_208_fixture_backward_compatibility_migrates_legacy_shape() -> Non
     assert migrated["schema_version"] == CURRENT_ARTIFACT_SCHEMA_VERSION
     migrated_group = migrated["groups"]["0x09"]
     assert "namespaces" not in migrated_group
-    assert migrated_group["instances"] == legacy["groups"]["0x09"]["instances"]
+    # Migration adds response_state='active' to entries that have raw_hex;
+    # the legacy dict is untouched (deepcopy), so compare structurally.
+    legacy_instances = legacy["groups"]["0x09"]["instances"]
+    for ii_key, inst in migrated_group["instances"].items():
+        for rr_key, entry in inst["registers"].items():
+            legacy_entry = legacy_instances[ii_key]["registers"][rr_key]
+            for k, v in legacy_entry.items():
+                assert entry[k] == v, f"{ii_key}/{rr_key}/{k}: {entry[k]!r} != {v!r}"
+            # response_state is derived during migration
+            assert entry.get("response_state") == "active"
     assert _register_identity_set(migrated) == expected_identities
 
 

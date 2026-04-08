@@ -86,7 +86,10 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
 
     text = console.export_text()
     assert "namespaces local (0x02)=2, remote (0x06)=1" in text
-    assert "flags_access state_volatile=0, state_stable=2, config_installer=0, config_user=1" in text
+    assert (
+        "flags_access state_volatile=0, state_stable=2,"
+        " config_installer=0, config_user=1" in text
+    )
     assert "b555 reads=4 errors=1 programs=2" in text
     assert "Local Devices (0x02)" in text
     assert "Remote Devices (0x06)" in text
