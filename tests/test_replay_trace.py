@@ -200,7 +200,7 @@ def test_replay_trace_marks_nack_when_retry_evidence_is_nack_or_crc(tmp_path: Pa
     entry = artifact["operations"]["0x06"]["groups"]["0x09"]["instances"]["0x00"]["registers"][
         "0x0001"
     ]
-    assert entry["response_state"] == "nack"
+    assert entry["response_state"] == "nack_or_crc"
 
 
 def test_replay_trace_applies_current_namespace_profiles(tmp_path: Path) -> None:

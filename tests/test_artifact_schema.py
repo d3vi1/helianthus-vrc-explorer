@@ -299,12 +299,12 @@ def test_migrate_21_entries_derives_response_state_and_cleans_known_errors() -> 
     assert report.source_schema_version == "2.1"
     assert migrated["schema_version"] == CURRENT_ARTIFACT_SCHEMA_VERSION
     assert regs["0x0001"]["response_state"] == "timeout"
-    assert regs["0x0001"]["error"] is None
+    assert regs["0x0001"]["error"] == "timeout"
     assert regs["0x0002"]["response_state"] == "empty_reply"
-    assert regs["0x0002"]["error"] is None
+    assert regs["0x0002"]["error"] == "timeout"
     assert regs["0x0002"]["flags_access"] is None
     assert regs["0x0002"]["reply_hex"] == ""
     assert regs["0x0003"]["response_state"] == "nack"
-    assert regs["0x0003"]["error"] is None
+    assert regs["0x0003"]["error"] == "nack"
     assert regs["0x0004"].get("response_state") is None
     assert regs["0x0004"]["error"] == "transport_error: broken framing"

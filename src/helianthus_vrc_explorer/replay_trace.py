@@ -321,9 +321,14 @@ def _decode_register_read_entry(
     }
 
     if response is None:
-        state = "nack" if retry_kind == "nack_or_crc" else "timeout"
-        entry["response_state"] = state
-        entry["error"] = state
+        if retry_kind == "nack_or_crc":
+            # Transport traces emit "nack_or_crc" for both NACK and CRC errors;
+            # preserve the ambiguity instead of misclassifying as pure NACK.
+            entry["response_state"] = "nack_or_crc"
+            entry["error"] = "nack_or_crc"
+        else:
+            entry["response_state"] = "timeout"
+            entry["error"] = "timeout"
         return entry
     if len(response) == 0:
         entry["response_state"] = "empty_reply"

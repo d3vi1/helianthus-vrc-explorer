@@ -2037,7 +2037,7 @@ def scan_b524(
                     group=task.group,
                     opcode=task.opcode,
                     name="Unknown",
-                    descriptor_observed=None,
+                    descriptor_observed=0.0,
                 )
                 task_group_meta = metadata_map.get(task.group)
                 if task_group_meta is not None:

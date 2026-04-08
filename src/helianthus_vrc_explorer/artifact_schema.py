@@ -201,12 +201,13 @@ def _migrate_entry(entry: dict[str, Any]) -> bool:
         error = entry.get("error")
         if isinstance(error, str):
             lowered = error.strip().lower()
-            if (
-                lowered == "timeout"
-                or lowered == "transport_error: no_response"
-                or (lowered.startswith("transport_error:") and "nack" in lowered)
-            ):
-                entry["error"] = None
+            # Normalize verbose transport errors to canonical short form
+            # but preserve the error field for consumers that still key off it.
+            if lowered == "transport_error: no_response":
+                entry["error"] = "timeout"
+                changed = True
+            elif lowered.startswith("transport_error:") and "nack" in lowered:
+                entry["error"] = "nack"
                 changed = True
 
     if response_state == "empty_reply":
