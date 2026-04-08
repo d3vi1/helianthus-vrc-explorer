@@ -321,10 +321,10 @@ def test_flags_interpretation_single_byte() -> None:
 
 
 def test_flags_interpretation_multi_byte() -> None:
-    assert _interpret_flags(0x00, response_len=7) == "volatile_ro"
-    assert _interpret_flags(0x01, response_len=7) == "stable_ro"
-    assert _interpret_flags(0x02, response_len=7) == "technical_rw"
-    assert _interpret_flags(0x03, response_len=7) == "user_rw"
+    assert _interpret_flags(0x00, response_len=7) == "state_volatile"
+    assert _interpret_flags(0x01, response_len=7) == "state_stable"
+    assert _interpret_flags(0x02, response_len=7) == "config_installer"
+    assert _interpret_flags(0x03, response_len=7) == "config_user"
 
 
 def test_opcodes_for_group_dual_namespace() -> None:
@@ -370,7 +370,7 @@ def test_read_register_infers_hex_for_unparseable_u24_values() -> None:
 
     assert entry["reply_hex"] == "030035000e3803"
     assert entry["flags"] == 0x03
-    assert entry["flags_access"] == "user_rw"
+    assert entry["flags_access"] == "config_user"
     assert entry["raw_hex"] == "0e3803"
     assert entry["type"] == "HEX:3"
     assert entry["value"] == "0x0e3803"
@@ -442,7 +442,7 @@ def test_instance_present_cylinder_found(monkeypatch: pytest.MonkeyPatch) -> Non
             "type": "EXP",
             "value": 50.0,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -480,7 +480,7 @@ def test_instance_present_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
             "type": "BOOL",
             "value": True,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
             "reply_kind": "simple_valid",
         }
 
@@ -542,7 +542,7 @@ def test_is_instance_present_group_09_remote_accepts_device_connected_true(
             "type": "BOOL",
             "value": True,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
             "reply_kind": "simple_valid",
         }
 
@@ -577,7 +577,7 @@ def test_is_instance_present_group_09_remote_accepts_secondary_header_evidence(
                 "type": "BOOL",
                 "value": False,
                 "error": None,
-                "flags_access": "stable_ro",
+                "flags_access": "state_stable",
                 "reply_kind": "simple_valid",
             }
         if register_id == 0x0002:
@@ -586,7 +586,7 @@ def test_is_instance_present_group_09_remote_accepts_secondary_header_evidence(
                 "type": "UCH",
                 "value": 0x15,
                 "error": None,
-                "flags_access": "stable_ro",
+                "flags_access": "state_stable",
                 "reply_kind": "simple_valid",
             }
         return {
@@ -625,7 +625,7 @@ def test_probe_instance_availability_group_09_local_uses_rr_0001(monkeypatch) ->
             "type": "UCH",
             "value": 0x34,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -656,7 +656,7 @@ def test_probe_instance_availability_group_09_remote_uses_generic_header_probe(m
                 "type": "BOOL",
                 "value": False,
                 "error": None,
-                "flags_access": "stable_ro",
+                "flags_access": "state_stable",
                 "reply_kind": "simple_valid",
             }
         return {
@@ -664,7 +664,7 @@ def test_probe_instance_availability_group_09_remote_uses_generic_header_probe(m
             "type": "UCH",
             "value": 0x15,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
             "reply_kind": "simple_valid",
         }
 
@@ -700,7 +700,7 @@ def test_probe_instance_availability_group_09_remote_ignores_invalid_header_fall
                 "type": "BOOL",
                 "value": False,
                 "error": None,
-                "flags_access": "stable_ro",
+                "flags_access": "state_stable",
                 "reply_kind": "simple_valid",
             }
         if register_id == 0x0002:
@@ -709,7 +709,7 @@ def test_probe_instance_availability_group_09_remote_ignores_invalid_header_fall
                 "type": "UCH",
                 "value": 0xFF,
                 "error": None,
-                "flags_access": "stable_ro",
+                "flags_access": "state_stable",
                 "reply_kind": "simple_invalid",
             }
         return {
@@ -756,7 +756,7 @@ def test_probe_instance_availability_group_09_remote_ignores_invalid_primary_hea
                 "type": "BOOL",
                 "value": True,
                 "error": None,
-                "flags_access": "stable_ro",
+                "flags_access": "state_stable",
                 "reply_kind": "simple_invalid",
             }
         return {
@@ -838,7 +838,7 @@ def test_probe_instance_availability_group_04_local_uses_rr_0004(monkeypatch) ->
             "type": "EXP",
             "value": 1.0,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
             "response_state": "active",
         }
 

@@ -16,6 +16,7 @@ from .scanner.director import (
     group_namespace_profiles,
 )
 from .scanner.identity import opcode_label, operation_label
+from .protocol.parser import ValueParseError, parse_typed_value
 from .scanner.register import (
     _interpret_flags,
     _parse_inferred_value,
@@ -23,6 +24,7 @@ from .scanner.register import (
     _sentinel_value_display,
     _strip_echo_header,
 )
+from .schema.myvaillant_map import MyvaillantRegisterMap
 
 _TRACE_LINE_RE = re.compile(r"^(?P<timestamp>\S+)\s+(?P<body>.*)$")
 _SEND_PROTO_RE = re.compile(
@@ -120,6 +122,10 @@ def _parse_enhanced_trace_lines(
     pending_labels: list[str] = []
     saw_enh_marker = False
     truncated_hex_frames = 0
+    # Offset to make seq numbers unique across multiple INIT sessions
+    # in concatenated traces.
+    _seq_offset = 0
+    _prev_seq = 0
 
     first_ts: datetime | None = None
     last_ts: datetime | None = None
@@ -140,6 +146,8 @@ def _parse_enhanced_trace_lines(
 
         if body.startswith(_SUPPORTED_ENH_MARKERS):
             saw_enh_marker = True
+            # Detect session restart: bump seq offset so seqs stay unique
+            _seq_offset = _prev_seq + _seq_offset
             continue
 
         op_match = _OP_LABEL_RE.match(body)
@@ -151,7 +159,9 @@ def _parse_enhanced_trace_lines(
 
         send_match = _SEND_PROTO_RE.match(body)
         if send_match is not None:
-            seq = int(send_match.group("seq"), 10)
+            raw_seq = int(send_match.group("seq"), 10)
+            seq = raw_seq + _seq_offset
+            _prev_seq = raw_seq
             payload, payload_truncated = _parse_hex(
                 send_match.group("payload"),
                 line_no=line_no,
@@ -176,7 +186,7 @@ def _parse_enhanced_trace_lines(
 
         parsed_match = _PARSED_PROTO_RE.match(body)
         if parsed_match is not None:
-            seq = int(parsed_match.group("seq"), 10)
+            seq = int(parsed_match.group("seq"), 10) + _seq_offset
             parsed, parsed_truncated = _parse_hex(
                 parsed_match.group("hex"),
                 line_no=line_no,
@@ -191,7 +201,7 @@ def _parse_enhanced_trace_lines(
 
         recv_match = _RECV_NO_RESPONSE_RE.match(body)
         if recv_match is not None:
-            seq = int(recv_match.group("seq"), 10)
+            seq = int(recv_match.group("seq"), 10) + _seq_offset
             matched_exchange = exchange_by_seq.get(seq)
             if matched_exchange is not None and matched_exchange.response is None:
                 matched_exchange.response = b""
@@ -199,7 +209,7 @@ def _parse_enhanced_trace_lines(
 
         retry_match = _RETRY_RE.match(body)
         if retry_match is not None:
-            seq = int(retry_match.group("seq"), 10)
+            seq = int(retry_match.group("seq"), 10) + _seq_offset
             matched_exchange = exchange_by_seq.get(seq)
             if matched_exchange is not None:
                 matched_exchange.retry_kind = retry_match.group("kind").strip().lower()
@@ -330,7 +340,7 @@ def _decode_register_read_entry(
 
     flags = int(response[0])
     entry["flags"] = flags
-    entry["flags_access"] = _interpret_flags(flags, response_len=len(response))
+    entry["flags_access"] = _interpret_flags(flags, response_len=len(response), opcode=opcode)
     entry["reply_kind"] = _reply_kind(flags, response_len=len(response), opcode=opcode)
     entry["response_state"] = "active"
 
@@ -355,6 +365,8 @@ def _decode_register_read_entry(
     )
     if sentinel_display is not None:
         entry["value_display"] = sentinel_display
+    elif inferred_type == "EXP" and inferred_value is None:
+        entry["value_display"] = "NaN"
     return entry
 
 
@@ -406,6 +418,8 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
             "Some trace hex frames were truncated ('...'); replay used deterministic prefixes only"
         )
 
+    _group_directory_dedup: dict[str, dict[str, Any]] = {}
+    _constraint_dedup: dict[tuple[str, str], dict[str, Any]] = {}
     b524_operations: dict[str, list[dict[str, Any]]] = {
         "group_directory": [],
         "register_constraints": [],
@@ -425,14 +439,6 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
             group = int(payload[2])
             instance = int(payload[3])
             register = int.from_bytes(payload[4:6], byteorder="little", signed=False)
-            profile = _namespace_profile(group, opcode)
-            if group in GROUP_CONFIG and profile is None:
-                continue
-            if profile is not None:
-                if instance > profile.ii_max:
-                    continue
-                if register > profile.rr_max:
-                    continue
             _group_obj, namespace_obj = _ensure_group_namespace(
                 artifact["groups"], group=group, opcode=opcode
             )
@@ -450,7 +456,10 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
             entry["trace_seq"] = exchange.seq
             if exchange.op_label:
                 entry["trace_label"] = exchange.op_label
-            registers[register_key] = entry
+            # Keep the entry with the best response (active > empty > timeout)
+            existing = registers.get(register_key)
+            if existing is None or entry.get("response_state") == "active" or existing.get("response_state") in {None, "timeout", "nack"}:
+                registers[register_key] = entry
             if _response_state_implies_present(entry.get("response_state")):
                 instance_obj["present"] = True
             continue
@@ -460,25 +469,50 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
             if isinstance(response, bytes) and len(response) >= 4:
                 parsed = struct.unpack("<f", response[:4])[0]
                 descriptor = None if math.isnan(parsed) else parsed
-            b524_operations["group_directory"].append(
-                {
-                    "trace_seq": exchange.seq,
-                    "group": _hex_u8(payload[1]),
-                    "descriptor": descriptor,
-                    "reply_hex": response.hex() if isinstance(response, bytes) else None,
-                }
-            )
+            group_key = _hex_u8(payload[1])
+            gd_entry = {
+                "trace_seq": exchange.seq,
+                "group": group_key,
+                "descriptor": descriptor,
+                "reply_hex": response.hex() if isinstance(response, bytes) else None,
+            }
+            existing = _group_directory_dedup.get(group_key)
+            if existing is None or descriptor is not None:
+                _group_directory_dedup[group_key] = gd_entry
             continue
 
         if opcode == 0x01 and len(payload) >= 3:
-            b524_operations["register_constraints"].append(
-                {
-                    "trace_seq": exchange.seq,
-                    "group": _hex_u8(payload[1]),
-                    "register_selector": _hex_u8(payload[2]),
-                    "reply_hex": response.hex() if isinstance(response, bytes) else None,
-                }
-            )
+            group_key = _hex_u8(payload[1])
+            reg_sel = _hex_u8(payload[2])
+            constraint_entry: dict[str, Any] = {
+                "trace_seq": exchange.seq,
+                "group": group_key,
+                "register_selector": reg_sel,
+                "reply_hex": response.hex() if isinstance(response, bytes) else None,
+            }
+            if isinstance(response, bytes) and len(response) >= 15:
+                # ENH response for OP=0x01 constraint probe:
+                # byte 0: flags, byte 1-2: echo/type, bytes 3-6: min_f32,
+                # bytes 7-10: max_f32, bytes 11-14: step_f32
+                try:
+                    min_f32 = struct.unpack("<f", response[3:7])[0]
+                    max_f32 = struct.unpack("<f", response[7:11])[0]
+                    step_f32 = struct.unpack("<f", response[11:15])[0]
+                    constraint_entry["flags"] = response[0]
+                    constraint_entry["kind"] = "f32_range"
+                    if not math.isnan(min_f32):
+                        constraint_entry["min_value"] = min_f32
+                    if not math.isnan(max_f32):
+                        constraint_entry["max_value"] = max_f32
+                    if not math.isnan(step_f32):
+                        constraint_entry["step_value"] = step_f32
+                except (struct.error, IndexError):
+                    pass
+            dedup_key = (group_key, reg_sel)
+            # Keep the entry with actual parsed data; don't overwrite with empty
+            existing = _constraint_dedup.get(dedup_key)
+            if existing is None or "kind" in constraint_entry or "kind" not in existing:
+                _constraint_dedup[dedup_key] = constraint_entry
             continue
 
         if opcode in {0x03, 0x04} and len(payload) >= 5:
@@ -503,5 +537,106 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
                 }
             )
 
+    b524_operations["group_directory"] = sorted(
+        _group_directory_dedup.values(), key=lambda e: int(e["group"], 16),
+    )
+    b524_operations["register_constraints"] = sorted(
+        _constraint_dedup.values(),
+        key=lambda e: (int(e["group"], 16), int(e["register_selector"], 16)),
+    )
     artifact["b524_operations"] = b524_operations
+
+    # Enrich register entries with myvaillant register names.
+    _enrich_register_names(artifact["groups"])
+
+    # Derive rr_max / ii_max from observed trace data so that metadata
+    # reflects the actual scan range, not the GROUP_CONFIG profile defaults.
+    _update_namespace_bounds_from_observed(artifact["groups"])
+
     return artifact
+
+
+def _update_namespace_bounds_from_observed(groups: dict[str, Any]) -> None:
+    """Override rr_max / ii_max with observed trace bounds.
+
+    The replay initially sets these from GROUP_CONFIG profiles, but the
+    trace is the source of truth — the user may have scanned well beyond
+    the profile defaults.
+    """
+    for _group_key, group_obj in groups.items():
+        namespaces = group_obj.get("namespaces")
+        if not isinstance(namespaces, dict):
+            continue
+        for _ns_key, ns_obj in namespaces.items():
+            instances = ns_obj.get("instances")
+            if not isinstance(instances, dict) or not instances:
+                continue
+            observed_ii_max = max(int(ii_key, 16) for ii_key in instances)
+            observed_rr_max = 0
+            for inst_obj in instances.values():
+                registers = inst_obj.get("registers")
+                if isinstance(registers, dict):
+                    for rr_key in registers:
+                        rr = int(rr_key, 16)
+                        if rr > observed_rr_max:
+                            observed_rr_max = rr
+            ns_obj["rr_max"] = _hex_u16(observed_rr_max)
+            ns_obj["ii_max"] = _hex_u8(observed_ii_max)
+
+
+def _enrich_register_names(groups: dict[str, Any]) -> None:
+    """Apply myvaillant_register_map labels to all register entries."""
+    csv_path = Path(__file__).parent / "data" / "myvaillant_register_map.csv"
+    if not csv_path.exists():
+        return
+    mv_map = MyvaillantRegisterMap.from_path(csv_path)
+
+    for group_key, group_obj in groups.items():
+        group = int(group_key, 16)
+        namespaces = group_obj.get("namespaces")
+        if not isinstance(namespaces, dict):
+            continue
+        for ns_key, ns_obj in namespaces.items():
+            opcode = int(ns_key, 16)
+            instances = ns_obj.get("instances")
+            if not isinstance(instances, dict):
+                continue
+            for ii_key, inst_obj in instances.items():
+                instance = int(ii_key, 16)
+                registers = inst_obj.get("registers")
+                if not isinstance(registers, dict):
+                    continue
+                for rr_key, entry in registers.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("myvaillant_name") is not None:
+                        continue
+                    register = int(rr_key, 16)
+                    mv = mv_map.lookup(
+                        group=group,
+                        instance=instance,
+                        register=register,
+                        opcode=opcode,
+                    )
+                    if mv is not None:
+                        entry["myvaillant_name"] = mv.leaf
+                        if mv.register_class is not None:
+                            entry.setdefault("register_class", mv.register_class)
+                        if entry.get("ebusd_name") is None:
+                            resolved = mv.resolved_ebusd_name(
+                                group=group,
+                                instance=instance,
+                                register=register,
+                            )
+                            if resolved:
+                                entry["ebusd_name"] = resolved
+                        if mv.type_hint and entry.get("raw_hex"):
+                            try:
+                                raw = bytes.fromhex(entry["raw_hex"])
+                                value = parse_typed_value(mv.type_hint, raw)
+                                entry["type"] = mv.type_hint
+                                entry["value"] = value
+                                if mv.type_hint == "EXP" and value is None:
+                                    entry["value_display"] = "NaN"
+                            except (ValueParseError, ValueError):
+                                pass

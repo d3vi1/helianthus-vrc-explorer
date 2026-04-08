@@ -59,12 +59,9 @@ _TEMPLATE = """<!doctype html>
         min-height: 100vh;
       }
 
-      .page {
-        max-width: 1280px;
-        margin: 0 auto;
+      body {
+        margin: 0;
         padding: 28px 18px 60px;
-        display: grid;
-        gap: 14px;
       }
 
       header {
@@ -108,40 +105,42 @@ _TEMPLATE = """<!doctype html>
         gap: 10px;
       }
 
-      .tabs {
+      .tabs, .subtabs {
         display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
+        flex-wrap: nowrap;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 8px;
+        overflow: hidden;
+        width: fit-content;
       }
 
       .tab {
-        padding: 7px 11px;
-        border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.04);
+        padding: 7px 10px;
+        border-right: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
         color: var(--muted);
         cursor: pointer;
-        transition: all 0.18s ease;
         user-select: none;
         font-size: 12px;
+        font-family: var(--mono);
+        white-space: nowrap;
+        transition: background 0.15s ease, color 0.15s ease;
       }
 
-      .tab.active {
-        background: rgba(102, 227, 196, 0.15);
-        border-color: rgba(102, 227, 196, 0.4);
+      .tab:last-child { border-right: none; }
+
+      .tab:hover {
+        background: rgba(255, 255, 255, 0.06);
         color: var(--ink);
       }
 
-      .table-wrap {
-        overflow-x: auto;
-        overflow-y: auto;
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        background: #0f1420;
-        max-height: 74vh;
+      .tab.active {
+        background: rgba(102, 227, 196, 0.13);
+        color: var(--ink);
       }
 
       table {
+        overflow-x: auto;
         width: max-content;
         min-width: 100%;
         border-collapse: collapse;
@@ -232,6 +231,13 @@ _TEMPLATE = """<!doctype html>
         word-break: break-all;
       }
 
+      .cell-flags {
+        margin-top: 3px;
+        display: flex;
+        gap: 3px;
+        flex-wrap: wrap;
+      }
+
       .cell-error {
         margin-top: 5px;
         font-size: 11px;
@@ -313,9 +319,6 @@ _TEMPLATE = """<!doctype html>
       }
 
       .subtabs {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
         margin-bottom: 4px;
       }
 
@@ -338,10 +341,6 @@ _TEMPLATE = """<!doctype html>
         font-family: var(--sans);
       }
 
-      .section-title {
-        font-size: 16px;
-        font-weight: 650;
-      }
 
       .identity-card {
         display: grid;
@@ -394,28 +393,18 @@ _TEMPLATE = """<!doctype html>
         border: 1px solid transparent;
       }
 
-      .access-ro {
-        color: #c7ffd9;
-        background: rgba(78, 194, 116, 0.18);
-        border-color: rgba(78, 194, 116, 0.32);
-      }
-
-      .access-rw {
-        color: #ffd9a6;
-        background: rgba(255, 166, 77, 0.18);
-        border-color: rgba(255, 166, 77, 0.32);
-      }
-
-      .access-other {
-        color: var(--muted);
-        background: rgba(255, 255, 255, 0.05);
-        border-color: rgba(255, 255, 255, 0.08);
-      }
+      .flag-state     { color: #c7ffd9; background: rgba(78,194,116,0.18);  border-color: rgba(78,194,116,0.32); }
+      .flag-volatile  { color: var(--muted); background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); }
+      .flag-stable    { color: #a6d4ff; background: rgba(77,148,255,0.15);  border-color: rgba(77,148,255,0.28); }
+      .flag-config    { color: #ffd9a6; background: rgba(255,166,77,0.18);  border-color: rgba(255,166,77,0.32); }
+      .flag-installer { color: #e0c4ff; background: rgba(180,130,255,0.15); border-color: rgba(180,130,255,0.28); }
+      .flag-user      { color: #c7ffd9; background: rgba(78,194,116,0.12);  border-color: rgba(78,194,116,0.25); }
+      .flag-valid     { color: #a6d4ff; background: rgba(77,148,255,0.15);  border-color: rgba(77,148,255,0.28); }
+      .flag-invalid   { color: #ff9e9e; background: rgba(255,100,100,0.12); border-color: rgba(255,100,100,0.25); }
+      .flag-sentinel  { color: var(--muted); background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); }
+      .flag-other     { color: var(--muted); background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); }
 
       @media (max-width: 860px) {
-        .page {
-          padding: 22px 14px 54px;
-        }
         .offset-cell {
           min-width: 200px;
         }
@@ -426,24 +415,22 @@ _TEMPLATE = """<!doctype html>
     </style>
   </head>
   <body>
-    <div class="page">
-      <header>
-        <div class="title">Regulator Scan Browser</div>
-        <div class="subtitle">
-          This report is generated from the scan artifact.
-          <span class="pill" id="metaDst"></span>
-          <span class="pill" id="metaTs"></span>
-          <span class="pill" id="metaIncomplete" style="display: none"></span>
-        </div>
-      </header>
+    <header>
+      <div class="title">Regulator Scan Browser</div>
+      <div class="subtitle">
+        This report is generated from the scan artifact.
+        <span class="pill" id="metaDst"></span>
+        <span class="pill" id="metaTs"></span>
+        <span class="pill" id="metaIncomplete" style="display: none"></span>
+      </div>
+    </header>
 
 __IDENTITY_CARD__
 
-      <section class="sheet-card">
-        <div class="tabs" id="tabs"></div>
-        <div id="sheetArea"></div>
-      </section>
-    </div>
+    <section class="sheet-card">
+      <div class="tabs" id="tabs"></div>
+      <div id="sheetArea"></div>
+    </section>
 
     <script id="artifact-data" type="application/json">
 __ARTIFACT_JSON__
@@ -678,12 +665,12 @@ __ARTIFACT_JSON__
       }
 
       const B524_SECTIONS = [
-        { key: "group_directory", label: "Group Directory" },
-        { key: "register_constraints", label: "Register Constraints" },
-        { key: "controller_registers", label: "Controller Registers" },
-        { key: "timer_programs", label: "Timer Programs" },
-        { key: "device_slots", label: "Device Slots" },
-        { key: "register_tables", label: "Register Tables" },
+        { key: "group_directory", label: "OP=00h Group Directory" },
+        { key: "register_constraints", label: "OP=01h Register Constraints" },
+        { key: "controller_registers", label: "OP=02h Controller Registers" },
+        { key: "timer_programs", label: "OP=03h Timer Programs" },
+        { key: "device_slots", label: "OP=06h Device Slots" },
+        { key: "register_tables", label: "OP=0Bh Register Tables" },
       ];
 
       const state = {
@@ -693,7 +680,9 @@ __ARTIFACT_JSON__
         activeNamespaceByGroup: {},
         overrides: (meta && typeof meta === "object" && meta.type_overrides) || {},
         b524Filters: {
-          hideAbsent: false,
+          hideAbsent: true,
+          hideDormant: true,
+          hideMissingInstances: true,
         },
         b509Filters: {
           search: "",
@@ -904,6 +893,22 @@ __ARTIFACT_JSON__
         return sawEntry;
       }
 
+      function rowIsDormant(instancesObj, rrKey) {
+        if (!instancesObj || typeof instancesObj !== "object") return false;
+        let sawEntry = false;
+        for (const instanceObj of Object.values(instancesObj)) {
+          if (!instanceObj || typeof instanceObj !== "object") continue;
+          const registers = instanceObj.registers;
+          if (!registers || typeof registers !== "object") continue;
+          const entry = registers[rrKey];
+          if (!entry || typeof entry !== "object") continue;
+          sawEntry = true;
+          const kind = entryStatusKind(entry);
+          if (kind !== "dormant" && kind !== "absent") return false;
+        }
+        return sawEntry;
+      }
+
       function visibleRegisterKeys(instancesObj) {
         const rrSet = new Set();
         if (!instancesObj || typeof instancesObj !== "object") return [];
@@ -925,11 +930,21 @@ __ARTIFACT_JSON__
         return rrKeys.slice(0, lastKeep + 1);
       }
 
-      function accessChipClass(accessValue) {
-        const text = String(accessValue || "").trim();
-        if (text === "stable_ro" || text === "volatile_ro") return "access-chip access-ro";
-        if (text === "technical_rw" || text === "user_rw") return "access-chip access-rw";
-        return "access-chip access-other";
+      // Decompose a compound flags_access into individual property badges.
+      // OP=0x02: 0=state(volatile), 1=state(stable), 2=config(installer), 3=config(user)
+      // OP=0x06: 0=volatile+sentinel, 1=volatile+valid, 2=config+sentinel, 3=config+valid
+      function flagBadges(accessValue) {
+        switch (accessValue) {
+          case "state_volatile":    return [{text: "state",    cls: "flag-state"},   {text: "volatile", cls: "flag-volatile"}];
+          case "state_stable":      return [{text: "state",    cls: "flag-state"},   {text: "stable",   cls: "flag-stable"}];
+          case "config_installer":  return [{text: "config",   cls: "flag-config"},  {text: "installer", cls: "flag-installer"}];
+          case "config_user":       return [{text: "config",   cls: "flag-config"},  {text: "user",     cls: "flag-user"}];
+          case "valid":             return [{text: "valid",    cls: "flag-valid"}];
+          case "invalid":           return [{text: "invalid",  cls: "flag-invalid"}];
+          case "config_valid":      return [{text: "config",   cls: "flag-config"},  {text: "valid",    cls: "flag-valid"}];
+          case "config_sentinel":   return [{text: "config",   cls: "flag-config"},  {text: "sentinel", cls: "flag-sentinel"}];
+          default:                  return [{text: accessValue, cls: "flag-other"}];
+        }
       }
 
       function appendAccessBadges(cell, accessValues) {
@@ -937,11 +952,19 @@ __ARTIFACT_JSON__
           cell.innerHTML = "<div class='cell-missing'>—</div>";
           return;
         }
-        for (const accessValue of accessValues) {
-          const badge = document.createElement("span");
-          badge.className = accessChipClass(accessValue);
-          badge.textContent = accessValue;
-          cell.appendChild(badge);
+        // Collect unique individual badges across all instances
+        const seen = new Set();
+        const badges = [];
+        for (const av of accessValues) {
+          for (const b of flagBadges(av)) {
+            if (!seen.has(b.text)) { seen.add(b.text); badges.push(b); }
+          }
+        }
+        for (const b of badges) {
+          const el = document.createElement("span");
+          el.className = "access-chip " + b.cls;
+          el.textContent = b.text;
+          cell.appendChild(el);
         }
       }
 
@@ -984,60 +1007,25 @@ __ARTIFACT_JSON__
         tabsEl.innerHTML = "";
         const orderedTabIds = [];
 
-        if (hasB524) {
+        const pbsbTabs = [
+          { id: "b524", has: hasB524, label: "PB=B5 SB=24 - Vaillant Regulator Params" },
+          { id: "b509", has: hasB509, label: "PB=B5 SB=09 - Vaillant BAI Identity" },
+          { id: "b555", has: hasB555, label: "PB=B5 SB=55 - Vaillant Timer Programs" },
+          { id: "b516", has: hasB516, label: "PB=B5 SB=16 - Vaillant Energy Counters" },
+        ];
+        for (const def of pbsbTabs) {
+          if (!def.has) continue;
           const btn = document.createElement("div");
           btn.className = "tab";
-          btn.textContent = "B524";
-          btn.dataset.tabId = "b524";
+          btn.textContent = def.label;
+          btn.dataset.tabId = def.id;
           btn.addEventListener("click", () => {
-            state.activeTab = "b524";
+            state.activeTab = def.id;
             _syncActiveTabClasses();
             renderActiveTab();
           });
           tabsEl.appendChild(btn);
-          orderedTabIds.push("b524");
-        }
-
-        if (hasB509) {
-          const btn = document.createElement("div");
-          btn.className = "tab";
-          btn.textContent = "B509";
-          btn.dataset.tabId = "b509";
-          btn.addEventListener("click", () => {
-            state.activeTab = "b509";
-            _syncActiveTabClasses();
-            renderActiveTab();
-          });
-          tabsEl.appendChild(btn);
-          orderedTabIds.push("b509");
-        }
-
-        if (hasB555) {
-          const btn = document.createElement("div");
-          btn.className = "tab";
-          btn.textContent = "B555";
-          btn.dataset.tabId = "b555";
-          btn.addEventListener("click", () => {
-            state.activeTab = "b555";
-            _syncActiveTabClasses();
-            renderActiveTab();
-          });
-          tabsEl.appendChild(btn);
-          orderedTabIds.push("b555");
-        }
-
-        if (hasB516) {
-          const btn = document.createElement("div");
-          btn.className = "tab";
-          btn.textContent = "B516";
-          btn.dataset.tabId = "b516";
-          btn.addEventListener("click", () => {
-            state.activeTab = "b516";
-            _syncActiveTabClasses();
-            renderActiveTab();
-          });
-          tabsEl.appendChild(btn);
-          orderedTabIds.push("b516");
+          orderedTabIds.push(def.id);
         }
 
         if (!state.activeTab || !orderedTabIds.includes(state.activeTab)) {
@@ -1550,10 +1538,10 @@ __ARTIFACT_JSON__
               rows.push({
                 group: typeof row.group === "string" ? row.group : "n/a",
                 register: typeof row.register_selector === "string" ? row.register_selector : "n/a",
-                type: "replayed",
-                min: "n/a",
-                max: "n/a",
-                step: typeof row.reply_hex === "string" && row.reply_hex ? row.reply_hex : "—",
+                type: typeof row.kind === "string" ? row.kind : (typeof row.reply_hex === "string" && row.reply_hex ? "raw" : "—"),
+                min: typeof row.min_value === "number" ? String(row.min_value) : "—",
+                max: typeof row.max_value === "number" ? String(row.max_value) : "—",
+                step: typeof row.step_value === "number" ? String(row.step_value) : "—",
               });
             }
           }
@@ -1616,41 +1604,78 @@ __ARTIFACT_JSON__
             ? groupLabelForSection(groupKey, "device_slots", groupName)
             : groupName;
 
-        function buildGroupTable(title, instancesObj, namespaceKey = null) {
-          const instanceKeys = sortedHexKeys(Object.keys(instancesObj || {}));
-          let rrKeys = visibleRegisterKeys(instancesObj);
-          if (state.b524Filters.hideAbsent) {
-            rrKeys = rrKeys.filter((rrKey) => !rowIsAbsent(instancesObj, rrKey));
+        function instanceIsConnected(instancesObj, iiKey, namespaceKey) {
+          const inst = instancesObj[iiKey];
+          if (!inst || typeof inst !== "object") return false;
+          const regs = inst.registers;
+          if (!regs || typeof regs !== "object") return false;
+          if (namespaceKey === "0x06" || forcedNamespaceKey === "0x06") {
+            // OP=0x06: RR=0x0001 (device_connected) is the universal indicator
+            const r1 = regs["0x0001"];
+            if (!r1 || typeof r1 !== "object") return false;
+            const kind = entryStatusKind(r1);
+            if (kind === "absent" || kind === "transport_failure") return false;
+            return !!r1.value;
           }
+          // OP=0x02: group-specific presence heuristics
+          if (groupKey === "0x02") {
+            // GG=0x02 Heating Circuits: RR=0x0002 (circuit_type) != 0
+            const circuitType = regs["0x0002"];
+            if (circuitType && typeof circuitType === "object" && entryStatusKind(circuitType) === "ok") {
+              return !!circuitType.value;
+            }
+          }
+          if (groupKey === "0x03") {
+            // GG=0x03 Zones: RR=0x001C (zone_index) == 0xFF means absent
+            const zoneIdx = regs["0x001c"];
+            if (zoneIdx && typeof zoneIdx === "object" && entryStatusKind(zoneIdx) === "ok") {
+              return zoneIdx.value !== 255 && zoneIdx.value !== 0xFF;
+            }
+          }
+          // Generic: instance is connected if present=true and has non-dormant data
+          if (inst.present === false) return false;
+          for (const entry of Object.values(regs)) {
+            if (!entry || typeof entry !== "object") continue;
+            if (entryStatusKind(entry) === "ok") return true;
+          }
+          return false;
+        }
 
-          const fragment = document.createElement("div");
-          const heading = document.createElement("div");
-          heading.className = "table-title";
-          heading.textContent = title;
-          fragment.appendChild(heading);
+        function buildGroupTable(instancesObj, namespaceKey = null) {
+          let instanceKeys = sortedHexKeys(Object.keys(instancesObj || {}));
+          if (state.b524Filters.hideMissingInstances) {
+            instanceKeys = instanceKeys.filter((iiKey) => instanceIsConnected(instancesObj, iiKey, namespaceKey));
+          }
+          // Build a filtered view with only visible instances for row filtering
+          const visibleInstances = {};
+          for (const iiKey of instanceKeys) {
+            if (instancesObj[iiKey]) visibleInstances[iiKey] = instancesObj[iiKey];
+          }
+          let rrKeys = visibleRegisterKeys(visibleInstances);
+          if (state.b524Filters.hideAbsent) {
+            rrKeys = rrKeys.filter((rrKey) => !rowIsAbsent(visibleInstances, rrKey));
+          }
+          if (state.b524Filters.hideDormant) {
+            rrKeys = rrKeys.filter((rrKey) => !rowIsDormant(visibleInstances, rrKey));
+          }
 
           if (!rrKeys.length) {
             const empty = document.createElement("div");
             empty.className = "subtitle";
             empty.textContent = "No visible registers.";
-            fragment.appendChild(empty);
-            return fragment;
+            return empty;
           }
-
-          const wrap = document.createElement("div");
-          wrap.className = "table-wrap";
 
           const table = document.createElement("table");
           const thead = document.createElement("thead");
           const trHead = document.createElement("tr");
           const th0 = document.createElement("th");
           th0.className = "offset-cell";
-          th0.innerHTML = `Register <span style="opacity:.7;font-weight:500">(${groupKey} · ${resolvedGroupName})</span>`;
+          const ggNum = parseInt(groupKey, 16);
+          const ggHex = ggNum.toString(16).toUpperCase().padStart(2, "0") + "h";
+          const nameStr = resolvedGroupName !== "Unknown" ? ` ${resolvedGroupName}` : "";
+          th0.innerHTML = `Register <span style="opacity:.7;font-weight:500">(${ggHex}${nameStr})</span>`;
           trHead.appendChild(th0);
-
-          const flagsTh = document.createElement("th");
-          flagsTh.textContent = "FLAGS Access";
-          trHead.appendChild(flagsTh);
 
           for (const iiKey of instanceKeys) {
             const th = document.createElement("th");
@@ -1668,8 +1693,6 @@ __ARTIFACT_JSON__
             let rowEbusdNames = new Set();
             let rowTypeDefault = null;
             let rowLen = null;
-            let rowFlagsAccess = new Set();
-
             for (const iiKey of instanceKeys) {
               const inst = getInstanceObject(instancesObj[iiKey]);
               const regs = inst.registers || {};
@@ -1686,13 +1709,9 @@ __ARTIFACT_JSON__
                 const b = bytesFromHex(entry.raw_hex);
                 if (b) rowLen = b.length;
               }
-              if (typeof entry.flags_access === "string" && entry.flags_access) {
-                rowFlagsAccess.add(entry.flags_access);
-              }
             }
 
             const ebusdNameList = Array.from(rowEbusdNames).sort();
-            const accessValues = Array.from(rowFlagsAccess).sort();
             const override = getRowOverride(groupKey, rrKey, namespaceKey);
             const rowType = override || rowTypeDefault;
             const candidates = candidateTypeSpecsForLength(rowLen || 0);
@@ -1738,15 +1757,12 @@ __ARTIFACT_JSON__
               if (selectedType) sel.value = selectedType;
               sel.addEventListener("change", () => {
                 setRowOverride(groupKey, rrKey, sel.value, namespaceKey);
-                renderActiveGroup(groupKey);
+                renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
               });
               td0.appendChild(sel);
             }
             tr.appendChild(td0);
 
-            const flagsTd = document.createElement("td");
-            appendAccessBadges(flagsTd, accessValues);
-            tr.appendChild(flagsTd);
 
             for (const iiKey of instanceKeys) {
               const td = document.createElement("td");
@@ -1785,6 +1801,13 @@ __ARTIFACT_JSON__
                 rawEl.className = "cell-raw";
                 rawEl.textContent = rawHex;
                 td.appendChild(rawEl);
+              }
+
+              if (typeof entry.flags_access === "string" && entry.flags_access && statusKind === "ok") {
+                const flagsEl = document.createElement("div");
+                flagsEl.className = "cell-flags";
+                appendAccessBadges(flagsEl, [entry.flags_access]);
+                td.appendChild(flagsEl);
               }
 
               const errTxt = typeof entry.error === "string" ? entry.error : decoded.error;
@@ -1829,16 +1852,10 @@ __ARTIFACT_JSON__
           }
 
           table.appendChild(tbody);
-          wrap.appendChild(table);
-          fragment.appendChild(wrap);
-          return fragment;
+          return table;
         }
 
-        const container = document.createElement("div");
-        const title = document.createElement("div");
-        title.className = "section-title";
-        title.textContent = `${resolvedGroupName} (${groupKey})`;
-        container.appendChild(title);
+        mountTarget.innerHTML = "";
 
         const filters = document.createElement("div");
         filters.className = "filters";
@@ -1854,47 +1871,49 @@ __ARTIFACT_JSON__
         hideAbsentLabel.appendChild(hideAbsentCb);
         hideAbsentLabel.appendChild(document.createTextNode("Hide absent"));
         filters.appendChild(hideAbsentLabel);
-        container.appendChild(filters);
+
+        const hideDormantLabel = document.createElement("label");
+        hideDormantLabel.className = "filter-chip";
+        const hideDormantCb = document.createElement("input");
+        hideDormantCb.type = "checkbox";
+        hideDormantCb.checked = !!state.b524Filters.hideDormant;
+        hideDormantCb.addEventListener("change", () => {
+          state.b524Filters.hideDormant = !!hideDormantCb.checked;
+          renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
+        });
+        hideDormantLabel.appendChild(hideDormantCb);
+        hideDormantLabel.appendChild(document.createTextNode("Hide dormant"));
+        filters.appendChild(hideDormantLabel);
+
+        const hideMissingLabel = document.createElement("label");
+        hideMissingLabel.className = "filter-chip";
+        const hideMissingCb = document.createElement("input");
+        hideMissingCb.type = "checkbox";
+        hideMissingCb.checked = !!state.b524Filters.hideMissingInstances;
+        hideMissingCb.addEventListener("change", () => {
+          state.b524Filters.hideMissingInstances = !!hideMissingCb.checked;
+          renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
+        });
+        hideMissingLabel.appendChild(hideMissingCb);
+        hideMissingLabel.appendChild(document.createTextNode("Hide missing instances"));
+        filters.appendChild(hideMissingLabel);
+
+        mountTarget.appendChild(filters);
+
+        // Resolve the active namespace and build the table directly
+        let activeInstances = null;
+        let activeNsKey = forcedNamespaceKey;
 
         if (groupObj.dual_namespace && groupObj.namespaces && typeof groupObj.namespaces === "object") {
           let namespaceKeys = sortedHexKeys(Object.keys(groupObj.namespaces));
           if (forcedNamespaceKey) {
             namespaceKeys = namespaceKeys.filter((key) => key === forcedNamespaceKey);
           }
-          if (!namespaceKeys.length) {
-            const empty = document.createElement("div");
-            empty.className = "subtitle";
-            empty.textContent = "No namespaces scanned.";
-            container.appendChild(empty);
-          } else {
-            const subtabs = document.createElement("div");
-            subtabs.className = "subtabs";
-            const namespaceStateKey = forcedNamespaceKey ? `${groupKey}|${forcedNamespaceKey}` : groupKey;
-            let activeNamespace = state.activeNamespaceByGroup[namespaceStateKey];
-            if (!namespaceKeys.includes(activeNamespace)) activeNamespace = namespaceKeys[0];
-            state.activeNamespaceByGroup[namespaceStateKey] = activeNamespace;
-
-            for (const namespaceKey of namespaceKeys) {
-              const namespaceObj = groupObj.namespaces[namespaceKey];
-              if (!namespaceObj || typeof namespaceObj !== "object") continue;
-              const normalizedKey = normalizeOpcodeKey(namespaceKey) || namespaceKey;
-              const btn = document.createElement("div");
-              btn.className = "tab";
-              if (namespaceKey === activeNamespace) btn.classList.add("active");
-              btn.textContent = namespaceLabel(normalizedKey, namespaceObj.label);
-              btn.addEventListener("click", () => {
-                state.activeNamespaceByGroup[namespaceStateKey] = namespaceKey;
-                renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
-              });
-              subtabs.appendChild(btn);
-            }
-            container.appendChild(subtabs);
-
-            const namespaceObj = groupObj.namespaces[activeNamespace];
-            if (namespaceObj && typeof namespaceObj === "object") {
-              const normalizedKey = normalizeOpcodeKey(activeNamespace) || activeNamespace;
-              const tableTitle = `${operationLabelForOpcode(normalizedKey)} Registers`;
-              container.appendChild(buildGroupTable(tableTitle, namespaceObj.instances || {}, activeNamespace));
+          if (namespaceKeys.length) {
+            activeNsKey = namespaceKeys[0];
+            const nsObj = groupObj.namespaces[activeNsKey];
+            if (nsObj && typeof nsObj === "object") {
+              activeInstances = nsObj.instances || {};
             }
           }
         } else {
@@ -1903,49 +1922,22 @@ __ARTIFACT_JSON__
           if (forcedNamespaceKey) {
             namespaceKeys = namespaceKeys.filter((key) => key === forcedNamespaceKey);
           }
-          if (namespaceKeys.length > 1) {
-            const subtabs = document.createElement("div");
-            subtabs.className = "subtabs";
-            const namespaceStateKey = forcedNamespaceKey ? `${groupKey}|${forcedNamespaceKey}` : groupKey;
-            let activeNamespace = state.activeNamespaceByGroup[namespaceStateKey];
-            if (!namespaceKeys.includes(activeNamespace)) activeNamespace = namespaceKeys[0];
-            state.activeNamespaceByGroup[namespaceStateKey] = activeNamespace;
-
-            for (const namespaceKey of namespaceKeys) {
-              const btn = document.createElement("div");
-              btn.className = "tab";
-              if (namespaceKey === activeNamespace) btn.classList.add("active");
-              btn.textContent = namespaceLabel(namespaceKey, namespaceKey);
-              btn.addEventListener("click", () => {
-                state.activeNamespaceByGroup[namespaceStateKey] = namespaceKey;
-                renderActiveGroup(groupKey, forcedNamespaceKey, mountTarget);
-              });
-              subtabs.appendChild(btn);
-            }
-            container.appendChild(subtabs);
-            container.appendChild(
-              buildGroupTable(
-                `${operationLabelForOpcode(activeNamespace)} Registers`,
-                splitNamespaces[activeNamespace] || {},
-                activeNamespace,
-              ),
-            );
-          } else if (namespaceKeys.length === 1) {
-            const namespaceKey = namespaceKeys[0];
-            container.appendChild(
-              buildGroupTable(
-                `${operationLabelForOpcode(namespaceKey)} Registers`,
-                splitNamespaces[namespaceKey] || {},
-                namespaceKey,
-              ),
-            );
+          if (namespaceKeys.length) {
+            activeNsKey = namespaceKeys[0];
+            activeInstances = splitNamespaces[activeNsKey] || {};
           } else {
-            container.appendChild(buildGroupTable("Registers", groupObj.instances || {}, null));
+            activeInstances = groupObj.instances || {};
           }
         }
 
-        mountTarget.innerHTML = "";
-        mountTarget.appendChild(container);
+        if (activeInstances) {
+          mountTarget.appendChild(buildGroupTable(activeInstances, activeNsKey));
+        } else {
+          const empty = document.createElement("div");
+          empty.className = "subtitle";
+          empty.textContent = "No data for this namespace.";
+          mountTarget.appendChild(empty);
+        }
       }
 
       function renderB524Tab() {
@@ -1955,6 +1947,7 @@ __ARTIFACT_JSON__
         const host = document.createElement("div");
         const sectionTabs = document.createElement("div");
         sectionTabs.className = "subtabs";
+        sectionTabs.id = "b524-section-tabs";
 
         const renderedSections = visibleB524Sections(groupsRoot, operations, metaObj);
         const allowedSections = renderedSections.map((item) => item.key);
@@ -2001,13 +1994,17 @@ __ARTIFACT_JSON__
 
           const groupTabs = document.createElement("div");
           groupTabs.className = "subtabs";
+          groupTabs.id = "b524-group-tabs";
           for (const groupKey of groupKeys) {
             const btn = document.createElement("div");
             btn.className = "tab";
             if (groupKey === activeGroup) btn.classList.add("active");
             const groupObj = getGroupObject(groupsRoot[groupKey]);
             const groupName = typeof groupObj.name === "string" && groupObj.name ? groupObj.name : "Unknown";
-              btn.textContent = `${groupLabelForSection(groupKey, sectionKey, groupName)} (${groupKey})`;
+            const friendlyName = groupLabelForSection(groupKey, sectionKey, groupName);
+            const ggNum = parseInt(groupKey, 16);
+            const ggHex = ggNum.toString(16).toUpperCase().padStart(2, "0") + "h";
+            btn.textContent = friendlyName !== "Unknown" ? `${ggHex} ${friendlyName}` : ggHex;
             btn.addEventListener("click", () => {
               state.activeB524GroupBySection[sectionKey] = groupKey;
               renderB524Tab();

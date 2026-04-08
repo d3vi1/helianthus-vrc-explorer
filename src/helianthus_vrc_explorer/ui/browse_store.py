@@ -67,9 +67,9 @@ def _tab_from_entry(entry: dict[str, Any]) -> BrowseTab:
         return "state"
 
     flags_access = entry.get("flags_access")
-    if flags_access == "user_rw":
+    if flags_access == "config_user":
         return "config"
-    if flags_access == "technical_rw":
+    if flags_access == "config_installer":
         return "config_limits"
     return "state"
 
@@ -763,30 +763,6 @@ class BrowseStore:
                         entry_section_key = _b524_section_key_for_opcode(entry_namespace_key)
                         if entry_section_key not in {"controller_registers", "device_slots"}:
                             continue
-                        if is_instanced:
-                            node_id = _build_b524_register_node_id(
-                                section_key=section_key,
-                                group_key=group_key,
-                                namespace_key=effective_namespace_key,
-                                instance_key=instance_key,
-                                register_key=register_key,
-                            )
-                            if node_id not in seen_instance_nodes:
-                                seen_instance_nodes.add(node_id)
-                                tree_nodes.append(
-                                    TreeNodeRef(
-                                        node_id=node_id,
-                                        label=_fmt_register_label(register_key, entry),
-                                        level="register",
-                                        protocol="b524",
-                                        section_key=section_key,
-                                        group_key=group_key,
-                                        namespace_key=effective_namespace_key,
-                                        namespace_label=effective_namespace_label,
-                                        instance_key=instance_key,
-                                        register_key=register_key,
-                                    )
-                                )
                         if entry_namespace_key is not None:
                             entry_namespace_label = _namespace_label_for_key(entry_namespace_key)
                         else:

@@ -200,12 +200,6 @@ def run_textual_scan_plan(
             value = self.query_one(Input).value.strip()
             self.dismiss(value)
 
-        def on_input_submitted(self, event: Input.Submitted) -> None:
-            # Enter is handled by the Input widget first; submit explicitly so
-            # users can confirm edits without relying on screen-level bindings.
-            event.stop()
-            self.dismiss(event.value.strip())
-
     class _PlannerApp(App[dict[PlanKey, GroupScanPlan] | None]):
         BINDINGS = [
             Binding("space", "toggle_enabled", "Toggle"),
@@ -214,7 +208,6 @@ def run_textual_scan_plan(
                 "edit_rr_max",
                 "Edit RR",
                 show=False,
-                priority=True,
             ),
             Binding("tab", "focus_next", "Next"),
             Binding("i", "edit_instances", "Edit II"),

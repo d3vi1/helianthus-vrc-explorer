@@ -478,7 +478,7 @@ def _compute_flags_distribution(artifact: dict[str, Any]) -> dict[str, int]:
         for entry in _iter_register_entries(artifact)
         if isinstance(entry.get("flags_access"), str) and str(entry.get("flags_access")).strip()
     )
-    ordered = ("volatile_ro", "stable_ro", "technical_rw", "user_rw")
+    ordered = ("state_volatile", "state_stable", "config_installer", "config_user")
     result = {key: counts.get(key, 0) for key in ordered}
     for key in sorted(counts):
         if key not in result:

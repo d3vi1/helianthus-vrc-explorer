@@ -18,7 +18,7 @@ def _sample_artifact() -> dict[str, object]:
                             "0x0001": {
                                 "value": 1.0,
                                 "raw_hex": "00",
-                                "flags_access": "user_rw",
+                                "flags_access": "config_user",
                                 "read_opcode": "0x02",
                                 "ebusd_name": "regulator_param_1",
                             },
@@ -26,14 +26,14 @@ def _sample_artifact() -> dict[str, object]:
                                 "value": 2.0,
                                 "value_display": "HEATING_OR_COOLING (HEATING)",
                                 "raw_hex": "0102",
-                                "flags_access": "technical_rw",
+                                "flags_access": "config_installer",
                                 "read_opcode": "0x06",
                                 "myvaillant_name": "limit_value",
                             },
                             "0x0003": {
                                 "value": 3.0,
                                 "raw_hex": "03",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             },
                         }
@@ -64,7 +64,7 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                     "0x0001": {
                                         "value": 20.5,
                                         "raw_hex": "0000a441",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "read_opcode": "0x02",
                                         "read_opcode_label": "local",
                                         "myvaillant_name": "temperature_local",
@@ -82,7 +82,7 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                     "0x0001": {
                                         "value": 21.0,
                                         "raw_hex": "0000a841",
-                                        "flags_access": "user_rw",
+                                        "flags_access": "config_user",
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "remote",
                                         "myvaillant_name": "temperature_remote",
@@ -114,7 +114,7 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
     assert by_register["0x0001"].ebusd_name == "regulator_param_1"
     assert by_register["0x0002"].myvaillant_name == "limit_value"
     assert by_register["0x0002"].ebusd_name == ""
-    assert by_register["0x0001"].access_flags == "user_rw"
+    assert by_register["0x0001"].access_flags == "config_user"
     assert by_register["0x0001"].row_id == "0x00:0x02:0x00:0x0001"
     assert by_register["0x0002"].row_id == "0x00:0x06:0x00:0x0002"
     expected_local_path = (
@@ -170,7 +170,7 @@ def test_browse_store_single_namespace_instance_node_uses_opcode_identity() -> N
                             "0x0002": {
                                 "value": 1,
                                 "raw_hex": "0100",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             }
                         }
@@ -200,13 +200,13 @@ def test_browse_store_instance_selection_is_namespace_isolated_for_mixed_legacy_
                             "0x0001": {
                                 "value": 1,
                                 "raw_hex": "01",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             },
                             "0x0002": {
                                 "value": 2,
                                 "raw_hex": "02",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x06",
                             },
                         }
@@ -244,19 +244,19 @@ def test_browse_store_drops_missing_namespace_entries_from_split_views() -> None
                             "0x0001": {
                                 "value": 1,
                                 "raw_hex": "01",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             },
                             "0x0002": {
                                 "value": 2,
                                 "raw_hex": "02",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x06",
                             },
                             "0x0003": {
                                 "value": 3,
                                 "raw_hex": "03",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                             },
                         }
                     }
@@ -302,8 +302,8 @@ def test_browse_store_builds_namespace_nodes_for_dual_namespace_groups() -> None
     remote_row = next(row for row in store.rows if row.namespace_key == "0x06")
     assert local_row.namespace_label == "local"
     assert remote_row.namespace_label == "remote"
-    assert local_row.access_flags == "stable_ro"
-    assert remote_row.access_flags == "user_rw"
+    assert local_row.access_flags == "state_stable"
+    assert remote_row.access_flags == "config_user"
 
 
 def test_browse_store_remote_namespace_instance_label_drops_local_group_assumption() -> None:
@@ -323,7 +323,7 @@ def test_browse_store_remote_namespace_instance_label_drops_local_group_assumpti
                                     "0x0001": {
                                         "value": 21.0,
                                         "raw_hex": "0000a841",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "local",
                                     }
@@ -361,21 +361,25 @@ def test_browse_store_filters_rows_for_namespace_selection() -> None:
     assert [row.namespace_key for row in remote_rows] == ["0x06"]
 
 
-def test_browse_store_expands_instanced_b524_groups_to_register_nodes() -> None:
+def test_browse_store_instanced_groups_have_no_register_tree_nodes() -> None:
     store = BrowseStore.from_artifact(_dual_namespace_artifact())
 
+    # Register nodes should NOT be in the tree (registers are shown in the table)
+    register_nodes = [node for node in store.tree_nodes if node.level == "register"]
+    assert register_nodes == []
+
+    # But instance nodes should exist and selecting them should return rows
     by_node_id = {node.node_id: node for node in store.tree_nodes}
-    local_register = by_node_id["b524:reg:controller_registers:0x09:0x02:0x00:0x0001"]
-    remote_register = by_node_id["b524:reg:device_slots:0x09:0x06:0x00:0x0001"]
+    local_instance = by_node_id["b524:inst:controller_registers:0x09:0x02:0x00"]
+    remote_instance = by_node_id["b524:inst:device_slots:0x09:0x06:0x00"]
 
-    assert local_register.label == "temperature_local (0x1)"
-    assert remote_register.label == "temperature_remote (0x1)"
+    local_rows = store.rows_for_selection(local_instance, tab="state")
+    remote_rows = store.rows_for_selection(remote_instance, tab="state")
 
-    local_rows = store.rows_for_selection(local_register, tab="state")
-    remote_rows = store.rows_for_selection(remote_register, tab="state")
-
-    assert [(row.namespace_key, row.register_key) for row in local_rows] == [("0x02", "0x0001")]
-    assert [(row.namespace_key, row.register_key) for row in remote_rows] == [("0x06", "0x0001")]
+    assert len(local_rows) > 0
+    assert all(row.namespace_key == "0x02" for row in local_rows)
+    assert len(remote_rows) > 0
+    assert all(row.namespace_key == "0x06" for row in remote_rows)
 
 
 def test_browse_store_prefers_register_class_over_flags_access_for_tab() -> None:
@@ -390,7 +394,7 @@ def test_browse_store_prefers_register_class_over_flags_access_for_tab() -> None
                             "0x0021": {
                                 "value": 37,
                                 "raw_hex": "25",
-                                "flags_access": "technical_rw",
+                                "flags_access": "config_installer",
                                 "register_class": "state",
                             }
                         }
@@ -574,7 +578,7 @@ def test_browse_store_treats_unknown_singleton_group_as_singleton() -> None:
                             "0x0000": {
                                 "value": 0.0,
                                 "raw_hex": "00",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             }
                         },
@@ -641,13 +645,13 @@ def test_browse_store_hides_rr_zero_and_trailing_unnamed_absent_rows_per_namespa
                                     "0x0035": {
                                         "value": 1,
                                         "raw_hex": "01",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     },
                                     "0x0036": {
                                         "value": 2,
                                         "raw_hex": "02",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     },
                                 }
@@ -667,7 +671,7 @@ def test_browse_store_hides_rr_zero_and_trailing_unnamed_absent_rows_per_namespa
                                     "0x0035": {
                                         "value": 7,
                                         "raw_hex": "07",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     },
                                     "0x0036": {

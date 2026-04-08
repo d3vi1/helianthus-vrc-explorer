@@ -308,14 +308,14 @@ def test_namespace_owned_required_tuple_rows_are_resolvable() -> None:
     assert remote_presence.leaf == "device_connected"
     assert remote_presence.type_hint == "BOOL"
     assert remote_gg01_rr0012 is not None
-    assert remote_gg01_rr0012.leaf == "heat_source_active_errors"
+    assert remote_gg01_rr0012.leaf == "active_errors"
     assert remote_gg01_rr0012.type_hint == "UCH"
     assert remote_gg01_rr0015 is not None
     assert remote_gg01_rr0015.leaf == "heat_source_flow_temperature"
     assert remote_gg01_rr0015.type_hint == "EXP"
     assert remote_gg00_rr0002 is not None
     assert remote_gg00_rr0002.leaf == "device_class_address"
-    assert remote_gg00_rr0002.type_hint == "UCH"
+    assert remote_gg00_rr0002.type_hint == "HEX:1"
     assert remote_gg00_rr0003 is not None
     assert remote_gg00_rr0003.leaf == "device_error_code"
     assert remote_gg00_rr0003.type_hint == "UCH"

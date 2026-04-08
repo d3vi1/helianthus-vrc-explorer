@@ -25,7 +25,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                             "0x0001": {
                                 "read_opcode": "0x02",
                                 "read_opcode_label": "local",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "error": None,
                             }
                         },
@@ -47,7 +47,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                                     "0x0001": {
                                         "read_opcode": "0x02",
                                         "read_opcode_label": "local",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     }
                                 },
@@ -64,7 +64,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                                     "0x0001": {
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "remote",
-                                        "flags_access": "user_rw",
+                                        "flags_access": "config_user",
                                         "error": "timeout",
                                     }
                                 },
@@ -86,7 +86,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
 
     text = console.export_text()
     assert "namespaces local (0x02)=2, remote (0x06)=1" in text
-    assert "flags_access volatile_ro=0, stable_ro=2, technical_rw=0, user_rw=1" in text
+    assert "flags_access state_volatile=0, state_stable=2, config_installer=0, config_user=1" in text
     assert "b555 reads=4 errors=1 programs=2" in text
     assert "Local Devices (0x02)" in text
     assert "Remote Devices (0x06)" in text
@@ -160,7 +160,7 @@ def test_render_summary_namespace_totals_ignore_stale_namespace_labels(tmp_path:
                                     "0x0001": {
                                         "read_opcode": "0x02",
                                         "read_opcode_label": "remote",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     }
                                 },
@@ -176,7 +176,7 @@ def test_render_summary_namespace_totals_ignore_stale_namespace_labels(tmp_path:
                                     "0x0002": {
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "local",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     }
                                 },
@@ -219,7 +219,7 @@ def test_render_summary_namespace_totals_use_namespace_container_when_opcode_mis
                                 "registers": {
                                     "0x0001": {
                                         "read_opcode_label": "remote",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     }
                                 },
@@ -234,7 +234,7 @@ def test_render_summary_namespace_totals_use_namespace_container_when_opcode_mis
                                 "registers": {
                                     "0x0002": {
                                         "read_opcode_label": "local",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     }
                                 },

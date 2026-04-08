@@ -501,8 +501,9 @@ def run_browse_from_artifact(
                     and node.protocol is not None
                 ):
                     section_key = node.section_key or ""
-                    parent = (
-                        namespaces.get(
+                    parent = None
+                    if node.namespace_key is not None:
+                        parent = namespaces.get(
                             (
                                 node.protocol,
                                 section_key,
@@ -510,9 +511,8 @@ def run_browse_from_artifact(
                                 node.namespace_key,
                             )
                         )
-                        if node.namespace_key is not None
-                        else groups.get((node.protocol, section_key, node.group_key))
-                    )
+                    if parent is None:
+                        parent = groups.get((node.protocol, section_key, node.group_key))
                     if parent is None:
                         continue
                     instance_node = parent.add(node.label, data=node.node_id)

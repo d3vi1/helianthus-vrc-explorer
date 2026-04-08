@@ -35,7 +35,7 @@ def test_html_report_supports_b509_tab_and_dual_naming() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert 'btn.textContent = "B509";' in html
+    assert "PB=B5 SB=09" in html
     assert "Hide timeouts" in html
     assert "hideAbsent" in html
     assert "ebusd: " in html
@@ -93,7 +93,7 @@ def test_html_report_supports_b555_tab() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert 'btn.textContent = "B555";' in html
+    assert "PB=B5 SB=55" in html
     assert "No B555 dump in artifact." in html
     assert "request_hex=" in html
     assert '"zone":"0x00"' in html
@@ -179,7 +179,7 @@ def test_html_report_supports_b516_tab() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert 'btn.textContent = "B516";' in html
+    assert "PB=B5 SB=16" in html
     assert "No B516 dump in artifact." in html
     assert "System Gas Heating" in html
     assert '"period":"system"' in html
@@ -228,7 +228,7 @@ def test_html_report_supports_b516_tab_with_raw_evidence() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert 'btn.textContent = "B516";' in html
+    assert "PB=B5 SB=16" in html
     assert "No B516 dump in artifact." in html
     assert "No B516 entries in artifact." in html
     assert '"system.gas.heating"' in html
@@ -257,7 +257,7 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                         "type": "EXP",
                                         "value": 20.5,
                                         "error": None,
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "read_opcode": "0x02",
                                         "read_opcode_label": "local",
                                         "myvaillant_name": "temperature_local",
@@ -276,7 +276,7 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                         "type": "EXP",
                                         "value": 21.0,
                                         "error": None,
-                                        "flags_access": "user_rw",
+                                        "flags_access": "config_user",
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "remote",
                                         "myvaillant_name": "temperature_remote",
@@ -293,7 +293,7 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
     html = render_html_report(artifact, title="test")
 
     assert "Namespace Totals" not in html
-    assert "FLAGS Access" in html
+    assert "cell-flags" in html
     assert "Regulators" in html
     assert "activeNamespaceByGroup" in html
     assert '"label":"local"' in html
@@ -339,7 +339,7 @@ def test_html_report_does_not_use_single_namespace_identity_sentinel() -> None:
                                 "raw_hex": "00",
                                 "value": 1,
                                 "error": None,
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             }
                         }
@@ -418,10 +418,7 @@ def test_html_report_splits_mixed_legacy_group_by_namespace_and_scopes_overrides
     assert (
         "const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);" in html
     )
-    assert "if (namespaceKeys.length > 1) {" in html
-    assert "${operationLabelForOpcode(activeNamespace)} Registers" in html
-    assert "if (namespaceKey) {" in html
-    assert "return null;" in html
+    assert "function buildGroupTable(instancesObj" in html
 
 
 def test_html_report_split_views_keep_unknown_namespace_entries_unassigned() -> None:

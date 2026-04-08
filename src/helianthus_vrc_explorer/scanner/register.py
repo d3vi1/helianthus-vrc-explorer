@@ -181,7 +181,7 @@ def namespace_availability_contract(
             description="Solar circuit availability requires a decodable float payload.",
         )
 
-    if group in {0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+    if opcode == 0x06:
         return NamespaceAvailabilityContract(
             source="heuristic_probe",
             namespace_relationship=relationship,
@@ -190,7 +190,8 @@ def namespace_availability_contract(
             positive_when="any generic header register RR=0x0001..0x0004 decodes and is not absent",
             description=(
                 "Remote namespace presence is derived from the generic header block "
-                "RR=0x0001..0x0004; RR=0x0001 remains the primary probe anchor."
+                "RR=0x0001..0x0004; RR=0x0001 (device_connected) is the universal "
+                "presence indicator for all device-slot groups."
             ),
         )
 
@@ -241,23 +242,48 @@ def namespace_availability_contract(
     )
 
 
-def _interpret_flags(flags: int, *, response_len: int) -> str:
-    """Interpret the leading FLAGS byte of a B524 register reply."""
+def _interpret_flags(flags: int, *, response_len: int, opcode: int = 0x02) -> str:
+    """Interpret the leading FLAGS byte of a B524 register reply.
+
+    The flags byte uses 2 effective bits (bits 2-7 are always zero) with
+    the same {0,1,2,3} structure on both opcodes but different semantics:
+
+    OP=0x02 (controller registers):
+        bit1 = writable, bit0 = stable vs volatile
+        0 = volatile_ro, 1 = stable_ro, 2 = technical_rw, 3 = user_rw
+
+    OP=0x06 (device-slot registers):
+        bit1 = config (instance-independent), bit0 = valid data (vs sentinel)
+        0 = volatile_sentinel, 1 = volatile_valid, 2 = config_sentinel, 3 = config_valid
+    """
 
     if response_len == 1:
         if flags == 0x00:
             return "absent"
         return "unknown_status"
 
+    if opcode == 0x06:
+        match flags:
+            case 0x00:
+                return "invalid"
+            case 0x01:
+                return "valid"
+            case 0x02:
+                return "config_sentinel"
+            case 0x03:
+                return "config_valid"
+            case _:
+                return "unknown"
+
     match flags:
         case 0x00:
-            return "volatile_ro"
+            return "state_volatile"
         case 0x01:
-            return "stable_ro"
+            return "state_stable"
         case 0x02:
-            return "technical_rw"
+            return "config_installer"
         case 0x03:
-            return "user_rw"
+            return "config_user"
         case _:
             return "unknown"
 
@@ -508,7 +534,7 @@ def read_register(
     flags: int | None = response[0] if response else None
     reply_kind = _reply_kind(flags, response_len=len(response), opcode=opcode)
     flags_access: str | None = (
-        _interpret_flags(flags, response_len=len(response)) if flags is not None else None
+        _interpret_flags(flags, response_len=len(response), opcode=opcode) if flags is not None else None
     )
 
     # Some registers respond with a single status byte (no GG/RR echo and no value bytes).
@@ -616,6 +642,8 @@ def read_register(
     )
     if sentinel_display is not None:
         entry["value_display"] = sentinel_display
+    elif inferred_type == "EXP" and inferred_value is None:
+        entry["value_display"] = "NaN"
     return entry
 
 
@@ -697,7 +725,7 @@ def probe_instance_availability(
         )
         return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
 
-    if group in {0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0C} and opcode == 0x06:
+    if opcode == 0x06:
         header_evidence = entry
         entry_reply_kind = entry.get("reply_kind")
         present = (
