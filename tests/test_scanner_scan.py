@@ -1043,10 +1043,8 @@ def test_scan_singleton_group_nonzero_descriptor(tmp_path: Path) -> None:
     assert "descriptor_mismatch" not in group["discovery_advisory"]
     assert group["discovery_advisory"]["proven_register_opcodes"] == ["0x02"]
     assert set(group["instances"]) == {"0x00"}
-    assert "0x00" not in artifact["meta"]["scan_plan"]["groups"]
-
-    scanned_instances = {ii for (_opcode, gg, ii, _rr) in transport.register_reads if gg == 0x00}
-    assert scanned_instances == set()
+    # GG=0x00 is always_on in recommended, so it appears in the scan plan.
+    assert "0x00" in artifact["meta"]["scan_plan"]["groups"]
 
 
 def test_artifact_schema_version(tmp_path: Path) -> None:
@@ -1623,7 +1621,7 @@ def test_scan_b524_applies_research_preset_in_non_interactive_mode(tmp_path: Pat
     # v2.3: operations-first scan plan
     assert set(scan_plan["0x69"]["operations"]) == {"0x02", "0x06"}
     for op in ("0x02", "0x06"):
-        assert scan_plan["0x69"]["operations"][op]["rr_max"] == "0x0030"
+        assert scan_plan["0x69"]["operations"][op]["rr_max"] == "0x00ff"
         assert scan_plan["0x69"]["operations"][op]["instances"] == [
             f"0x{ii:02x}" for ii in range(0x0B)
         ]
@@ -1659,7 +1657,7 @@ def test_scan_b524_recommended_plan_keeps_namespace_rr_max(tmp_path: Path) -> No
     assert plan["multi_op"] is True
     assert plan["operations"]["0x02"]["rr_max"] == "0x000f"
     assert plan["operations"]["0x06"]["rr_max"] == "0x0035"
-    assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 70
+    assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 636
 
 
 def test_scan_b524_instance_discovery_runs_local_namespace_before_remote(
@@ -1879,7 +1877,7 @@ def test_scan_unknown_group_expands_to_instance_ff_after_readable_probe(tmp_path
 
     assert "0x69" in artifact["meta"]["scan_plan"]["groups"]
     plan_group = artifact["meta"]["scan_plan"]["groups"]["0x69"]
-    assert plan_group["rr_max"] == "0x0030"
+    assert plan_group["rr_max"] == "0x00ff"
     assert plan_group["instances"][-1] == "0xff"
 
     advisory = group["discovery_advisory"]
@@ -1981,8 +1979,8 @@ def test_scan_b524_textual_planner_receives_remote_heating_source_rows(
 
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    assert make_plan_key(0x00, 0x02) not in default_plan
-    assert make_plan_key(0x01, 0x02) not in default_plan
+    assert make_plan_key(0x00, 0x02) in default_plan
+    assert make_plan_key(0x01, 0x02) in default_plan
     assert make_plan_key(0x01, 0x06) in default_plan
     assert make_plan_key(0x02, 0x06) not in default_plan
     assert make_plan_key(0x00, 0x06) not in default_plan

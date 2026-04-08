@@ -182,10 +182,20 @@ def _build_default_plan(
     )
 
 
+_RECOMMENDED_ALWAYS_ON: frozenset[int] = frozenset({0x00, 0x01, 0x04, 0x05})
+
+
 def _instances_for_preset(group: PlannerGroup, preset: PlannerPreset) -> tuple[int, ...]:
     if group.ii_max is None:
         return (0x00,)
     if preset == "recommended":
+        # always_on groups in OP=0x02 get full instance range;
+        # present_gated groups get only discovered instances.
+        if group.opcode == 0x02 and group.group in _RECOMMENDED_ALWAYS_ON:
+            full_range = tuple(range(0x00, group.ii_max + 1))
+            if 0xFF in group.present_instances:
+                return full_range + (0xFF,)
+            return full_range
         return group.present_instances
     # full and research: scan all instance slots
     full_range = tuple(range(0x00, group.ii_max + 1))
@@ -202,8 +212,7 @@ def build_plan_from_preset(
     selected: dict[PlanKey, GroupScanPlan] = {}
     for group in sorted(groups, key=planner_group_sort_key):
         if preset == "recommended":
-            # Recommended: known + recommended groups, detected instances, normal RR.
-            if not group.known or not group.recommended:
+            if not group.recommended:
                 continue
             selected[group.key] = GroupScanPlan(
                 group=group.group,

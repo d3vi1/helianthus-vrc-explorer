@@ -49,6 +49,7 @@ def test_prompt_scan_plan_disables_unknown_groups_by_default(monkeypatch) -> Non
             rr_max=0x30,
             rr_max_full=0x30,
             present_instances=tuple(range(0x0A + 1)),
+            recommended=False,
         ),
     ]
 
@@ -117,6 +118,7 @@ def test_build_plan_from_preset_recommended_skips_unknown_groups() -> None:
             rr_max=0x30,
             rr_max_full=0x30,
             present_instances=tuple(range(0x0A + 1)),
+            recommended=False,
         ),
     ]
 

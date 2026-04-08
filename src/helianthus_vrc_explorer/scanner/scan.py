@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, cast
 
 from rich.console import Console
 
@@ -40,7 +40,6 @@ from .b516 import scan_b516
 from .b555 import scan_b555
 from .director import (
     GROUP_CONFIG,
-    KNOWN_CORE_GROUPS,
     ClassifiedGroup,
     DiscoveredGroup,
     classify_groups,
@@ -178,14 +177,15 @@ def _is_multi_operation_group(group: int) -> bool:
     return len(_group_opcodes(group)) > 1
 
 
+_LOCAL_ALWAYS_ON: Final[frozenset[int]] = frozenset({0x00, 0x01, 0x04, 0x05})
+_LOCAL_PRESENT_GATED: Final[frozenset[int]] = frozenset({0x02, 0x03, 0x08, 0x09})
+
+
 def _planner_group_is_recommended(*, group: int, opcode: RegisterOpcode) -> bool:
-    if group in KNOWN_CORE_GROUPS and opcode == _LOCAL_REGISTER_OPCODE:
-        return True
-    config = GROUP_CONFIG.get(group)
-    if config is None or bool(config.get("exhaustive_only")):
-        return False
-    contract = namespace_availability_contract(group=group, opcode=opcode)
-    return contract.source == "heuristic_probe"
+    if opcode == _LOCAL_REGISTER_OPCODE:
+        return group in _LOCAL_ALWAYS_ON or group in _LOCAL_PRESENT_GATED
+    # OP=0x06 (remote): all groups are recommended if they have present instances.
+    return True
 
 
 def _instance_discovery_targets(
@@ -231,6 +231,13 @@ def _group_display_name_for_opcodes(
         if configured:
             return configured
     return unique_names[0]
+
+
+def _rr_max_full_for_opcode(*, group: int, opcode: int) -> int:
+    """Research-mode RR ceiling: 0x01FF for OP=0x02/GG=0x00, 0xFF for everything else."""
+    if opcode == _LOCAL_REGISTER_OPCODE and group == 0x00:
+        return 0x01FF
+    return 0xFF
 
 
 def _rr_max_for_opcode(*, group: int, default_rr_max: int, opcode: int) -> int:
@@ -1757,9 +1764,8 @@ def scan_b524(
                             default_rr_max=group_meta.rr_max,
                             opcode=opcode,
                         ),
-                        rr_max_full=_rr_max_for_opcode(
+                        rr_max_full=_rr_max_full_for_opcode(
                             group=group.group,
-                            default_rr_max=group_meta.rr_max,
                             opcode=opcode,
                         ),
                         present_instances=present_instances,
