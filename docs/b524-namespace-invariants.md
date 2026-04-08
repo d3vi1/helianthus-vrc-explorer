@@ -28,13 +28,13 @@ behavior that is already stable in code/tests.
    - Outcome: remote opcode `0x06` does not inherit seeded static constraints unless a constraint entry explicitly scopes into that namespace or a live probe confirms it.
 
 4. Artifact identity keys are namespace-aware.
-   - Persisted topology authority: `groups[*].dual_namespace` plus `groups[*].namespaces` (when present).
+   - Persisted topology authority: per-operation namespace structure under `b524_operations`.
    - UI/report dedupe key contract: `<group>:<namespace>:<instance>:<register>`.
    - Path contract: `B524/<section>/<operation>/<group-name>/<namespace-display>/<instance>/<register-name>`.
 
 5. Fixture compatibility is migration-based, not semantic rewrite.
-   - Current artifact schema: `2.2`.
-   - Legacy unversioned/`2.0`/`2.1` fixtures are migrated in-memory with register-count preservation.
+   - Current artifact schema: `2.3` (operations-first layout).
+   - Legacy unversioned/`2.0`/`2.1`/`2.2` fixtures are migrated in-memory with register-count preservation.
    - Migration may normalize container shape, but must not drop register entries or collapse namespace identity.
    - Legacy mixed-opcode single-group artifacts are rendered split-by-namespace in browse/report consumers.
 

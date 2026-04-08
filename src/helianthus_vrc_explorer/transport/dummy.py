@@ -212,7 +212,7 @@ class DummyTransport(TransportInterface):
                     for opcode in opcodes:
                         self._register_timeouts.add((opcode, group, instance, register))
                     continue
-                if response_state == "nack":
+                if response_state in {"nack", "nack_or_crc"}:
                     for opcode in opcodes:
                         self._register_nacks.add((opcode, group, instance, register))
                     continue

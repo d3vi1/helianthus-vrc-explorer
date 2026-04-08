@@ -154,7 +154,7 @@ def _derive_response_state(entry: dict[str, Any]) -> str | None:
     response_state = entry.get("response_state")
     if isinstance(response_state, str):
         normalized = response_state.strip().lower()
-        if normalized in {"active", "empty_reply", "nack", "timeout"}:
+        if normalized in {"active", "empty_reply", "nack", "nack_or_crc", "timeout"}:
             return normalized
 
     error = entry.get("error")
@@ -197,7 +197,7 @@ def _migrate_entry(entry: dict[str, Any]) -> bool:
         entry["response_state"] = response_state
         changed = True
 
-    if response_state in {"timeout", "nack", "empty_reply"}:
+    if response_state in {"timeout", "nack", "nack_or_crc", "empty_reply"}:
         error = entry.get("error")
         if isinstance(error, str):
             lowered = error.strip().lower()
