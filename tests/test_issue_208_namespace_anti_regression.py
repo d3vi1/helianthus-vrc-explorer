@@ -264,7 +264,6 @@ def test_issue_208_planner_opcode_fidelity_keeps_namespace_specific_keys() -> No
             rr_max_full=0x0010,
             present_instances=(0x00,),
             namespace_label="local",
-            primary=True,
         ),
         PlannerGroup(
             group=0x69,
@@ -277,7 +276,6 @@ def test_issue_208_planner_opcode_fidelity_keeps_namespace_specific_keys() -> No
             rr_max_full=0x0020,
             present_instances=(0x00,),
             namespace_label="remote",
-            primary=False,
         ),
     ]
 

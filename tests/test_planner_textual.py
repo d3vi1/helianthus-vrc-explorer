@@ -66,7 +66,6 @@ def test_table_row_values_show_explicit_namespace_column() -> None:
         rr_max_full=0x0015,
         present_instances=(0x00,),
         namespace_label="remote",
-        primary=False,
     )
     local_only_group = PlannerGroup(
         group=0x00,
@@ -141,7 +140,6 @@ def test_split_planner_groups_by_namespace_prefers_local_then_remote() -> None:
         rr_max_full=0x0015,
         present_instances=(0x00,),
         namespace_label="remote",
-        primary=False,
     )
 
     sections = split_planner_groups_by_namespace([remote_group, local_group])

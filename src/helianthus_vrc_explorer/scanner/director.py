@@ -32,9 +32,9 @@ class GroupConfig(TypedDict):
     namespace_opcodes: NotRequired[list[int]]
     rr_max_by_opcode: NotRequired[dict[int, int]]
     ii_max_by_opcode: NotRequired[dict[int, int]]
-    # Legacy key name preserved for compatibility.
-    # When True, this group is only included in the research preset
-    # (and legacy exhaustive alias), never in conservative/recommended/full.
+    # Legacy key name preserved for compatibility with older scan artifacts.
+    # When True, this group was historically excluded from recommended/full presets.
+    # No longer used in preset logic; kept for schema backward-compatibility.
     exhaustive_only: NotRequired[bool]
 
 
@@ -155,7 +155,6 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "namespace_opcodes": [0x02, 0x06],
         "rr_max_by_opcode": {0x02: 0x0030, 0x06: 0x0030},
         "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
-        "exhaustive_only": True,
     },
     0x07: {
         "name": "Unknown",
@@ -166,7 +165,6 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "namespace_opcodes": [0x02, 0x06],
         "rr_max_by_opcode": {0x02: 0x0030, 0x06: 0x0030},
         "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
-        "exhaustive_only": True,
     },
     0x0B: {
         "name": "Unknown",
@@ -177,14 +175,12 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "namespace_opcodes": [0x02, 0x06],
         "rr_max_by_opcode": {0x02: 0x0010, 0x06: 0x0010},
         "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
-        "exhaustive_only": True,
     },
     0x0D: {
         "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0030,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
     },
     0x0E: {
         "name": "Clock",
@@ -192,7 +188,6 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
         "name_by_opcode": {0x02: "Unknown", 0x06: "Clock"},
-        "exhaustive_only": True,
     },
     0x0F: {
         "name": "Base Stations",
@@ -200,21 +195,18 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
         "name_by_opcode": {0x02: "Unknown", 0x06: "Base Stations"},
-        "exhaustive_only": True,
     },
     0x10: {
         "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
     },
     0x11: {
         "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
     },
 }
 KNOWN_CORE_GROUPS: Final[frozenset[int]] = frozenset({0x02, 0x03})

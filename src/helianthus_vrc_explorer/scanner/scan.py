@@ -106,6 +106,8 @@ def _normalize_planner_preset(preset: str) -> PlannerPreset:
         normalized = "full"
     if normalized == "exhaustive":
         normalized = "research"
+    if normalized == "conservative":
+        normalized = "recommended"
     return cast(PlannerPreset, normalized)
 
 
@@ -1910,15 +1912,10 @@ def scan_b524(
                         ),
                         present_instances=present_instances,
                         namespace_label=(opcode_label(opcode) if dual_namespace else None),
-                        primary=(opcode == primary_opcode),
                         recommended=_planner_group_is_recommended(
                             group=group.group,
                             opcode=opcode,
                         ),
-                        exhaustive_only=bool(config and config.get("exhaustive_only")),
-                        # Keep planner rows broadly visible, but allow `full`
-                        # preset defaults to remain scoped to resolved namespaces.
-                        full_default=(opcode in resolved_opcodes),
                     )
                 )
 

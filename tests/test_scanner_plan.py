@@ -99,7 +99,6 @@ def test_plan_dual_namespace_creates_two_entries() -> None:
             rr_max_full=0x000F,
             present_instances=(0x00,),
             namespace_label="local",
-            primary=True,
         ),
         PlannerGroup(
             group=0x09,
@@ -112,7 +111,6 @@ def test_plan_dual_namespace_creates_two_entries() -> None:
             rr_max_full=0x0035,
             present_instances=(0x00,),
             namespace_label="remote",
-            primary=False,
         ),
     ]
 
@@ -144,7 +142,6 @@ def test_plan_dual_namespace_presets_keep_namespace_specific_ii_max() -> None:
             rr_max_full=0x0007,
             present_instances=(0x00,),
             namespace_label="local",
-            primary=True,
         ),
         PlannerGroup(
             group=0x08,
@@ -157,7 +154,6 @@ def test_plan_dual_namespace_presets_keep_namespace_specific_ii_max() -> None:
             rr_max_full=0x0004,
             present_instances=(0x00, 0x02),
             namespace_label="remote",
-            primary=False,
         ),
     ]
 
@@ -202,7 +198,6 @@ def test_recommended_preset_skips_non_core_namespaces_without_verified_presence_
             rr_max_full=0x0015,
             present_instances=(0x00,),
             namespace_label="remote",
-            primary=False,
             recommended=False,
         ),
     ]

@@ -211,10 +211,10 @@ def run_textual_scan_plan(
             ),
             Binding("tab", "focus_next", "Next"),
             Binding("i", "edit_instances", "Edit II"),
-            Binding("1", "preset_conservative", "Preset 1"),
-            Binding("2", "preset_recommended", "Preset 2"),
-            Binding("3", "preset_full", "Preset 3"),
-            Binding("4", "preset_research", "Preset 4"),
+            Binding("1", "preset_recommended", "Preset 1"),
+            Binding("2", "preset_full", "Preset 2"),
+            Binding("3", "preset_research", "Preset 3"),
+            Binding("4", "preset_custom", "Preset 4"),
             Binding("s", "save", "Save"),
             Binding("q", "cancel", "Cancel"),
             Binding("question_mark", "show_help", "Help"),
@@ -527,9 +527,6 @@ def run_textual_scan_plan(
                 self._edit_instances,
             )
 
-        def action_preset_conservative(self) -> None:
-            self._apply_preset("conservative")
-
         def action_preset_recommended(self) -> None:
             self._apply_preset("recommended")
 
@@ -538,6 +535,9 @@ def run_textual_scan_plan(
 
         def action_preset_research(self) -> None:
             self._apply_preset("research")
+
+        def action_preset_custom(self) -> None:
+            self._apply_preset("custom")
 
         def action_show_help(self) -> None:
             self._set_help("Space=toggle Enter=RR i=instances 1/2/3/4=presets s=save q=cancel")

@@ -1522,8 +1522,9 @@ def test_scan_b524_normalizes_legacy_aggressive_preset_to_full_for_textual_defau
     assert captured["default_preset"] == "full"
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    assert make_plan_key(0x69, 0x02) not in default_plan
-    assert make_plan_key(0x69, 0x06) not in default_plan
+    # After preset simplification, "full" includes ALL groups (incl. unknown)
+    assert make_plan_key(0x69, 0x02) in default_plan
+    assert make_plan_key(0x69, 0x06) in default_plan
 
 
 def test_scan_b524_normalizes_exhaustive_preset_to_research_for_textual_default_plan(
@@ -1569,6 +1570,45 @@ def test_scan_b524_normalizes_exhaustive_preset_to_research_for_textual_default_
     assert make_plan_key(0x69, 0x06) in default_plan
 
 
+def test_scan_b524_normalizes_conservative_preset_to_recommended_for_textual_default_plan(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    transport = DummyTransport(_write_fixture_unknown_group_69(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_run_textual_scan_plan(
+        _groups,
+        *,
+        request_rate_rps,
+        default_plan,
+        default_preset,
+    ):
+        captured["default_preset"] = default_preset
+        captured["default_plan"] = default_plan
+        captured["request_rate_rps"] = request_rate_rps
+        return {}
+
+    monkeypatch.setattr(
+        "helianthus_vrc_explorer.ui.planner_textual.run_textual_scan_plan",
+        fake_run_textual_scan_plan,
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    scan_b524(
+        transport,
+        dst=0x15,
+        observer=_NoopObserver(),
+        console=Console(force_terminal=True),
+        planner_ui="textual",
+        planner_preset="conservative",
+    )
+
+    assert captured["default_preset"] == "recommended"
+
+
 def test_scan_b524_applies_research_preset_in_non_interactive_mode(tmp_path: Path) -> None:
     artifact = scan_b524(
         DummyTransport(_write_fixture_unknown_group_69(tmp_path)),
@@ -1594,7 +1634,7 @@ def test_scan_b524_applies_research_preset_in_non_interactive_mode(tmp_path: Pat
     assert group["namespaces"]["0x06"]["instances"]["0x00"]["present"] is True
 
 
-def test_scan_b524_full_preset_keeps_unknown_groups_out_of_default_plan(tmp_path: Path) -> None:
+def test_scan_b524_full_preset_includes_unknown_groups_in_plan(tmp_path: Path) -> None:
     artifact = scan_b524(
         DummyTransport(_write_fixture_unknown_group_69(tmp_path)),
         dst=0x15,
@@ -1602,7 +1642,8 @@ def test_scan_b524_full_preset_keeps_unknown_groups_out_of_default_plan(tmp_path
         planner_preset="full",
     )
 
-    assert "0x69" not in artifact["meta"]["scan_plan"]["groups"]
+    # After preset simplification, "full" includes ALL groups (incl. unknown)
+    assert "0x69" in artifact["meta"]["scan_plan"]["groups"]
 
 
 def test_scan_b524_recommended_plan_keeps_namespace_rr_max(tmp_path: Path) -> None:
@@ -2070,15 +2111,15 @@ def test_scan_b524_textual_full_preset_keeps_exploratory_rows_visible_but_unsele
 
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    # But full preset defaults remain resolved-only.
+    # After preset simplification, full includes ALL groups and namespaces.
     assert make_plan_key(0x02, 0x02) in default_plan
     assert make_plan_key(0x03, 0x02) in default_plan
     assert make_plan_key(0x04, 0x02) in default_plan
     assert make_plan_key(0x05, 0x02) in default_plan
-    assert make_plan_key(0x02, 0x06) not in default_plan
-    assert make_plan_key(0x03, 0x06) not in default_plan
-    assert make_plan_key(0x04, 0x06) not in default_plan
-    assert make_plan_key(0x05, 0x06) not in default_plan
+    assert make_plan_key(0x02, 0x06) in default_plan
+    assert make_plan_key(0x03, 0x06) in default_plan
+    assert make_plan_key(0x04, 0x06) in default_plan
+    assert make_plan_key(0x05, 0x06) in default_plan
 
 
 def test_scan_b524_textual_full_preset_keeps_remote_only_group_selected_on_remote_opcode(
@@ -2118,9 +2159,9 @@ def test_scan_b524_textual_full_preset_keeps_remote_only_group_selected_on_remot
 
     default_plan = captured["default_plan"]
     assert isinstance(default_plan, dict)
-    # Full should keep remote-only group selected on its resolved namespace.
+    # After preset simplification, full includes ALL namespaces.
     assert make_plan_key(0x0C, 0x06) in default_plan
-    assert make_plan_key(0x0C, 0x02) not in default_plan
+    assert make_plan_key(0x0C, 0x02) in default_plan
 
 
 def test_scan_b524_textual_planner_does_not_reuse_remote_presence_for_local_speculative_rows(

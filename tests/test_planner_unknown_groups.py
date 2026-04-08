@@ -88,7 +88,10 @@ def test_prompt_scan_plan_accepts_legacy_aggressive_alias_as_full(monkeypatch) -
     ]
 
     plan = prompt_scan_plan(console, groups, request_rate_rps=None, default_plan=None)
-    assert plan == {}
+    # After preset simplification, "full" (alias: aggressive) includes ALL groups
+    key = make_plan_key(0x69, 0x02)
+    assert sorted(plan.keys()) == [key]
+    assert plan[key].instances == tuple(range(0x0A + 1))
 
 
 def test_build_plan_from_preset_recommended_skips_unknown_groups() -> None:
