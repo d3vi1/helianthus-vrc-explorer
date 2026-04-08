@@ -269,56 +269,33 @@ class DummyTransport(TransportInterface):
                 terminator_group, "directory_terminator_group"
             )
 
-        groups = data.get("groups")
-        if not isinstance(groups, dict):
-            raise ValueError('Fixture must contain top-level key "groups" as an object')
+        # v2.3 operations-first: iterate operations directly to preserve OP context.
+        # migrate_artifact_schema always produces v2.3 so operations is always present.
+        # Empty operations is valid for directory-only fixtures.
+        operations = data.get("operations")
+        if not isinstance(operations, dict):
+            operations = {}
 
-        for group_key, group_value in groups.items():
-            if not isinstance(group_key, str):
-                raise ValueError(f"Group keys must be strings, got {type(group_key).__name__}")
-            group = self._parse_hex_key_u8(group_key, "group")
-            if not isinstance(group_value, dict):
-                raise ValueError(f"Group {group_key!r} must be a JSON object")
-
-            descriptor = group_value.get(
-                "descriptor_type",
-                group_value.get("descriptor_observed"),
-            )
-            if not isinstance(descriptor, (int, float)) or isinstance(descriptor, bool):
-                raise ValueError(
-                    "Group "
-                    f"{group_key!r} must contain numeric descriptor_type or descriptor_observed"
-                )
-            self._group_descriptor[group] = float(descriptor)
-
-            namespaces = group_value.get("namespaces")
-            if namespaces is not None:
-                if not isinstance(namespaces, dict):
-                    raise ValueError(f'Group {group_key!r} field "namespaces" must be an object')
-                for namespace_key, namespace_value in namespaces.items():
-                    if not isinstance(namespace_key, str):
-                        raise ValueError(
-                            f"Namespace keys must be strings, got {type(namespace_key).__name__}"
-                        )
-                    if not isinstance(namespace_value, dict):
-                        raise ValueError(f"Namespace {namespace_key!r} must be a JSON object")
-                    opcode = self._parse_opcode(namespace_key, "namespace")
-                    self._load_instances(
-                        group_key=group_key,
-                        group=group,
-                        instances=namespace_value.get("instances", {}),
-                        default_opcode=opcode,
-                    )
+        for op_key, op_obj in operations.items():
+            if not isinstance(op_obj, dict):
                 continue
-
-            if bool(group_value.get("dual_namespace")):
-                raise ValueError(
-                    f'Group {group_key!r} sets "dual_namespace" but is missing "namespaces"'
+            opcode = self._parse_opcode(op_key, "operation")
+            op_groups = op_obj.get("groups")
+            if not isinstance(op_groups, dict):
+                continue
+            for group_key, group_value in op_groups.items():
+                if not isinstance(group_key, str) or not isinstance(group_value, dict):
+                    continue
+                group = self._parse_hex_key_u8(group_key, "group")
+                descriptor = group_value.get(
+                    "descriptor_type",
+                    group_value.get("descriptor_observed"),
                 )
-
-            self._load_instances(
-                group_key=group_key,
-                group=group,
-                instances=group_value.get("instances", {}),
-                default_opcode=None,
-            )
+                if isinstance(descriptor, (int, float)) and not isinstance(descriptor, bool):
+                    self._group_descriptor[group] = float(descriptor)
+                self._load_instances(
+                    group_key=group_key,
+                    group=group,
+                    instances=group_value.get("instances", {}),
+                    default_opcode=opcode,
+                )

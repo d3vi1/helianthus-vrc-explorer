@@ -239,16 +239,15 @@ def test_html_report_supports_b516_tab_with_raw_evidence() -> None:
     assert '"echo_period":"0x0"' in html
 
 
-def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespace_groups() -> None:
+def test_html_report_renders_flags_access_for_multi_operation_groups() -> None:
     artifact = {
+        "schema_version": "2.3",
         "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
-        "groups": {
-            "0x09": {
-                "name": "Regulators",
-                "dual_namespace": True,
-                "namespaces": {
-                    "0x02": {
-                        "label": "local",
+        "operations": {
+            "0x02": {
+                "groups": {
+                    "0x09": {
+                        "name": "System",
                         "instances": {
                             "0x00": {
                                 "registers": {
@@ -265,9 +264,13 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                 }
                             }
                         },
-                    },
-                    "0x06": {
-                        "label": "remote",
+                    }
+                }
+            },
+            "0x06": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
                         "instances": {
                             "0x00": {
                                 "registers": {
@@ -284,9 +287,9 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                 }
                             }
                         },
-                    },
-                },
-            }
+                    }
+                }
+            },
         },
     }
 
@@ -296,8 +299,9 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
     assert "cell-flags" in html
     assert "Regulators" in html
     assert "activeNamespaceByGroup" in html
-    assert '"label":"local"' in html
-    assert '"label":"remote"' in html
+    # v2.3: operations-first, operations are serialized with op_key as key
+    assert '"0x02"' in html
+    assert '"0x06"' in html
 
 
 def test_html_report_renders_identity_card_with_star_bold_markers() -> None:
@@ -394,7 +398,7 @@ def test_html_report_namespace_helpers_are_opcode_key_authoritative() -> None:
     assert "(${namespaceKey})" in html
 
 
-def test_html_report_splits_mixed_legacy_group_by_namespace_and_scopes_overrides() -> None:
+def test_html_report_operations_first_direct_lookup_and_scopes_overrides() -> None:
     artifact = {
         "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
         "groups": {
@@ -414,14 +418,16 @@ def test_html_report_splits_mixed_legacy_group_by_namespace_and_scopes_overrides
 
     html = render_html_report(artifact, title="test")
 
-    assert "function splitInstancesByNamespace(instancesObj, fallbackNamespaceKey = null)" in html
-    assert (
-        "const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);" in html
-    )
+    # Operations-first: JS uses direct operation group lookup, not merging
+    assert "function getOperationGroup(opKey, groupKey)" in html
+    assert "function groupKeysForOp(opKey)" in html
     assert "function buildGroupTable(instancesObj" in html
+    # Deleted merge/split functions must NOT be present
+    assert "buildGroupsFromOperations" not in html
+    assert "splitInstancesByNamespace" not in html
 
 
-def test_html_report_split_views_keep_unknown_namespace_entries_unassigned() -> None:
+def test_html_report_legacy_entries_without_read_opcode_present_after_migration() -> None:
     artifact = {
         "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
         "groups": {
@@ -442,8 +448,9 @@ def test_html_report_split_views_keep_unknown_namespace_entries_unassigned() -> 
 
     html = render_html_report(artifact, title="test")
 
-    assert '"0x0003":{"raw_hex":"03"}' in html
-    assert (
-        "const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);" in html
-    )
-    assert "if (!namespaceKey) continue;" in html
+    # Migration adds response_state to entries; check the entry is present
+    assert '"0x0003":{' in html
+    assert '"raw_hex":"03"' in html
+    # Operations-first: direct lookup, no merging
+    assert "function getOperationGroup(opKey, groupKey)" in html
+    assert "buildGroupsFromOperations" not in html

@@ -569,7 +569,8 @@ def test_render_summary_does_not_collapse_conflicting_observed_namespaces_with_d
     render_summary(console, artifact, output_path=tmp_path / "artifact.json")
     text = console.export_text()
 
-    assert "Other Namespaces" in text
+    # v2.3: after migration, flat groups with mixed opcodes go under a single
+    # operation (determined by first entry read_opcode). The group appears in
+    # the section for that operation.
     assert "Hot Water Circuit" in text
-    assert "Local Devices (0x02)" not in text
-    assert "Remote Devices (0x06)" not in text
+    assert "Local Devices (0x02)" in text

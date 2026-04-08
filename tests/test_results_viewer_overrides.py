@@ -27,47 +27,53 @@ def test_candidate_type_specs_and_cycle() -> None:
 
 def test_apply_row_type_override_persists_and_reparses_values() -> None:
     artifact: dict[str, object] = {
+        "schema_version": "2.3",
         "meta": {},
-        "groups": {
-            "0x01": {
-                "name": "Test",
-                "descriptor_type": 1.0,
-                "instances": {
-                    "0x00": {
-                        "present": True,
-                        "registers": {
-                            "0x0005": {
-                                "raw_hex": "01000000",
-                                "type": "EXP",
-                                "value": 0.0,
-                                "error": None,
-                            }
-                        },
-                    },
+        "operations": {
+            "0x02": {
+                "groups": {
                     "0x01": {
-                        "present": True,
-                        "registers": {
-                            "0x0005": {
-                                "raw_hex": "02000000",
-                                "type": "EXP",
-                                "value": 0.0,
-                                "error": None,
-                            }
+                        "name": "Test",
+                        "descriptor_type": 1.0,
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0005": {
+                                        "raw_hex": "01000000",
+                                        "type": "EXP",
+                                        "value": 0.0,
+                                        "error": None,
+                                    }
+                                },
+                            },
+                            "0x01": {
+                                "present": True,
+                                "registers": {
+                                    "0x0005": {
+                                        "raw_hex": "02000000",
+                                        "type": "EXP",
+                                        "value": 0.0,
+                                        "error": None,
+                                    }
+                                },
+                            },
                         },
-                    },
-                },
+                    }
+                }
             }
         },
     }
 
-    apply_row_type_override(artifact, group_key="0x01", rr_key="0x0005", type_spec="U32")
+    apply_row_type_override(
+        artifact, group_key="0x01", rr_key="0x0005", type_spec="U32", op_key="0x02"
+    )
 
-    assert get_row_type_override(artifact, group_key="0x01", rr_key="0x0005") == "U32"
+    assert (
+        get_row_type_override(artifact, group_key="0x01", rr_key="0x0005", op_key="0x02") == "U32"
+    )
 
-    groups = artifact["groups"]
-    assert isinstance(groups, dict)
-    group = groups["0x01"]
-    assert isinstance(group, dict)
+    group = artifact["operations"]["0x02"]["groups"]["0x01"]
     instances = group["instances"]
     assert isinstance(instances, dict)
     for ii_key, expected in {"0x00": 1, "0x01": 2}.items():
@@ -82,16 +88,15 @@ def test_apply_row_type_override_persists_and_reparses_values() -> None:
         assert entry["error"] is None
 
 
-def test_apply_row_type_override_can_target_one_namespace_only() -> None:
+def test_apply_row_type_override_can_target_one_operation_only() -> None:
     artifact: dict[str, object] = {
+        "schema_version": "2.3",
         "meta": {},
-        "groups": {
-            "0x09": {
-                "name": "Regulators",
-                "dual_namespace": True,
-                "namespaces": {
-                    "0x02": {
-                        "label": "local",
+        "operations": {
+            "0x02": {
+                "groups": {
+                    "0x09": {
+                        "name": "System",
                         "instances": {
                             "0x00": {
                                 "registers": {
@@ -104,9 +109,13 @@ def test_apply_row_type_override_can_target_one_namespace_only() -> None:
                                 }
                             }
                         },
-                    },
-                    "0x06": {
-                        "label": "remote",
+                    }
+                }
+            },
+            "0x06": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
                         "instances": {
                             "0x00": {
                                 "registers": {
@@ -119,9 +128,9 @@ def test_apply_row_type_override_can_target_one_namespace_only() -> None:
                                 }
                             }
                         },
-                    },
-                },
-            }
+                    }
+                }
+            },
         },
     }
 
@@ -130,7 +139,7 @@ def test_apply_row_type_override_can_target_one_namespace_only() -> None:
         group_key="0x09",
         rr_key="0x0004",
         type_spec="HEX:3",
-        namespace_key="0x06",
+        op_key="0x06",
     )
 
     assert (
@@ -138,20 +147,15 @@ def test_apply_row_type_override_can_target_one_namespace_only() -> None:
             artifact,
             group_key="0x09",
             rr_key="0x0004",
-            namespace_key="0x06",
+            op_key="0x06",
         )
         == "HEX:3"
     )
 
-    groups = artifact["groups"]
-    assert isinstance(groups, dict)
-    group = groups["0x09"]
-    assert isinstance(group, dict)
-    namespaces = group["namespaces"]
-    assert isinstance(namespaces, dict)
-
-    local_entry = namespaces["0x02"]["instances"]["0x00"]["registers"]["0x0004"]
-    remote_entry = namespaces["0x06"]["instances"]["0x00"]["registers"]["0x0004"]
+    local_regs = artifact["operations"]["0x02"]["groups"]["0x09"]["instances"]["0x00"]["registers"]
+    remote_regs = artifact["operations"]["0x06"]["groups"]["0x09"]["instances"]["0x00"]["registers"]
+    local_entry = local_regs["0x0004"]
+    remote_entry = remote_regs["0x0004"]
     assert local_entry["type"] == "HDA:3"
     assert local_entry["value"] == "2026-12-05"
     assert remote_entry["type"] == "HEX:3"
@@ -159,7 +163,11 @@ def test_apply_row_type_override_can_target_one_namespace_only() -> None:
 
 
 def test_run_results_viewer_requires_stdout_tty(monkeypatch) -> None:
-    artifact = {"meta": {}, "groups": {"0x00": {"instances": {}}}}
+    artifact = {
+        "schema_version": "2.3",
+        "meta": {},
+        "operations": {"0x02": {"groups": {"0x00": {"instances": {}}}}},
+    }
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout", io.StringIO())
 
