@@ -104,14 +104,8 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x01,0x00,0x000F,hwc_status,,state,,
 0x01,0x00,0x0010,hwc_holiday_start_time,,config,HTI,
 0x01,0x00,0x0011,hwc_holiday_end_time,,config,HTI,
-0x01,*,0x0001,device_connected,,state,BOOL,0x06
-0x01,*,0x0002,device_class_address,,state,HEX:1,0x06
-0x01,*,0x0003,device_error_code,,state,UCH,0x06
 0x01,*,0x0012,active_errors,,state,UCH,0x06
 0x01,*,0x0015,heat_source_flow_temperature,,state,EXP,0x06
-0x02,*,0x0001,device_connected,,state,BOOL,0x06
-0x02,*,0x0002,device_class_address,,state,HEX:1,0x06
-0x02,*,0x0003,device_error_code,,state,UCH,0x06
 0x02,*,0x0012,active_errors,,state,UCH,0x06
 0x02,*,0x0015,heat_source_flow_temperature,,state,EXP,0x06
 0x02,*,0x0001,heating_circuit_type,Hc{hc}CircuitType,,,
@@ -208,10 +202,6 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x09,*,0x0008,holiday_start_time,,config,HTI,0x02
 0x09,*,0x0009,holiday_end_date,,config,HDA:3,0x02
 0x09,*,0x000A,holiday_end_time,,config,HTI,0x02
-0x09,*,0x0001,device_connected,,state,BOOL,0x06
-0x09,*,0x0002,device_class_address,,state,HEX:1,0x06
-0x09,*,0x0003,device_error_code,,state,UCH,0x06
-0x09,*,0x0004,device_firmware_version,,state,FW,0x06
 0x09,*,0x0007,room_humidity,,state,,0x06
 0x09,*,0x000E,room_temp_offset,,config,,0x06
 0x09,*,0x000F,room_temperature,,state,,0x06
@@ -228,10 +218,6 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x0A,*,0x0006,vr92_sensor_enabled,,config,,0x02
 0x0A,*,0x001D,vr92_basv2_serial_part1,,state,,0x02
 0x0A,*,0x001E,vr92_basv2_serial_part2,,state,,0x02
-0x0A,*,0x0001,device_connected,,state,BOOL,0x06
-0x0A,*,0x0002,device_class_address,,state,HEX:1,0x06
-0x0A,*,0x0003,device_error_code,,state,UCH,0x06
-0x0A,*,0x0004,device_firmware_version,,state,FW,0x06
 0x0A,*,0x0007,room_humidity,RoomHumidity,state,,0x06
 0x0A,*,0x000E,room_temp_offset,,config,,0x06
 0x0A,*,0x000F,room_temperature,RoomTemp,state,,0x06
@@ -242,10 +228,6 @@ group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode
 0x0A,*,0x0023,hardware_identifier,,state,,0x06
 0x0A,*,0x0025,zone_assignment,,state,,0x06
 0x0A,*,0x0030,max_time_periods_per_day,,state,,0x06
-0x0C,*,0x0001,device_connected,,state,BOOL,0x06
-0x0C,*,0x0002,device_class_address,,state,HEX:1,0x06
-0x0C,*,0x0003,device_error_code,,state,UCH,0x06
-0x0C,*,0x0004,device_firmware_version,,state,FW,0x06
 0x0C,*,0x0012,active_errors,,state,UCH,0x06
 *,*,0x0001,device_connected,,state,BOOL,0x06
 *,*,0x0002,device_class_address,,state,HEX:1,0x06

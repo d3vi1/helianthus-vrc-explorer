@@ -99,16 +99,6 @@ def _load_default_myvaillant_map() -> tuple[MyvaillantRegisterMap | None, str | 
                 f"myvaillant_map:{map_path.name}",
             )
     except Exception:
-        # Dev fallback (editable checkout) when package resources are unavailable.
-        fallback = Path(__file__).resolve().parents[2] / "data" / "myvaillant_register_map.csv"
-        if fallback.exists():
-            try:
-                return (
-                    MyvaillantRegisterMap.from_path(fallback),
-                    f"myvaillant_map:{fallback.name}",
-                )
-            except Exception:
-                return (None, None)
         return (None, None)
 
 
