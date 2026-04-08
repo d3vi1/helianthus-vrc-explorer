@@ -632,11 +632,12 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 │ --planner-ui                                         TEXT     Interactive planner mode: disabled, auto, textual, or  │
 │                                                               classic.                                               │
 │                                                               [default: disabled]                                    │
-│ --preset                                             TEXT     Planner preset: conservative, recommended, full,       │
-│                                                               research, or custom. `full` expands known groups to    │
-│                                                               full instance slots and RR ranges; `research` enables  │
-│                                                               broad non-core/underspecified fallback probing. Legacy │
-│                                                               aliases: aggressive->full, exhaustive->research.       │
+│ --preset                                             TEXT     Planner preset: recommended, full, research, or        │
+│                                                               custom. `full` expands all groups to full instance     │
+│                                                               slots and RR ranges; `research` enables all groups     │
+│                                                               with expanded RR ranges. Legacy aliases:               │
+│                                                               aggressive->full, exhaustive->research,                │
+│                                                               conservative->recommended.                             │
 │                                                               [default: recommended]                                 │
 │ --no-tips                                                     Hide scan header tips in interactive terminal mode.    │
 │ --redact                                                      Redact device identity fields (e.g. serial number) in  │
