@@ -270,8 +270,8 @@ def test_browse_store_drops_missing_namespace_entries_from_split_views() -> None
     }
 
     store = BrowseStore.from_artifact(artifact)
-    assert {row.register_key for row in store.rows} == {"0x0001", "0x0002"}
-    assert all(row.register_key != "0x0003" for row in store.rows)
+    # 0x0003 has no read_opcode so defaults to 0x02 during migration.
+    assert {row.register_key for row in store.rows} == {"0x0001", "0x0002", "0x0003"}
 
     local_instance_node = next(
         node
@@ -283,7 +283,10 @@ def test_browse_store_drops_missing_namespace_entries_from_split_views() -> None
     )
     local_rows = store.rows_for_selection(local_instance_node, tab="state")
     remote_rows = store.rows_for_selection(remote_instance_node, tab="state")
-    assert {(row.register_key, row.namespace_key) for row in local_rows} == {("0x0001", "0x02")}
+    assert {(row.register_key, row.namespace_key) for row in local_rows} == {
+        ("0x0001", "0x02"),
+        ("0x0003", "0x02"),
+    }
     assert {(row.register_key, row.namespace_key) for row in remote_rows} == {("0x0002", "0x06")}
 
 

@@ -46,7 +46,7 @@ def _validate_schema_shape(artifact: dict[str, Any]) -> list[str]:
 
     # v2.3 operations-first structure
     operations = artifact.get("operations")
-    if isinstance(operations, dict) and operations:
+    if isinstance(operations, dict):
         for op_key, op_obj in operations.items():
             if not isinstance(op_key, str) or not isinstance(op_obj, dict):
                 errors.append(f"{op_key!r}: operation entry must be an object keyed by hex string")

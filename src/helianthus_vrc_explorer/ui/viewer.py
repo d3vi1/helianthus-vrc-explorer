@@ -114,15 +114,19 @@ def set_row_type_override(
     if op_key is None:
         group_overrides[rr_key] = type_spec
         return
-    ops = group_overrides.get("operations")
-    if not isinstance(ops, dict):
-        ops = {}
-        group_overrides["operations"] = ops
-    op_overrides = ops.get(op_key)
-    if not isinstance(op_overrides, dict):
-        op_overrides = {}
-        ops[op_key] = op_overrides
-    op_overrides[rr_key] = type_spec
+    # Dual-write to both "operations" and "namespaces" keys so that both
+    # the Textual viewer (reads "operations") and the HTML report JS
+    # (reads "namespaces") can find the overrides.
+    for dict_key in ("operations", "namespaces"):
+        ops = group_overrides.get(dict_key)
+        if not isinstance(ops, dict):
+            ops = {}
+            group_overrides[dict_key] = ops
+        op_overrides = ops.get(op_key)
+        if not isinstance(op_overrides, dict):
+            op_overrides = {}
+            ops[op_key] = op_overrides
+        op_overrides[rr_key] = type_spec
 
 
 def _resolve_group_obj(

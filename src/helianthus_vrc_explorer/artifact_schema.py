@@ -48,7 +48,7 @@ def iter_register_entries(
     """
     # v2.3 path: operations → groups → instances → registers
     operations = artifact.get("operations")
-    if isinstance(operations, dict) and operations:
+    if isinstance(operations, dict):
         for op_key, op_obj in operations.items():
             if not isinstance(op_key, str) or not isinstance(op_obj, dict):
                 continue
@@ -278,11 +278,13 @@ def _migrate_v22_to_v23(artifact: dict[str, Any]) -> bool:
                     new_group[k] = v
                 op_groups[group_key] = new_group
         else:
-            # Flat group: determine opcode from entry evidence, discovery_advisory,
-            # or default to 0x02.
-            op_key = "0x02"
+            # Flat group: split entries by read_opcode so that mixed-op
+            # groups (entries with BOTH 0x02 and 0x06) are not collapsed
+            # under a single operation key.
             instances = group_obj.get("instances")
-            _found_opcode = False
+
+            # Collect all distinct opcodes present in entries.
+            _seen_opcodes: set[str] = set()
             if isinstance(instances, dict):
                 for inst_obj in instances.values():
                     if not isinstance(inst_obj, dict):
@@ -294,30 +296,58 @@ def _migrate_v22_to_v23(artifact: dict[str, Any]) -> bool:
                         if isinstance(entry, dict):
                             read_opcode = entry.get("read_opcode")
                             if isinstance(read_opcode, str) and read_opcode.startswith("0x"):
-                                op_key = read_opcode
-                                _found_opcode = True
-                                break
-                    if _found_opcode:
-                        break
-            if not _found_opcode:
+                                _seen_opcodes.add(read_opcode)
+
+            if not _seen_opcodes:
                 # Fall back to discovery_advisory.proven_register_opcodes
                 discovery = group_obj.get("discovery_advisory")
                 if isinstance(discovery, dict):
                     proven = discovery.get("proven_register_opcodes")
                     if isinstance(proven, list) and proven:
-                        first = proven[0]
-                        if isinstance(first, str) and first.startswith("0x"):
-                            op_key = first
+                        for item in proven:
+                            if isinstance(item, str) and item.startswith("0x"):
+                                _seen_opcodes.add(item)
+            if not _seen_opcodes:
+                _seen_opcodes = {"0x02"}
 
-            op_obj = operations.setdefault(op_key, {})
-            op_groups = op_obj.setdefault("groups", {})
-            new_group = {}
+            # Build shared group-level fields (everything except instances/namespace keys).
+            _shared: dict[str, Any] = {}
             for k, v in group_obj.items():
                 if k not in _skip_keys:
-                    new_group[k] = v
-            if isinstance(instances, dict):
-                new_group["instances"] = instances
-            op_groups[group_key] = new_group
+                    _shared[k] = v
+
+            for target_op in sorted(_seen_opcodes):
+                op_obj = operations.setdefault(target_op, {})
+                op_groups = op_obj.setdefault("groups", {})
+                new_group: dict[str, Any] = dict(_shared)
+                new_instances: dict[str, Any] = {}
+                if isinstance(instances, dict):
+                    for inst_key, inst_obj in instances.items():
+                        if not isinstance(inst_obj, dict):
+                            continue
+                        regs = inst_obj.get("registers")
+                        if not isinstance(regs, dict):
+                            continue
+                        filtered_regs: dict[str, Any] = {}
+                        for rr_key, entry in regs.items():
+                            if not isinstance(entry, dict):
+                                continue
+                            entry_op = entry.get("read_opcode")
+                            effective_op = (
+                                entry_op
+                                if isinstance(entry_op, str) and entry_op.startswith("0x")
+                                else "0x02"
+                            )
+                            if effective_op == target_op:
+                                filtered_regs[rr_key] = entry
+                        if filtered_regs:
+                            new_inst = {
+                                k: v for k, v in inst_obj.items() if k != "registers"
+                            }
+                            new_inst["registers"] = filtered_regs
+                            new_instances[inst_key] = new_inst
+                new_group["instances"] = new_instances
+                op_groups[group_key] = new_group
 
     # Move register_constraints to operations["0x01"].constraints
     register_constraints = artifact.get("register_constraints")
@@ -357,6 +387,16 @@ def migrate_artifact_schema(
     if source_schema_version in {LEGACY_UNVERSIONED_SCHEMA, "2.0", "2.1"}:
         migrated["schema_version"] = "2.2"
         changed = True
+        groups = migrated.get("groups")
+        if isinstance(groups, dict):
+            for group_obj in groups.values():
+                if isinstance(group_obj, dict):
+                    changed = _migrate_group(group_obj) or changed
+
+    # Step 1b: normalize v2.2 groups that were not covered by step 1
+    # (e.g. artifacts already at v2.2 need _migrate_group to repair legacy
+    # shapes like dual_namespace=true with empty namespaces + populated instances)
+    if source_schema_version == "2.2":
         groups = migrated.get("groups")
         if isinstance(groups, dict):
             for group_obj in groups.values():

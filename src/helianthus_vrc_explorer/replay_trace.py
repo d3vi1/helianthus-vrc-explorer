@@ -275,7 +275,7 @@ def _ensure_operation_group(
     group_key = _hex_u8(group)
     config = GROUP_CONFIG.get(group)
     profile = _namespace_profile(group, opcode)
-    default_name = str(config.get("name")) if isinstance(config, dict) else f"Unknown {group_key}"
+    default_name = _group_name_for_opcode(group, opcode)
     descriptor = config.get("desc") if isinstance(config, dict) else None
     op_obj = operations.setdefault(op_key, {})
     op_groups = op_obj.setdefault("groups", {})
