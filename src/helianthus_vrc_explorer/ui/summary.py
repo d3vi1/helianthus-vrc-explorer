@@ -448,9 +448,7 @@ def render_summary(console: Console, artifact: dict[str, Any], *, output_path: P
                 continue
             _op_groups = _op_obj.get("groups")
             if isinstance(_op_groups, dict):
-                _seen_groups.update(
-                    k for k in _op_groups if isinstance(k, str)
-                )
+                _seen_groups.update(k for k in _op_groups if isinstance(k, str))
     group_count = len(_seen_groups)
     total_regs = sum(row.registers_scanned for row in summary_rows)
     total_errs = sum(row.registers_errors for row in summary_rows)

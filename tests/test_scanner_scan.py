@@ -1218,6 +1218,7 @@ def test_contextual_enum_annotations_do_not_relabel_remote_namespace(tmp_path: P
     fixture_path = _write_fixture_group_02_dual_namespace(tmp_path)
     # Load as v2.2 and migrate to v2.3 for _apply_contextual_enum_annotations
     from helianthus_vrc_explorer.artifact_schema import migrate_artifact_schema
+
     raw = json.loads(fixture_path.read_text(encoding="utf-8"))
     artifact, _ = migrate_artifact_schema(raw)
     _apply_contextual_enum_annotations(artifact)

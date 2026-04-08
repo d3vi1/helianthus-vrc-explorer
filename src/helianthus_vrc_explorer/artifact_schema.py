@@ -116,7 +116,6 @@ def iter_register_entries(
                 yield None, group_key, instance_key, register_key, entry
 
 
-
 def count_register_entries(artifact: dict[str, Any]) -> int:
     return sum(1 for _ in iter_register_entries(artifact))
 
@@ -341,9 +340,7 @@ def _migrate_v22_to_v23(artifact: dict[str, Any]) -> bool:
                             if effective_op == target_op:
                                 filtered_regs[rr_key] = entry
                         if filtered_regs:
-                            new_inst = {
-                                k: v for k, v in inst_obj.items() if k != "registers"
-                            }
+                            new_inst = {k: v for k, v in inst_obj.items() if k != "registers"}
                             new_inst["registers"] = filtered_regs
                             new_instances[inst_key] = new_inst
                 new_group["instances"] = new_instances

@@ -50,8 +50,6 @@ def artifact_groups(artifact: dict[str, Any]) -> dict[str, Any]:
     return groups
 
 
-def artifact_op_group(
-    artifact: dict[str, Any], *, op: str, group: str
-) -> dict[str, Any]:
+def artifact_op_group(artifact: dict[str, Any], *, op: str, group: str) -> dict[str, Any]:
     """Access operations[op].groups[group] directly in a v2.3 artifact."""
     return artifact["operations"][op]["groups"][group]

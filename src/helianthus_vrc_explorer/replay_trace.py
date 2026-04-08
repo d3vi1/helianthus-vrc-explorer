@@ -514,9 +514,7 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
                 continue
             if register > profile.rr_max:
                 continue
-            group_obj = _ensure_operation_group(
-                artifact["operations"], group=group, opcode=opcode
-            )
+            group_obj = _ensure_operation_group(artifact["operations"], group=group, opcode=opcode)
             instances = group_obj.setdefault("instances", {})
             instance_key = _hex_u8(instance)
             instance_obj = instances.setdefault(instance_key, {"present": False, "registers": {}})

@@ -284,17 +284,13 @@ def _build_sheets(artifact: dict[str, Any]) -> list[_Sheet]:
                 group_obj.get("descriptor_type"),
             )
             descriptor: float | None
-            if isinstance(descriptor_obj, (int, float)) and not isinstance(
-                descriptor_obj, bool
-            ):
+            if isinstance(descriptor_obj, (int, float)) and not isinstance(descriptor_obj, bool):
                 descriptor = float(descriptor_obj)
             else:
                 descriptor = None
 
             instances = _group_instances(group_obj)
-            instance_keys = _sorted_hex_keys(
-                [k for k in instances if isinstance(k, str)]
-            )
+            instance_keys = _sorted_hex_keys([k for k in instances if isinstance(k, str)])
             rr_keys = visible_rr_keys(instances)
 
             sheets.append(

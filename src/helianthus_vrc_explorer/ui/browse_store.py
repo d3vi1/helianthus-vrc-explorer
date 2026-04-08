@@ -590,9 +590,7 @@ class BrowseStore:
                 if not isinstance(_op_groups, dict):
                     continue
                 _op_label = _namespace_label_for_key(_op_key) or _op_key
-                for _gk in sorted(
-                    (k for k in _op_groups if isinstance(k, str)), key=_safe_int_hex
-                ):
+                for _gk in sorted((k for k in _op_groups if isinstance(k, str)), key=_safe_int_hex):
                     _go = _op_groups.get(_gk)
                     if isinstance(_gk, str) and isinstance(_go, dict):
                         _op_group_views.append((_gk, _op_key, _op_label, _go))
@@ -632,9 +630,7 @@ class BrowseStore:
             # Split instances by read_opcode to separate namespace views.
             # A single operation group may contain entries with different
             # read_opcodes (e.g. after migration from v2.2 flat groups).
-            namespace_views = _group_namespace_views(
-                group_key=group_key, group_obj=group_obj
-            )
+            namespace_views = _group_namespace_views(group_key=group_key, group_obj=group_obj)
             # When the split produces a single (None, None, ...) view, use
             # the operation key as the namespace context.
             if len(namespace_views) == 1 and namespace_views[0][0] is None:

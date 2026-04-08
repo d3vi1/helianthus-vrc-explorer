@@ -399,4 +399,3 @@ def test_register_map_all_groups_represented() -> None:
     assert core_groups <= groups_in_csv
     # CSV groups must be a subset of GROUP_CONFIG (no stale entries).
     assert groups_in_csv <= set(GROUP_CONFIG)
-
