@@ -56,8 +56,10 @@ def test_visible_rr_keys_trims_rr_zero_and_final_unnamed_absent_tail() -> None:
             "registers": {
                 "0x0000": {"reply_hex": "00", "flags_access": "absent", "error": None},
                 "0x0001": {
-                    "value": 1, "raw_hex": "01",
-                    "flags_access": "state_stable", "error": None,
+                    "value": 1,
+                    "raw_hex": "01",
+                    "flags_access": "state_stable",
+                    "error": None,
                 },
                 "0x0002": {"reply_hex": "00", "flags_access": "absent", "error": None},
                 "0x0003": {"reply_hex": "00", "flags_access": "absent", "error": None},
@@ -73,12 +75,16 @@ def test_visible_rr_keys_keeps_named_absent_rows_and_trims_per_namespace() -> No
         "0x01": {
             "registers": {
                 "0x0035": {
-                    "value": 1, "raw_hex": "01",
-                    "flags_access": "state_stable", "error": None,
+                    "value": 1,
+                    "raw_hex": "01",
+                    "flags_access": "state_stable",
+                    "error": None,
                 },
                 "0x0036": {
-                    "value": 2, "raw_hex": "02",
-                    "flags_access": "state_stable", "error": None,
+                    "value": 2,
+                    "raw_hex": "02",
+                    "flags_access": "state_stable",
+                    "error": None,
                 },
             }
         }

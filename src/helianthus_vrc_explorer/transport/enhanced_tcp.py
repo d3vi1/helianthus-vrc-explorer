@@ -662,9 +662,7 @@ class EnhancedTcpTransport(TransportInterface):
             if command == _ENH_RES_RESETTED:
                 self.close()
                 self._open_session()
-                raise TransportTimeout(
-                    f"Adapter reset during bus read (features=0x{data:02X})"
-                )
+                raise TransportTimeout(f"Adapter reset during bus read (features=0x{data:02X})")
             if command == _ENH_RES_INFO:
                 continue
             if command == _ENH_RES_ERROR_EBUS:

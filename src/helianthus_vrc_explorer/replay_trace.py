@@ -542,7 +542,8 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
             )
 
     b524_operations["group_directory"] = sorted(
-        _group_directory_dedup.values(), key=lambda e: int(e["group"], 16),
+        _group_directory_dedup.values(),
+        key=lambda e: int(e["group"], 16),
     )
     b524_operations["register_constraints"] = sorted(
         _constraint_dedup.values(),
