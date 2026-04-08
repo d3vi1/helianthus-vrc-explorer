@@ -7,64 +7,63 @@ This directory contains **scan artifact fixtures** used for deterministic, offli
 
 A fixture is a JSON object with:
 
-- `schema_version`: Artifact schema version. Current: `2.2`.
+- `schema_version`: Artifact schema version. Current: `2.3`.
 - `meta`: arbitrary metadata about the scan (timestamps, device info, etc.).
-- `groups`: mapping of group id -> group data.
+- `operations`: mapping of opcode -> operation data (operations-first structure).
 
 ## Schema Compatibility Strategy
 
-- Writers emit `schema_version: "2.2"` (namespace-aware contract).
+- Writers emit `schema_version: "2.3"` (operations-first contract).
 - Readers support legacy artifacts by in-memory migration:
   - unversioned fixtures (no `schema_version`)
   - `schema_version: "2.0"`
   - `schema_version: "2.1"`
+  - `schema_version: "2.2"` (groups-first, with optional `dual_namespace`/`namespaces`)
 - Migration preserves register counts and register payload entries; no registers are dropped or
   synthesized during migration.
-- Checked-in fixtures in this repository are migrated to `2.2` in lockstep.
+- Checked-in fixtures in this repository are migrated to `2.3` in lockstep.
 
-### `groups`
+### `operations`
 
-`groups` is an object keyed by **hex strings**:
+`operations` is an object keyed by **opcode hex strings** (`0x02`, `0x06`, `0x01`, etc.).
 
-- group key: `0xGG` (u8)
-- instance key: `0xII` (u8)
-- register key: `0xRRRR` (u16)
+Each operation entry contains:
+
+- `groups` (object): Mapping of group key (`0xGG`) -> group data.
 
 Each group entry contains:
 
-- `descriptor_type` or `descriptor_observed` (number): Value returned by the B524 directory probe
+- `descriptor_observed` (number): Value returned by the B524 directory probe
   (`opcode=0x00`), encoded as float32 little-endian on the wire.
-- `instances` (object, optional): Mapping of instance id -> instance data.
-- `namespaces` (object, optional): Artifact v2 namespace mapping keyed by read opcode (`0x02`,
-  `0x06`, etc.). When present, this is the source of register data even if `dual_namespace` is
-  omitted.
+- `instances` (object, optional): Mapping of instance key (`0xII`) -> instance data.
 
 Each instance entry contains:
 
-- `registers` (object, optional): Mapping of register id -> register data.
+- `registers` (object, optional): Mapping of register key (`0xRRRR`) -> register data.
 
 Each register entry contains:
 
 - `raw_hex` (string): Hex-encoded **value bytes only** for a register read response (no 4-byte echo
   header).
-- `read_opcode` (string, optional): Explicit opcode for flat fixtures that should only answer one
-  namespace/opcode. If omitted, DummyTransport falls back to the configured opcode set for that
-  group.
+- `read_opcode` (string, optional): Explicit opcode carried on the entry for provenance tracking.
 
 ### Example
 
 ```json
 {
-  "schema_version": "2.2",
+  "schema_version": "2.3",
   "meta": {},
-  "groups": {
+  "operations": {
     "0x02": {
-      "descriptor_type": 1.0,
-      "dual_namespace": false,
-      "instances": {
-        "0x00": {
-          "registers": {
-            "0x000f": { "raw_hex": "3412" }
+      "groups": {
+        "0x02": {
+          "descriptor_observed": 1.0,
+          "instances": {
+            "0x00": {
+              "registers": {
+                "0x000f": { "raw_hex": "3412" }
+              }
+            }
           }
         }
       }
@@ -75,10 +74,9 @@ Each register entry contains:
 
 ## DummyTransport Behavior
 
-- Directory probe (`00 <GG> 00`): returns `float32le(descriptor_type)` for known groups, otherwise
-  `0.0`.
+- Directory probe (`00 <GG> 00`): returns `float32le(descriptor_observed)` for known groups,
+  otherwise `0.0`.
 - Register read (`02/06 00 <GG> <II> <RR_LO> <RR_HI>`): returns `echo(4 bytes) + value_bytes`
   where `value_bytes = bytes.fromhex(raw_hex)`. If missing, `TransportTimeout` is raised.
-- Flat legacy fixtures without `read_opcode` follow the configured group opcode(s). Single-opcode
-  groups answer only that opcode; legacy dual-opcode groups answer both until the fixture is
-  upgraded to `namespaces`.
+- Operations-first fixtures are read directly by opcode key. Legacy fixtures are auto-migrated
+  to operations-first during load.

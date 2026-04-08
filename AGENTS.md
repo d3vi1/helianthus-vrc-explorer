@@ -574,7 +574,7 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ scan          Scan a VRC regulator using B524 (GetExtendedRegisters).                                                │
-│ replay-trace  Replay an ENH/ENS trace into a fresh schema-2.2 JSON artifact + HTML report.                           │
+│ replay-trace  Replay an ENH/ENS trace into a fresh schema-2.3 JSON artifact + HTML report.                           │
 │ discover      Discover eBUS devices via QueryExistence broadcast and per-address scan (0704).                        │
 │ browse        Browse scan results in fullscreen Textual UI (file mode).                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -634,10 +634,9 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 │                                                               [default: disabled]                                    │
 │ --preset                                             TEXT     Planner preset: recommended, full, research, or        │
 │                                                               custom. `full` expands all groups to full instance     │
-│                                                               slots and RR ranges; `research` enables all groups     │
-│                                                               with expanded RR ranges. Legacy aliases:               │
-│                                                               aggressive->full, exhaustive->research,                │
-│                                                               conservative->recommended.                             │
+│                                                               slots; `research` enables all groups with expanded RR  │
+│                                                               ranges. Legacy aliases: aggressive->full,              │
+│                                                               exhaustive->research, conservative->recommended.       │
 │                                                               [default: recommended]                                 │
 │ --no-tips                                                     Hide scan header tips in interactive terminal mode.    │
 │ --redact                                                      Redact device identity fields (e.g. serial number) in  │

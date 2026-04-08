@@ -682,7 +682,7 @@ def scan(
         "--preset",
         help=(
             "Planner preset: recommended, full, research, or custom. "
-            "`full` expands all groups to full instance slots and RR ranges; "
+            "`full` expands all groups to full instance slots; "
             "`research` enables all groups with expanded RR ranges. "
             "Legacy aliases: aggressive->full, exhaustive->research, conservative->recommended."
         ),
@@ -990,7 +990,7 @@ def replay_trace(
         ),
     ),
 ) -> None:
-    """Replay an ENH/ENS trace into a fresh schema-2.2 JSON artifact + HTML report.
+    """Replay an ENH/ENS trace into a fresh schema-2.3 JSON artifact + HTML report.
 
     Limitations (v1):
     - Supports only current enhanced/ENS trace lines emitted by EnhancedTcpTransport.
