@@ -334,7 +334,7 @@ def _artifact_contract_metadata() -> dict[str, Any]:
         ),
         "b524_row_identity": {
             "dedupe_key_format": "<group>:<namespace>:<instance>:<register>",
-            "path_format": "B524/<group-name>/<namespace-display>/<instance>/<register-name>",
+            "path_format": "B524/<section>/<operation>/<group-name>/<namespace-display>/<instance>/<register-name>",
             "round_trip_stability": (
                 "namespace keys and persisted topology must be preserved without sentinel rewrite"
             ),

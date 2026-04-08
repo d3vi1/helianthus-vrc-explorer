@@ -372,6 +372,76 @@ def _decode_register_read_entry(
     return entry
 
 
+def _decode_constraint_date(value: bytes) -> str:
+    """Decode a 3-byte date triplet (DD MM YY) into ISO date string."""
+    if len(value) != 3:
+        raise ValueError(f"Date triplet expects 3 bytes, got {len(value)}")
+    day = value[0]
+    month = value[1]
+    year = 2000 + value[2]
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        raise ValueError(f"Invalid date triplet: {value.hex()}")
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _decode_constraint_response(response: bytes, entry: dict[str, Any]) -> None:
+    """Decode OP=0x01 constraint response using TT-based dispatch.
+
+    Wire layout (matching the live scanner's _parse_constraint_entry):
+        byte 0: TT (type tag)
+        byte 1: GG echo
+        byte 2: RR echo
+        byte 3: reserved
+        byte 4+: body (shape depends on TT)
+
+    TT values:
+        0x06 -> u8_range:  3 body bytes (min_u8, max_u8, step_u8)
+        0x09 -> u16_range: 6 body bytes (min_u16, max_u16, step_u16) LE
+        0x0F -> f32_range: 12 body bytes (min_f32, max_f32, step_f32) LE
+        0x0C -> date_range: 9 body bytes (min_date[3], max_date[3], step_u16, pad)
+    """
+    tt = response[0]
+    entry["tt"] = tt
+    body = response[4:]
+
+    if tt == 0x06:
+        if len(body) < 3:
+            return
+        entry["kind"] = "u8_range"
+        entry["min_value"] = body[0]
+        entry["max_value"] = body[1]
+        entry["step_value"] = body[2]
+    elif tt == 0x09:
+        if len(body) < 6:
+            return
+        entry["kind"] = "u16_range"
+        entry["min_value"] = int.from_bytes(body[0:2], byteorder="little", signed=False)
+        entry["max_value"] = int.from_bytes(body[2:4], byteorder="little", signed=False)
+        entry["step_value"] = int.from_bytes(body[4:6], byteorder="little", signed=False)
+    elif tt == 0x0F:
+        if len(body) < 12:
+            return
+        min_f32 = struct.unpack("<f", body[0:4])[0]
+        max_f32 = struct.unpack("<f", body[4:8])[0]
+        step_f32 = struct.unpack("<f", body[8:12])[0]
+        entry["kind"] = "f32_range"
+        if not math.isnan(min_f32):
+            entry["min_value"] = min_f32
+        if not math.isnan(max_f32):
+            entry["max_value"] = max_f32
+        if not math.isnan(step_f32):
+            entry["step_value"] = step_f32
+    elif tt == 0x0C:
+        if len(body) < 9:
+            return
+        entry["kind"] = "date_range"
+        entry["min_value"] = _decode_constraint_date(body[0:3])
+        entry["max_value"] = _decode_constraint_date(body[3:6])
+        entry["step_value"] = int.from_bytes(body[6:8], byteorder="little", signed=False)
+    # Unknown TT values are silently skipped — the entry retains reply_hex
+    # for manual inspection.
+
+
 def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
     """Replay an ENH/ENS trace into a deterministic scan artifact (schema 2.2).
 
@@ -441,6 +511,19 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
             group = int(payload[2])
             instance = int(payload[3])
             register = int.from_bytes(payload[4:6], byteorder="little", signed=False)
+            # Filter by namespace profile: skip entries where the opcode is
+            # not valid for this group, or where instance/register exceed the
+            # configured bounds.  This replicates the guardrails the live
+            # scanner applies and prevents _update_namespace_bounds_from_observed
+            # from widening metadata beyond profile limits.
+            profile = _namespace_profile(group, opcode)
+            if profile is None:
+                # Opcode not in the active namespace profile for this group.
+                continue
+            if instance > profile.ii_max:
+                continue
+            if register > profile.rr_max:
+                continue
             _group_obj, namespace_obj = _ensure_group_namespace(
                 artifact["groups"], group=group, opcode=opcode
             )
@@ -496,23 +579,17 @@ def replay_trace_to_artifact(trace_path: Path) -> dict[str, Any]:
                 "register_selector": reg_sel,
                 "reply_hex": response.hex() if isinstance(response, bytes) else None,
             }
-            if isinstance(response, bytes) and len(response) >= 15:
-                # ENH response for OP=0x01 constraint probe:
-                # byte 0: flags, byte 1-2: echo/type, bytes 3-6: min_f32,
-                # bytes 7-10: max_f32, bytes 11-14: step_f32
+            if isinstance(response, bytes) and len(response) >= 4:
+                # TT-based dispatch matching the live scanner's
+                # _parse_constraint_entry layout:
+                #   byte 0: TT (type tag)
+                #   byte 1: GG echo
+                #   byte 2: RR echo
+                #   byte 3: reserved
+                #   byte 4+: body (shape depends on TT)
                 try:
-                    min_f32 = struct.unpack("<f", response[3:7])[0]
-                    max_f32 = struct.unpack("<f", response[7:11])[0]
-                    step_f32 = struct.unpack("<f", response[11:15])[0]
-                    constraint_entry["flags"] = response[0]
-                    constraint_entry["kind"] = "f32_range"
-                    if not math.isnan(min_f32):
-                        constraint_entry["min_value"] = min_f32
-                    if not math.isnan(max_f32):
-                        constraint_entry["max_value"] = max_f32
-                    if not math.isnan(step_f32):
-                        constraint_entry["step_value"] = step_f32
-                except (struct.error, IndexError):
+                    _decode_constraint_response(response, constraint_entry)
+                except (struct.error, IndexError, ValueError):
                     pass
             dedup_key = (group_key, reg_sel)
             # Keep the entry with actual parsed data; don't overwrite with empty

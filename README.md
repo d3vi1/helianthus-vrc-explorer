@@ -47,7 +47,7 @@ Namespace contract for implementers:
 
 Key scan UX flags:
 - `--planner-ui auto|textual|classic`
-- `--preset conservative|recommended|full|custom`
+- `--preset recommended|full|research|custom`
 - `--probe-constraints` (optional live opcode `0x01` GG/RR rescan; off by default and research-only)
 - `--b509-dump` (B509 is opt-in; `--b509-range` requires this flag)
 - `--no-tips`
@@ -62,7 +62,7 @@ Transport note:
 - On shared live `ebusd-tcp` setups, the first B524 directory probe (`GG=0x00`) can transiently return a status-only `00`. The scanner treats this as transient noise and continues discovery instead of declaring B524 unsupported immediately.
 - On `ebusd-tcp`, `ERR: timeout`, `ERR: arbitration lost`, `ERR: SYN received`, and `ERR: wrong symbol received` now trigger a fixed 5-second quiet backoff before retry so the bus can settle.
 - On `ebusd-tcp`, `ERR: no signal` now triggers a fixed 15-second quiet backoff before retry so the eBUS side can recover instead of being polled aggressively.
-- Classic GG directory-probe results are retained as advisory metadata for semantic identity and namespace topology. They are useful evidence for reverse-engineering and debugging, but they do not define those semantics once a group is a scan candidate (see `docs/b524-namespace-invariants.md`). A `descriptor_type == 0.0` result is still used as a discovery-time negative hint for non-core/unknown groups in Phase A.
+- Classic GG directory-probe results are retained as advisory metadata for semantic identity and namespace topology. They are useful evidence for reverse-engineering and debugging, but they do not define those semantics once a group is a scan candidate (see `docs/b524-namespace-invariants.md`). Discovery no longer filters on `descriptor_type == 0.0`; all non-NaN groups returned by the directory probe are scan candidates.
 - Instance availability is namespace-specific. Dual-namespace radio groups (`0x09`, `0x0A`) are discovered independently per opcode namespace instead of sharing remote results across local and remote.
 - Artifacts retain the availability contract plus raw per-slot probe evidence under `availability_contract` and `availability_probes`, including the opcode `0x06` generic header block (`RR=0x0001..0x0004`) used for remote namespace occupancy.
 - Empty ACK / 0-byte B524 register replies are preserved as `response_state="empty_reply"` (rendered as “empty reply / dormant”), not as transport errors.
@@ -88,6 +88,7 @@ Constraint note:
 - Constraint scope decision: `opcode_0x02_default`. The bundled static catalog is seeded from opcode `0x01` probe evidence, but it is only applied to opcode `0x02` by default. Remote opcode `0x06` requires explicit scope or live confirmation via `--probe-constraints`.
 - Artifacts record this decision in `meta.constraint_scope` and per-entry fields (`constraint_scope`, `constraint_provenance`) so report/UI consumers do not guess scope semantics.
 - `--preset full` is intentionally expensive: it expands all instance slots and full RR ranges and can take hours on BASV2.
+- `--preset research` enables all groups (including those not found by directory probing) with expanded RR ranges; intended for reverse-engineering sessions. Legacy aliases: `aggressive`->`full`, `exhaustive`->`research`, `conservative`->`recommended`.
 
 Output:
 - JSON artifact: `b524_scan_0x??_<timestamp>.json`

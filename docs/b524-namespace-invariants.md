@@ -30,7 +30,7 @@ behavior that is already stable in code/tests.
 4. Artifact identity keys are namespace-aware.
    - Persisted topology authority: `groups[*].dual_namespace` plus `groups[*].namespaces` (when present).
    - UI/report dedupe key contract: `<group>:<namespace>:<instance>:<register>`.
-   - Path contract: `B524/<group-name>/<namespace-display>/<instance>/<register-name>`.
+   - Path contract: `B524/<section>/<operation>/<group-name>/<namespace-display>/<instance>/<register-name>`.
 
 5. Fixture compatibility is migration-based, not semantic rewrite.
    - Current artifact schema: `2.2`.

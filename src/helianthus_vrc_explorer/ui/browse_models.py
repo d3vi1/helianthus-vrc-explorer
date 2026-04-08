@@ -34,7 +34,10 @@ class RegisterAddress:
             return f"B555 {group_key} {self.register_key}{suffix}".strip()
         if self.protocol == "b516":
             return f"B516 {self.register_key}{suffix}".strip()
-        return _compact_hex_label(self.register_key)
+        gg = f"GG={_compact_hex_label(self.group_key)}" if self.group_key else ""
+        rr = f"RR={_compact_hex_label(self.register_key)}"
+        parts = [p for p in ("B524", gg, rr) if p]
+        return " ".join(parts) + suffix
 
 
 @dataclass(frozen=True, slots=True)

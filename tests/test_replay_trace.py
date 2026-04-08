@@ -235,11 +235,12 @@ def test_replay_trace_applies_current_namespace_profiles(tmp_path: Path) -> None
 
     artifact = replay_trace_to_artifact(trace_path)
 
-    # GG=0x00 now appears because _ensure_group_namespace creates a group entry
-    # for any group seen in trace exchanges, even cross-namespace opcodes.
-    assert "0x00" in artifact["groups"]
+    # OP=0x06 GG=0x00 is filtered out because GG=0x00 has no remote (0x06)
+    # namespace in its profile.
+    assert "0x00" not in artifact["groups"]
     local_ns = artifact["groups"]["0x04"]["namespaces"]["0x02"]
-    # rr_max / ii_max are derived from observed trace data.
-    assert local_ns["ii_max"] == "0x02"
+    # II=0x02 exceeds ii_max=0x01 for GG=0x04 OP=0x02 and is filtered out.
+    # rr_max / ii_max are derived from observed trace data within profile bounds.
+    assert local_ns["ii_max"] == "0x00"
     assert local_ns["rr_max"] == "0x0004"
-    assert set(local_ns["instances"]) == {"0x00", "0x02"}
+    assert set(local_ns["instances"]) == {"0x00"}

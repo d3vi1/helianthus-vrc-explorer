@@ -125,8 +125,8 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
     )
     assert by_register["0x0001"].path == expected_local_path
     assert by_register["0x0002"].path == expected_remote_path
-    assert by_register["0x0001"].address.label == "0x1"
-    assert by_register["0x0002"].address.label == "0x2"
+    assert by_register["0x0001"].address.label == "B524 GG=0x0 RR=0x1 0x02"
+    assert by_register["0x0002"].address.label == "B524 GG=0x0 RR=0x2 0x06"
     assert all(":single:" not in row.row_id for row in store.rows if row.protocol == "b524")
 
     by_node_id = {node.node_id: node for node in store.tree_nodes}
