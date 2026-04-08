@@ -916,22 +916,31 @@ def run_browse_from_artifact(
         def _entry_for_row(self, row: RegisterRow) -> dict[str, Any] | None:
             if row.protocol != "b524" or row.group_key is None or row.instance_key is None:
                 return None
-            groups = self._artifact.get("groups")
-            if not isinstance(groups, dict):
+            # Navigate operations-first: operations[op_key].groups[group_key]
+            operations = self._artifact.get("operations")
+            if not isinstance(operations, dict):
                 return None
-            group_obj = groups.get(row.group_key)
+            group_obj = None
+            if row.namespace_key is not None:
+                op_obj = operations.get(row.namespace_key)
+                if isinstance(op_obj, dict):
+                    op_groups = op_obj.get("groups")
+                    if isinstance(op_groups, dict):
+                        group_obj = op_groups.get(row.group_key)
+            if not isinstance(group_obj, dict):
+                # Fallback: search all operations for the group
+                for op_obj in operations.values():
+                    if not isinstance(op_obj, dict):
+                        continue
+                    op_groups = op_obj.get("groups")
+                    if isinstance(op_groups, dict):
+                        candidate = op_groups.get(row.group_key)
+                        if isinstance(candidate, dict):
+                            group_obj = candidate
+                            break
             if not isinstance(group_obj, dict):
                 return None
-            if row.namespace_key is not None and bool(group_obj.get("dual_namespace")):
-                namespaces = group_obj.get("namespaces")
-                if not isinstance(namespaces, dict):
-                    return None
-                namespace_obj = namespaces.get(row.namespace_key)
-                if not isinstance(namespace_obj, dict):
-                    return None
-                instances = namespace_obj.get("instances")
-            else:
-                instances = group_obj.get("instances")
+            instances = group_obj.get("instances")
             if not isinstance(instances, dict):
                 return None
             instance_obj = instances.get(row.instance_key)

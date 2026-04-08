@@ -116,73 +116,6 @@ def iter_register_entries(
                 yield None, group_key, instance_key, register_key, entry
 
 
-def flatten_operations_to_groups(artifact: dict[str, Any]) -> dict[str, Any]:
-    """Build a virtual groups dict from v2.3 operations-first structure.
-
-    For consumers that iterate groups with dual_namespace branching,
-    this reconstructs a v2.2-compatible view. Groups appearing under
-    multiple operations get dual_namespace=True with namespaces.
-    Falls back to legacy ``artifact["groups"]`` when no operations key exists.
-    """
-    operations = artifact.get("operations")
-    if not isinstance(operations, dict):
-        groups = artifact.get("groups")
-        return groups if isinstance(groups, dict) else {}
-
-    groups: dict[str, Any] = {}
-    group_ops: dict[str, list[str]] = {}
-    for op_key, op_obj in operations.items():
-        if not isinstance(op_obj, dict):
-            continue
-        op_groups = op_obj.get("groups")
-        if not isinstance(op_groups, dict):
-            continue
-        for group_key in op_groups:
-            group_ops.setdefault(group_key, []).append(op_key)
-
-    for op_key, op_obj in operations.items():
-        if not isinstance(op_obj, dict):
-            continue
-        op_groups = op_obj.get("groups")
-        if not isinstance(op_groups, dict):
-            continue
-        for group_key, group_obj in op_groups.items():
-            if not isinstance(group_key, str) or not isinstance(group_obj, dict):
-                continue
-            is_multi_op = len(group_ops.get(group_key, [])) > 1
-            if is_multi_op:
-                if group_key not in groups:
-                    groups[group_key] = {
-                        "name": group_obj.get("name"),
-                        "descriptor_observed": group_obj.get("descriptor_observed"),
-                        "dual_namespace": True,
-                        "namespaces": {},
-                    }
-                _opcode = 0
-                try:
-                    _opcode = int(op_key, 0)
-                except ValueError:
-                    pass
-                _label = "local" if _opcode == 0x02 else ("remote" if _opcode == 0x06 else op_key)
-                ns_obj: dict[str, Any] = {
-                    "label": _label,
-                    "instances": group_obj.get("instances", {}),
-                }
-                ii_max = group_obj.get("ii_max")
-                if ii_max is not None:
-                    ns_obj["ii_max"] = ii_max
-                for k in ("group_name", "availability_contract", "availability_probes"):
-                    if k in group_obj:
-                        ns_obj[k] = group_obj[k]
-                groups[group_key]["namespaces"][op_key] = ns_obj
-                for k in ("discovery_advisory",):
-                    if k in group_obj and k not in groups[group_key]:
-                        groups[group_key][k] = group_obj[k]
-            else:
-                groups[group_key] = dict(group_obj)
-                groups[group_key]["dual_namespace"] = False
-    return groups
-
 
 def count_register_entries(artifact: dict[str, Any]) -> int:
     return sum(1 for _ in iter_register_entries(artifact))
@@ -334,14 +267,22 @@ def _migrate_v22_to_v23(artifact: dict[str, Any]) -> bool:
                         new_group[k] = v
                 # Copy namespace-level fields (instances, ii_max, availability_*, etc.)
                 for k, v in ns_obj.items():
-                    if k in {"label", "operation_label", "group_name"}:
+                    if k in {"label", "operation_label"}:
+                        continue
+                    if k == "group_name":
+                        # Promote namespace-specific group_name to the group name.
+                        ns_group_name = v.strip() if isinstance(v, str) else ""
+                        if ns_group_name:
+                            new_group["name"] = ns_group_name
                         continue
                     new_group[k] = v
                 op_groups[group_key] = new_group
         else:
-            # Flat group: determine opcode from entry evidence or default to 0x02
+            # Flat group: determine opcode from entry evidence, discovery_advisory,
+            # or default to 0x02.
             op_key = "0x02"
             instances = group_obj.get("instances")
+            _found_opcode = False
             if isinstance(instances, dict):
                 for inst_obj in instances.values():
                     if not isinstance(inst_obj, dict):
@@ -354,10 +295,19 @@ def _migrate_v22_to_v23(artifact: dict[str, Any]) -> bool:
                             read_opcode = entry.get("read_opcode")
                             if isinstance(read_opcode, str) and read_opcode.startswith("0x"):
                                 op_key = read_opcode
+                                _found_opcode = True
                                 break
-                    else:
-                        continue
-                    break
+                    if _found_opcode:
+                        break
+            if not _found_opcode:
+                # Fall back to discovery_advisory.proven_register_opcodes
+                discovery = group_obj.get("discovery_advisory")
+                if isinstance(discovery, dict):
+                    proven = discovery.get("proven_register_opcodes")
+                    if isinstance(proven, list) and proven:
+                        first = proven[0]
+                        if isinstance(first, str) and first.startswith("0x"):
+                            op_key = first
 
             op_obj = operations.setdefault(op_key, {})
             op_groups = op_obj.setdefault("groups", {})

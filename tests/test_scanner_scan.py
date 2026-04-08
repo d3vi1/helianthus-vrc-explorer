@@ -1051,12 +1051,12 @@ def test_artifact_schema_version(tmp_path: Path) -> None:
 
     assert artifact["schema_version"] == CURRENT_ARTIFACT_SCHEMA_VERSION
     contract = artifact["meta"]["artifact_contract"]
-    assert contract["namespace_identity_keys"] == "opcode_hex"
-    assert contract["namespace_labels"] == "presentation_only"
-    # v2.3: dual_namespace removed
+    assert contract["operation_identity_keys"] == "opcode_hex"
+    assert contract["operation_labels"] == "presentation_only"
+    # v2.3: operations-first, dual_namespace removed
     assert (
         contract["b524_row_identity"]["dedupe_key_format"]
-        == "<group>:<namespace>:<instance>:<register>"
+        == "<group>:<operation>:<instance>:<register>"
     )
     assert "round_trip_stability" in contract["b524_row_identity"]
 
@@ -1103,7 +1103,7 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     assert remote_group["ii_max"] == "0x0a"
     assert (
         local_group["discovery_advisory"]["instance_discovery_decision"]["decision"]
-        == "independent_per_namespace"
+        == "independent_per_operation"
     )
     assert local_group["availability_contract"]["namespace_relationship"] == "independent"
     assert local_group["availability_contract"]["probe_register"] == "0x0001"
@@ -1122,7 +1122,7 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     )
 
     scan_plan = artifact["meta"]["scan_plan"]["groups"]["0x09"]
-    assert set(scan_plan["namespaces"]) == {"0x02", "0x06"}
+    assert set(scan_plan["operations"]) == {"0x02", "0x06"}
 
     scanned_opcodes = {
         opcode
@@ -1616,11 +1616,11 @@ def test_scan_b524_applies_research_preset_in_non_interactive_mode(tmp_path: Pat
 
     scan_plan = artifact["meta"]["scan_plan"]["groups"]
     assert "0x69" in scan_plan
-    # v2.3: dual_namespace removed from scan plan
-    assert set(scan_plan["0x69"]["namespaces"]) == {"0x02", "0x06"}
-    for namespace in ("0x02", "0x06"):
-        assert scan_plan["0x69"]["namespaces"][namespace]["rr_max"] == "0x0030"
-        assert scan_plan["0x69"]["namespaces"][namespace]["instances"] == [
+    # v2.3: operations-first scan plan
+    assert set(scan_plan["0x69"]["operations"]) == {"0x02", "0x06"}
+    for op in ("0x02", "0x06"):
+        assert scan_plan["0x69"]["operations"][op]["rr_max"] == "0x0030"
+        assert scan_plan["0x69"]["operations"][op]["instances"] == [
             f"0x{ii:02x}" for ii in range(0x0B)
         ]
 
@@ -1652,9 +1652,9 @@ def test_scan_b524_recommended_plan_keeps_namespace_rr_max(tmp_path: Path) -> No
     )
 
     plan = artifact["meta"]["scan_plan"]["groups"]["0x09"]
-    assert plan["dual_namespace"] is True
-    assert plan["namespaces"]["0x02"]["rr_max"] == "0x000f"
-    assert plan["namespaces"]["0x06"]["rr_max"] == "0x0035"
+    assert plan["multi_op"] is True
+    assert plan["operations"]["0x02"]["rr_max"] == "0x000f"
+    assert plan["operations"]["0x06"]["rr_max"] == "0x0035"
     assert artifact["meta"]["scan_plan"]["estimated_register_requests"] == 70
 
 
@@ -2558,7 +2558,7 @@ def test_scan_b524_replan_promotes_group_01_to_dual_namespace_before_queue_rebui
     assert remote_group["instances"]["0x00"]["registers"]["0x0000"]["raw_hex"] == "06"
 
     scan_plan = artifact["meta"]["scan_plan"]["groups"]["0x01"]
-    assert set(scan_plan["namespaces"]) == {"0x02", "0x06"}
+    assert set(scan_plan["operations"]) == {"0x02", "0x06"}
     assert (0x06, 0x01, 0x00, 0x0000) in transport.register_reads
 
 

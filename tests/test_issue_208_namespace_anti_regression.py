@@ -165,33 +165,37 @@ def test_issue_208_fixture_backward_compatibility_migrates_legacy_shape() -> Non
 
 def test_issue_208_summary_namespace_totals_are_opcode_authoritative(tmp_path: Path) -> None:
     artifact = {
+        "schema_version": "2.3",
         "meta": {"destination_address": "0x15"},
-        "groups": {
-            "0x09": {
-                "name": "Regulators",
-                "descriptor_observed": 1.0,
-                "dual_namespace": True,
-                "namespaces": {
-                    "0x02": {
-                        "label": "remote",
+        "operations": {
+            "0x02": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
+                        "descriptor_observed": 1.0,
                         "instances": {
                             "0x00": {
                                 "present": True,
                                 "registers": {"0x0001": {"read_opcode": "0x02", "error": None}},
                             }
                         },
-                    },
-                    "0x06": {
-                        "label": "local",
+                    }
+                }
+            },
+            "0x06": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
+                        "descriptor_observed": 1.0,
                         "instances": {
                             "0x00": {
                                 "present": True,
                                 "registers": {"0x0002": {"read_opcode": "0x06", "error": None}},
                             }
                         },
-                    },
-                },
-            }
+                    }
+                }
+            },
         },
     }
 
@@ -206,33 +210,37 @@ def test_issue_208_summary_namespace_totals_are_opcode_authoritative(tmp_path: P
 
 def test_issue_208_html_namespace_isolation_avoids_single_namespace_sentinels() -> None:
     artifact = {
+        "schema_version": "2.3",
         "meta": {"destination_address": "0x15"},
-        "groups": {
-            "0x09": {
-                "name": "Regulators",
-                "dual_namespace": True,
-                "descriptor_observed": 1.0,
-                "namespaces": {
-                    "0x02": {
-                        "label": "remote",
+        "operations": {
+            "0x02": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
+                        "descriptor_observed": 1.0,
                         "instances": {
                             "0x00": {
                                 "present": True,
                                 "registers": {"0x0001": {"read_opcode": "0x02", "raw_hex": "01"}},
                             }
                         },
-                    },
-                    "0x06": {
-                        "label": "local",
+                    }
+                }
+            },
+            "0x06": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
+                        "descriptor_observed": 1.0,
                         "instances": {
                             "0x00": {
                                 "present": True,
                                 "registers": {"0x0002": {"read_opcode": "0x06", "raw_hex": "02"}},
                             }
                         },
-                    },
-                },
-            }
+                    }
+                }
+            },
         },
     }
 
@@ -244,8 +252,9 @@ def test_issue_208_html_namespace_isolation_avoids_single_namespace_sentinels() 
     script_end = html.index("</script>", script_start)
     embedded_artifact = json.loads(html[script_start:script_end].strip())
 
-    namespaces = embedded_artifact["groups"]["0x09"]["namespaces"]
-    assert set(namespaces) == {"0x02", "0x06"}
+    # v2.3: operations-first -- groups are under operations, not flat
+    assert "0x02" in embedded_artifact["operations"]
+    assert "0x06" in embedded_artifact["operations"]
     assert '"single":' not in html
 
 

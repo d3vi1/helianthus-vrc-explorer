@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from ..artifact_schema import flatten_operations_to_groups, migrate_artifact_schema
+from ..artifact_schema import migrate_artifact_schema
 from ..scanner.director import GROUP_CONFIG, group_name_for_opcode, group_namespace_profiles
 from ..scanner.identity import operation_label
 from .browse_models import BrowseTab, RegisterAddress, RegisterRow, TreeNodeRef
@@ -417,33 +417,12 @@ def _group_namespace_views(
     group_key: str,
     group_obj: dict[str, Any],
 ) -> list[tuple[str | None, str | None, dict[str, Any]]]:
-    if bool(group_obj.get("dual_namespace")):
-        namespaces = group_obj.get("namespaces")
-        if not isinstance(namespaces, dict):
-            return []
-        views: list[tuple[str | None, str | None, dict[str, Any]]] = []
-        for namespace_key in sorted(
-            (k for k in namespaces if isinstance(k, str)), key=_safe_int_hex
-        ):
-            namespace_obj = namespaces.get(namespace_key)
-            if not isinstance(namespace_obj, dict):
-                continue
-            label_obj = namespace_obj.get("label")
-            namespace_label = (
-                label_obj
-                if isinstance(label_obj, str) and label_obj.strip()
-                else _namespace_label_for_key(namespace_key) or namespace_key
-            )
-            instances = namespace_obj.get("instances")
-            views.append(
-                (
-                    namespace_key,
-                    namespace_label,
-                    instances if isinstance(instances, dict) else {},
-                )
-            )
-        return views
+    """Build namespace views by splitting instances by read_opcode.
 
+    In the operations-first schema, groups always have flat instances.
+    When instances contain entries with different read_opcode values, split
+    them into separate namespace views for rendering.
+    """
     instances = group_obj.get("instances")
     if not isinstance(instances, dict):
         return [(None, None, {})]
@@ -486,7 +465,7 @@ def _group_namespace_views(
     if len(split_instances) <= 1:
         return [(None, None, instances)]
 
-    views = []
+    views: list[tuple[str | None, str | None, dict[str, Any]]] = []
     for namespace_key in sorted(split_instances, key=_safe_int_hex):
         views.append(
             (
@@ -593,9 +572,33 @@ class BrowseStore:
             TreeNodeRef(node_id="root", label=device_label, level="root")
         ]
         row_by_id: dict[str, RegisterRow] = {}
-        groups = flatten_operations_to_groups(artifact)
+        # Build namespace views directly from operations-first structure.
+        # Each operation provides its own group objects; iterate them to produce
+        # (group_key, op_key, op_label, group_obj) tuples that avoid data loss
+        # from register-key collisions during merge.
+        _op_group_views: list[tuple[str, str, str, dict[str, Any]]] = []
+        _seen_group_keys: set[str] = set()
+        _operations = artifact.get("operations")
+        if isinstance(_operations, dict):
+            for _op_key in sorted(
+                (k for k in _operations if isinstance(k, str)), key=_safe_int_hex
+            ):
+                _op_obj = _operations.get(_op_key)
+                if not isinstance(_op_obj, dict):
+                    continue
+                _op_groups = _op_obj.get("groups")
+                if not isinstance(_op_groups, dict):
+                    continue
+                _op_label = _namespace_label_for_key(_op_key) or _op_key
+                for _gk in sorted(
+                    (k for k in _op_groups if isinstance(k, str)), key=_safe_int_hex
+                ):
+                    _go = _op_groups.get(_gk)
+                    if isinstance(_gk, str) and isinstance(_go, dict):
+                        _op_group_views.append((_gk, _op_key, _op_label, _go))
+                        _seen_group_keys.add(_gk)
 
-        group_keys = sorted((k for k in groups if isinstance(k, str)), key=_safe_int_hex)
+        group_keys = sorted(_seen_group_keys, key=_safe_int_hex)
         b524_operations = artifact.get("b524_operations")
         has_b524_operations = isinstance(b524_operations, dict) and bool(b524_operations)
         has_constraint_dictionary = isinstance(meta.get("constraint_dictionary"), dict)
@@ -623,15 +626,19 @@ class BrowseStore:
         seen_namespace_nodes: set[str] = set()
         seen_instance_nodes: set[str] = set()
 
-        for group_key in group_keys:
-            group_obj = groups.get(group_key)
-            if not isinstance(group_obj, dict):
-                continue
+        for group_key, op_key, op_label, group_obj in _op_group_views:
             group_name = str(group_obj.get("name") or "Unknown")
             gg = _safe_int_hex(group_key)
-            group_single_namespace_key = _single_namespace_key(group_key, group_obj)
-            group_single_namespace_label = _namespace_label_for_key(group_single_namespace_key)
-            namespace_views = _group_namespace_views(group_key=group_key, group_obj=group_obj)
+            # Split instances by read_opcode to separate namespace views.
+            # A single operation group may contain entries with different
+            # read_opcodes (e.g. after migration from v2.2 flat groups).
+            namespace_views = _group_namespace_views(
+                group_key=group_key, group_obj=group_obj
+            )
+            # When the split produces a single (None, None, ...) view, use
+            # the operation key as the namespace context.
+            if len(namespace_views) == 1 and namespace_views[0][0] is None:
+                namespace_views = [(op_key, op_label, namespace_views[0][2])]
             if not namespace_views:
                 continue
             all_instance_keys = sorted(
@@ -649,12 +656,8 @@ class BrowseStore:
             )
 
             for namespace_key, namespace_label, instances in namespace_views:
-                effective_namespace_key = (
-                    namespace_key if namespace_key is not None else group_single_namespace_key
-                )
-                effective_namespace_label = (
-                    namespace_label if namespace_key is not None else group_single_namespace_label
-                )
+                effective_namespace_key = namespace_key or op_key
+                effective_namespace_label = namespace_label or op_label
                 section_key = _b524_section_key_for_opcode(effective_namespace_key)
                 if section_key not in {"controller_registers", "device_slots"}:
                     continue

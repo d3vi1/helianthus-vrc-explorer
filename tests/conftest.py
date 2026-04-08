@@ -6,8 +6,6 @@ from typing import Any
 
 import pytest
 
-from helianthus_vrc_explorer.artifact_schema import flatten_operations_to_groups
-
 
 @pytest.fixture(autouse=True)
 def _no_scanner_time_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -31,11 +29,25 @@ def dual_namespace_scan_artifact(dual_namespace_scan_path: Path) -> dict[str, ob
 
 
 def artifact_groups(artifact: dict[str, Any]) -> dict[str, Any]:
-    """Extract flattened groups from a v2.3 operations-first artifact.
+    """Build a merged groups view from a v2.3 operations-first artifact.
 
-    Test helper: use this instead of artifact["groups"] to access scan output.
+    Test helper: merges all operations' groups into a single dict for
+    backward-compatible group-level assertions.
     """
-    return flatten_operations_to_groups(artifact)
+    groups: dict[str, Any] = {}
+    operations = artifact.get("operations")
+    if not isinstance(operations, dict):
+        return groups
+    for op_obj in operations.values():
+        if not isinstance(op_obj, dict):
+            continue
+        op_groups = op_obj.get("groups")
+        if not isinstance(op_groups, dict):
+            continue
+        for gk, go in op_groups.items():
+            if isinstance(gk, str) and isinstance(go, dict) and gk not in groups:
+                groups[gk] = go
+    return groups
 
 
 def artifact_op_group(

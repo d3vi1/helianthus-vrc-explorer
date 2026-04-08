@@ -45,18 +45,18 @@ def _sample_artifact() -> dict[str, object]:
 
 
 def _dual_namespace_artifact() -> dict[str, object]:
+    """Operations-first v2.3 fixture with two operations sharing group 0x09."""
     return {
+        "schema_version": "2.3",
         "meta": {
             "destination_address": "0x15",
             "scan_timestamp": "2026-02-11T12:00:00Z",
         },
-        "groups": {
-            "0x09": {
-                "name": "Regulators",
-                "dual_namespace": True,
-                "namespaces": {
-                    "0x02": {
-                        "label": "local",
+        "operations": {
+            "0x02": {
+                "groups": {
+                    "0x09": {
+                        "name": "System",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -72,9 +72,13 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                 },
                             }
                         },
-                    },
-                    "0x06": {
-                        "label": "remote",
+                    }
+                }
+            },
+            "0x06": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -90,9 +94,9 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                 },
                             }
                         },
-                    },
-                },
-            }
+                    }
+                }
+            },
         },
     }
 
@@ -308,14 +312,13 @@ def test_browse_store_builds_namespace_nodes_for_dual_namespace_groups() -> None
 
 def test_browse_store_remote_namespace_instance_label_drops_local_group_assumption() -> None:
     artifact = {
+        "schema_version": "2.3",
         "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
-        "groups": {
-            "0x02": {
-                "name": "Heating Circuits",
-                "dual_namespace": True,
-                "namespaces": {
-                    "0x06": {
-                        "label": "local",
+        "operations": {
+            "0x06": {
+                "groups": {
+                    "0x02": {
+                        "name": "Heating Circuits",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -331,7 +334,7 @@ def test_browse_store_remote_namespace_instance_label_drops_local_group_assumpti
                             }
                         },
                     }
-                },
+                }
             }
         },
     }

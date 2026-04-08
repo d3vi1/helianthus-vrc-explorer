@@ -6,7 +6,7 @@ import json
 from html import escape as _escape_html
 from typing import Any
 
-from ..artifact_schema import flatten_operations_to_groups
+from ..artifact_schema import migrate_artifact_schema
 from ..scanner.director import group_name_for_opcode
 from .emphasis import html_star_bold
 
@@ -482,13 +482,53 @@ __ARTIFACT_JSON__
           });
       }
 
+      // Build a flat group view from operations-first structure.
+      // Each operation/group pair gets its own entry; the op_key acts as the
+      // namespace identifier for rendering purposes.
+      function buildGroupsFromOperations(ops) {
+        const groups = {};
+        if (!ops || typeof ops !== "object") return groups;
+        for (const opKey of Object.keys(ops)) {
+          const opObj = ops[opKey];
+          if (!opObj || typeof opObj !== "object") continue;
+          const opGroups = opObj.groups;
+          if (!opGroups || typeof opGroups !== "object") continue;
+          for (const groupKey of Object.keys(opGroups)) {
+            const groupObj = opGroups[groupKey];
+            if (!groupObj || typeof groupObj !== "object") continue;
+            if (!groups[groupKey]) {
+              // First operation for this group: store directly with instances
+              groups[groupKey] = Object.assign({}, groupObj, { _op_key: opKey });
+            } else {
+              // Multiple operations share this group: split by read_opcode in instances
+              const existing = groups[groupKey];
+              const newInstances = groupObj.instances || {};
+              const existingInstances = existing.instances || {};
+              // Merge instances from additional operations
+              for (const iiKey of Object.keys(newInstances)) {
+                if (!existingInstances[iiKey]) {
+                  existingInstances[iiKey] = newInstances[iiKey];
+                } else {
+                  // Merge registers
+                  const existRegs = existingInstances[iiKey].registers || {};
+                  const newRegs = (newInstances[iiKey] || {}).registers || {};
+                  for (const rrKey of Object.keys(newRegs)) {
+                    existRegs[rrKey] = newRegs[rrKey];
+                  }
+                  existingInstances[iiKey].registers = existRegs;
+                }
+              }
+              existing.instances = existingInstances;
+            }
+          }
+        }
+        return groups;
+      }
+
       function getGroupObject(groupObj) {
         if (!groupObj || typeof groupObj !== "object") return { name: "Unknown", instances: {} };
-        // Artifact v2: groups may be single-namespace via `instances` or dual-namespace via `namespaces`.
-        if (
-          (groupObj.instances && typeof groupObj.instances === "object") ||
-          (groupObj.namespaces && typeof groupObj.namespaces === "object")
-        ) {
+        // Operations-first: groups always have flat instances.
+        if (groupObj.instances && typeof groupObj.instances === "object") {
           return groupObj;
         }
         // Legacy-ish: groupObj might itself be an instances map.
@@ -1416,9 +1456,10 @@ __ARTIFACT_JSON__
 
       function groupHasNamespace(groupObj, targetNamespaceKey) {
         if (!groupObj || typeof groupObj !== "object" || !targetNamespaceKey) return false;
-        if (groupObj.dual_namespace && groupObj.namespaces && typeof groupObj.namespaces === "object") {
-          return !!groupObj.namespaces[targetNamespaceKey];
-        }
+        // Operations-first: check whether the group was produced by the target
+        // operation, or whether its instances contain entries with read_opcode
+        // matching the target.
+        if (groupObj._op_key === targetNamespaceKey) return true;
         const split = splitInstancesByNamespace(groupObj.instances || {}, null);
         return !!split[targetNamespaceKey];
       }
@@ -1455,7 +1496,7 @@ __ARTIFACT_JSON__
       function renderB524OperationRows(sectionKey, mountTarget) {
         const operations = artifact && typeof artifact === "object" ? artifact.b524_operations : null;
         const metaObj = artifact && typeof artifact === "object" ? artifact.meta : null;
-        const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+        const groupsRoot = artifact && typeof artifact === "object" ? buildGroupsFromOperations(artifact.operations) : {};
         const container = document.createElement("div");
         const title = document.createElement("div");
         title.className = "section-title";
@@ -1591,7 +1632,7 @@ __ARTIFACT_JSON__
       }
 
       function renderActiveGroup(groupKey, forcedNamespaceKey = null, mountTarget = sheetArea) {
-        const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+        const groupsRoot = artifact && typeof artifact === "object" ? buildGroupsFromOperations(artifact.operations) : {};
         if (!groupKey || !groupsRoot[groupKey]) {
           mountTarget.innerHTML = "<div class='subtitle'>No groups.</div>";
           return;
@@ -1901,34 +1942,21 @@ __ARTIFACT_JSON__
 
         mountTarget.appendChild(filters);
 
-        // Resolve the active namespace and build the table directly
+        // Resolve the active namespace and build the table directly.
+        // Operations-first: split instances by read_opcode to isolate views.
         let activeInstances = null;
         let activeNsKey = forcedNamespaceKey;
 
-        if (groupObj.dual_namespace && groupObj.namespaces && typeof groupObj.namespaces === "object") {
-          let namespaceKeys = sortedHexKeys(Object.keys(groupObj.namespaces));
-          if (forcedNamespaceKey) {
-            namespaceKeys = namespaceKeys.filter((key) => key === forcedNamespaceKey);
-          }
-          if (namespaceKeys.length) {
-            activeNsKey = namespaceKeys[0];
-            const nsObj = groupObj.namespaces[activeNsKey];
-            if (nsObj && typeof nsObj === "object") {
-              activeInstances = nsObj.instances || {};
-            }
-          }
+        const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);
+        let namespaceKeys = sortedHexKeys(Object.keys(splitNamespaces));
+        if (forcedNamespaceKey) {
+          namespaceKeys = namespaceKeys.filter((key) => key === forcedNamespaceKey);
+        }
+        if (namespaceKeys.length) {
+          activeNsKey = namespaceKeys[0];
+          activeInstances = splitNamespaces[activeNsKey] || {};
         } else {
-          const splitNamespaces = splitInstancesByNamespace(groupObj.instances || {}, null);
-          let namespaceKeys = sortedHexKeys(Object.keys(splitNamespaces));
-          if (forcedNamespaceKey) {
-            namespaceKeys = namespaceKeys.filter((key) => key === forcedNamespaceKey);
-          }
-          if (namespaceKeys.length) {
-            activeNsKey = namespaceKeys[0];
-            activeInstances = splitNamespaces[activeNsKey] || {};
-          } else {
-            activeInstances = groupObj.instances || {};
-          }
+          activeInstances = groupObj.instances || {};
         }
 
         if (activeInstances) {
@@ -1942,7 +1970,7 @@ __ARTIFACT_JSON__
       }
 
       function renderB524Tab() {
-        const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+        const groupsRoot = artifact && typeof artifact === "object" ? buildGroupsFromOperations(artifact.operations) : {};
         const operations = artifact && typeof artifact === "object" ? artifact.b524_operations : null;
         const metaObj = artifact && typeof artifact === "object" ? artifact.meta : null;
         const host = document.createElement("div");
@@ -2043,7 +2071,7 @@ __ARTIFACT_JSON__
         sheetArea.innerHTML = "<div class='subtitle'>No tab selected.</div>";
       }
 
-      const groupsRoot = artifact && typeof artifact === "object" ? artifact.groups || {} : {};
+      const groupsRoot = artifact && typeof artifact === "object" ? buildGroupsFromOperations(artifact.operations) : {};
       const hasB524 = !!(
         (groupsRoot && typeof groupsRoot === "object" && Object.keys(groupsRoot).length > 0)
         || (artifact && typeof artifact === "object" && artifact.b524_operations && typeof artifact.b524_operations === "object")
@@ -2061,13 +2089,21 @@ __ARTIFACT_JSON__
 
 
 def render_html_report(artifact: dict[str, Any], *, title: str | None = None) -> str:
+    # Ensure operations-first structure for consistent JS traversal.
+    artifact, _migration = migrate_artifact_schema(artifact)
     meta = artifact.get("meta")
-    groups = flatten_operations_to_groups(artifact)
+    # Build group_name_map from operations-first structure
     group_name_map: dict[str, dict[str, str]] = {}
-    if isinstance(groups, dict):
-        for group_key in groups:
-            if not isinstance(group_key, str):
+    operations = artifact.get("operations")
+    if isinstance(operations, dict):
+        seen_groups: set[str] = set()
+        for op_obj in operations.values():
+            if not isinstance(op_obj, dict):
                 continue
+            op_groups = op_obj.get("groups")
+            if isinstance(op_groups, dict):
+                seen_groups.update(k for k in op_groups if isinstance(k, str))
+        for group_key in seen_groups:
             try:
                 group = int(group_key, 0)
             except ValueError:
@@ -2113,14 +2149,10 @@ def render_html_report(artifact: dict[str, Any], *, title: str | None = None) ->
                     "</section>"
                 )
     page_title = title or "Regulator Scan Browser"
-    # Inject flattened groups for JavaScript traversal compatibility
-    artifact_for_html = dict(artifact)
-    if "groups" not in artifact_for_html and isinstance(groups, dict):
-        artifact_for_html["groups"] = groups
     return (
         _TEMPLATE.replace("__TITLE__", _escape_html(page_title))
         .replace("__IDENTITY_CARD__", identity_html)
-        .replace("__ARTIFACT_JSON__", _json_for_html(artifact_for_html))
+        .replace("__ARTIFACT_JSON__", _json_for_html(artifact))
         .replace("__B524_GROUP_NAMES__", _json_for_html(group_name_map))
         .rstrip()
         + "\n"

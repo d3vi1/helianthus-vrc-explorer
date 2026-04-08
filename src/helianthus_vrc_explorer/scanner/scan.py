@@ -174,7 +174,7 @@ def _primary_opcode(group: int) -> RegisterOpcode:
     return _group_opcodes(group)[0]
 
 
-def _is_dual_namespace_group(group: int) -> bool:
+def _is_multi_operation_group(group: int) -> bool:
     return len(_group_opcodes(group)) > 1
 
 
@@ -260,38 +260,38 @@ def _plan_key(group: int, opcode: int) -> PlanKey:
     return make_plan_key(group, opcode)
 
 
-def _instance_discovery_decision(*, group: int, dual_namespace: bool) -> dict[str, Any]:
-    if not dual_namespace:
+def _instance_discovery_decision(*, group: int, multi_op: bool) -> dict[str, Any]:
+    if not multi_op:
         return {
-            "strategy": "single_namespace",
-            "decision": "independent_per_namespace",
+            "strategy": "single_operation",
+            "decision": "independent_per_operation",
             "tradeoff": "not_applicable",
         }
 
     if group in {0x09, 0x0A}:
         return {
-            "strategy": "dual_namespace",
-            "decision": "independent_per_namespace",
+            "strategy": "multi_operation",
+            "decision": "independent_per_operation",
             "tradeoff": (
-                "extra presence probes accepted to avoid cross-namespace false-equivalence "
+                "extra presence probes accepted to avoid cross-operation false-equivalence "
                 "assumptions"
             ),
         }
 
     return {
-        "strategy": "dual_namespace",
-        "decision": "independent_per_namespace",
+        "strategy": "multi_operation",
+        "decision": "independent_per_operation",
         "tradeoff": "independent probing is authoritative over shared inference",
     }
 
 
-def _namespace_plan_meta(group_plan: GroupScanPlan) -> tuple[str, dict[str, object]]:
-    namespace_key = _hex_u8(group_plan.opcode)
+def _operation_plan_meta(group_plan: GroupScanPlan) -> tuple[str, dict[str, object]]:
+    op_key = _hex_u8(group_plan.opcode)
     payload = group_plan.to_meta()
-    payload["namespace_key"] = namespace_key
+    payload["op_key"] = op_key
     payload["label"] = opcode_label(group_plan.opcode)
     payload["operation_label"] = operation_label(opcode=group_plan.opcode, optype=0x00)
-    return namespace_key, payload
+    return op_key, payload
 
 
 def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, object]:
@@ -303,40 +303,38 @@ def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, obje
     for group in sorted(grouped):
         group_plans = sorted(grouped[group], key=lambda gp: gp.opcode)
         group_key = _hex_u8(group)
-        namespace_meta: dict[str, object] = {}
+        op_meta: dict[str, object] = {}
         for group_plan in group_plans:
-            namespace_key, payload = _namespace_plan_meta(group_plan)
-            namespace_meta[namespace_key] = payload
+            op_key, payload = _operation_plan_meta(group_plan)
+            op_meta[op_key] = payload
         if len(group_plans) > 1:
             serializable[group_key] = {
-                "dual_namespace": True,
-                "namespace_identity_keys": "opcode_hex",
-                "namespaces": namespace_meta,
+                "multi_op": True,
+                "operations": op_meta,
             }
             continue
-        _, single_payload = _namespace_plan_meta(group_plans[0])
+        _, single_payload = _operation_plan_meta(group_plans[0])
         serializable[group_key] = {
             **single_payload,
-            "dual_namespace": False,
-            "namespace_identity_keys": "opcode_hex",
-            "namespaces": namespace_meta,
+            "multi_op": False,
+            "operations": op_meta,
         }
     return serializable
 
 
 def _artifact_contract_metadata() -> dict[str, Any]:
     return {
-        "namespace_identity_keys": "opcode_hex",
-        "namespace_labels": "presentation_only",
+        "operation_identity_keys": "opcode_hex",
+        "operation_labels": "presentation_only",
         "topology_authority": (
-            "persisted groups[*].dual_namespace and groups[*].namespaces are authoritative for "
+            "operations-first: operations[op_key].groups[gg].instances are authoritative for "
             "consumers"
         ),
         "b524_row_identity": {
-            "dedupe_key_format": "<group>:<namespace>:<instance>:<register>",
-            "path_format": "B524/<section>/<operation>/<group-name>/<namespace-display>/<instance>/<register-name>",
+            "dedupe_key_format": "<group>:<operation>:<instance>:<register>",
+            "path_format": "B524/<section>/<operation>/<group-name>/<operation-display>/<instance>/<register-name>",
             "round_trip_stability": (
-                "namespace keys and persisted topology must be preserved without sentinel rewrite"
+                "operation keys and persisted topology must be preserved without sentinel rewrite"
             ),
         },
     }
@@ -1506,7 +1504,7 @@ def scan_b524(
                 discovery_advisory["opcode_probe"] = unknown_opcode_probe_map[group.group]
             discovery_advisory["instance_discovery_decision"] = _instance_discovery_decision(
                 group=group.group,
-                dual_namespace=multi_op,
+                multi_op=multi_op,
             )
             if desc_for_artifact is not None:
                 discovery_advisory["descriptor_observed"] = desc_for_artifact
