@@ -476,7 +476,7 @@ def read_register(
             "raw_hex": None,
             "type": None,
             "value": None,
-            "error": None,
+            "error": "nack",
         }
     except TransportTimeout:
         return {
@@ -492,7 +492,7 @@ def read_register(
             "raw_hex": None,
             "type": None,
             "value": None,
-            "error": None,
+            "error": "timeout",
         }
     except TransportError as exc:
         if isinstance(exc, TransportCommandNotEnabled):

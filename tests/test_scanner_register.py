@@ -73,7 +73,7 @@ def test_read_register_surfaces_timeout_without_local_retry(
     # transport is surfaced directly.
     assert transport.calls == 1
     assert entry["response_state"] == "timeout"
-    assert entry["error"] is None
+    assert entry["error"] == "timeout"
     assert entry["raw_hex"] is None
 
 
@@ -95,7 +95,7 @@ def test_read_register_timeout_returns_timeout_entry_without_local_retry(
 
     assert transport.calls == 1
     assert entry["response_state"] == "timeout"
-    assert entry["error"] is None
+    assert entry["error"] == "timeout"
     assert entry["raw_hex"] is None
 
 
@@ -114,7 +114,7 @@ def test_read_register_nack_returns_nack_response_state() -> None:
 
     assert transport.calls == 1
     assert entry["response_state"] == "nack"
-    assert entry["error"] is None
+    assert entry["error"] == "nack"
     assert entry["raw_hex"] is None
 
 

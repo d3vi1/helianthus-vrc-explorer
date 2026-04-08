@@ -331,7 +331,9 @@ def _decode_register_read_entry(
     }
 
     if response is None:
-        entry["response_state"] = "nack" if retry_kind == "nack_or_crc" else "timeout"
+        state = "nack" if retry_kind == "nack_or_crc" else "timeout"
+        entry["response_state"] = state
+        entry["error"] = state
         return entry
     if len(response) == 0:
         entry["response_state"] = "empty_reply"
