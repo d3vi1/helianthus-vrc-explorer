@@ -1515,12 +1515,8 @@ def scan_b524(
                 discovery_advisory["descriptor_expected"] = group.expected_descriptor
             if group.descriptor_mismatch:
                 discovery_advisory["descriptor_mismatch"] = True
-            artifact_group_name = _group_display_name_for_opcodes(
-                group=group.group,
-                opcodes=opcodes,
-                fallback=group.name,
-            )
             for opcode in opcodes:
+                artifact_group_name = _group_name_for_opcode(group.group, opcode)
                 namespace_ii_max = _ii_max_for_opcode(
                     group=group.group,
                     default_ii_max=meta.ii_max,

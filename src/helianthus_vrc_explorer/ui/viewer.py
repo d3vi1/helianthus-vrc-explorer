@@ -86,7 +86,7 @@ def get_row_type_override(
     if not isinstance(group_overrides, dict):
         return None
     if op_key is not None:
-        ops = group_overrides.get("operations")
+        ops = group_overrides.get("operations", group_overrides.get("namespaces"))
         if isinstance(ops, dict):
             op_overrides = ops.get(op_key)
             if isinstance(op_overrides, dict):

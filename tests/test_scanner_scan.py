@@ -1101,7 +1101,8 @@ def test_artifact_dual_namespace_structure(monkeypatch, tmp_path: Path) -> None:
     # v2.3: each OP has its own group entry
     local_group = artifact_op_group(artifact, op="0x02", group="0x09")
     remote_group = artifact_op_group(artifact, op="0x06", group="0x09")
-    assert local_group["name"] == "Regulators"
+    assert local_group["name"] == "System"
+    assert remote_group["name"] == "Regulators"
     assert local_group["ii_max"] == "0x0a"
     assert remote_group["ii_max"] == "0x0a"
     assert (
@@ -2270,7 +2271,8 @@ def test_scan_b524_textual_planner_uses_namespace_owned_labels_for_groups_09_and
     }
     assert planner_label_map[(0x09, 0x02)] == ("System", "local")
     assert planner_label_map[(0x09, 0x06)] == ("Regulators", "remote")
-    assert artifact_op_group(artifact, op="0x02", group="0x09")["name"] == "Regulators"
+    assert artifact_op_group(artifact, op="0x02", group="0x09")["name"] == "System"
+    assert artifact_op_group(artifact, op="0x06", group="0x09")["name"] == "Regulators"
 
 
 def test_scan_b524_textual_planner_uses_remote_presence_for_op06_rows(
