@@ -4,7 +4,7 @@ import logging
 import math
 import struct
 from dataclasses import dataclass
-from typing import Final, NotRequired, TypedDict
+from typing import Final, NotRequired, TypedDict, cast
 
 from ..protocol.b524 import build_directory_probe_payload
 from ..transport.base import (
@@ -26,11 +26,15 @@ class GroupConfig(TypedDict):
     ii_max: int
     rr_max: int
     opcodes: list[int]
+    name_by_opcode: NotRequired[dict[int, str]]
+    # Namespace-capable opcode families known for this group. This can include
+    # future namespaces even when active scanning still uses a conservative subset.
+    namespace_opcodes: NotRequired[list[int]]
     rr_max_by_opcode: NotRequired[dict[int, int]]
     ii_max_by_opcode: NotRequired[dict[int, int]]
-    # When True, this group is only included in the exhaustive preset.
-    # It will NOT appear in conservative/recommended/full presets even if
-    # discovered by the directory probe.
+    # Legacy key name preserved for compatibility with older scan artifacts.
+    # When True, this group was historically excluded from recommended/full presets.
+    # No longer used in preset logic; kept for schema backward-compatibility.
     exhaustive_only: NotRequired[bool]
 
 
@@ -41,8 +45,12 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "desc": 3.0,
         "name": "Regulator Parameters",
         "ii_max": 0x00,
-        "rr_max": 0x00FF,
+        "rr_max": 0x01FF,
         "opcodes": [0x02],
+        "namespace_opcodes": [0x02],
+        "name_by_opcode": {0x02: "Regulator Parameters"},
+        "rr_max_by_opcode": {0x02: 0x01FF},
+        "ii_max_by_opcode": {0x02: 0x00},
     },
     0x01: {
         "desc": 3.0,
@@ -50,6 +58,10 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x00,
         "rr_max": 0x0013,
         "opcodes": [0x02],
+        "name_by_opcode": {0x02: "Hot Water Circuit", 0x06: "Primary Heating Source"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x0013, 0x06: 0x0015},
+        "ii_max_by_opcode": {0x02: 0x00, 0x06: 0x07},
     },
     0x02: {
         "desc": 1.0,
@@ -57,6 +69,10 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x0A,
         "rr_max": 0x0025,
         "opcodes": [0x02],
+        "name_by_opcode": {0x02: "Heating Circuits", 0x06: "Secondary Heating Source"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x0025, 0x06: 0x0015},
+        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x07},
     },
     0x03: {
         "desc": 1.0,
@@ -64,6 +80,10 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x0A,
         "rr_max": 0x002E,
         "opcodes": [0x02],
+        "name_by_opcode": {0x02: "Zones", 0x06: "Unknown"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x002E, 0x06: 0x002E},
+        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
     },
     0x04: {
         "desc": 6.0,
@@ -71,6 +91,10 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x00,
         "rr_max": 0x000B,
         "opcodes": [0x02],
+        "name_by_opcode": {0x02: "Solar Circuit", 0x06: "Unknown"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x000B, 0x06: 0x000B},
+        "ii_max_by_opcode": {0x02: 0x01, 0x06: 0x0A},
     },
     0x05: {
         "desc": 1.0,
@@ -78,14 +102,20 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x01,
         "rr_max": 0x0004,
         "opcodes": [0x02],
+        "name_by_opcode": {0x02: "Hot Water Cylinder", 0x06: "Unknown"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x0004, 0x06: 0x0004},
+        "ii_max_by_opcode": {0x02: 0x01, 0x06: 0x0A},
     },
     0x08: {
-        "name": "Buffer / Solar Cylinder 2",
+        "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0007,
         "opcodes": [0x02, 0x06],
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Unknown"},
+        "namespace_opcodes": [0x02, 0x06],
         "rr_max_by_opcode": {0x02: 0x0007, 0x06: 0x0004},
-        "ii_max_by_opcode": {0x02: 0x00, 0x06: 0x0A},
+        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
     },
     0x09: {
         "desc": 1.0,
@@ -93,6 +123,7 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x0A,
         "rr_max": 0x0035,
         "opcodes": [0x02, 0x06],
+        "name_by_opcode": {0x02: "System", 0x06: "Regulators"},
         "rr_max_by_opcode": {0x02: 0x000F, 0x06: 0x0035},
     },
     0x0A: {
@@ -101,6 +132,7 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x0A,
         "rr_max": 0x004D,
         "opcodes": [0x02, 0x06],
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Thermostats"},
         "rr_max_by_opcode": {0x02: 0x004D, 0x06: 0x0035},
     },
     0x0C: {
@@ -109,65 +141,130 @@ GROUP_CONFIG: Final[dict[int, GroupConfig]] = {
         "ii_max": 0x0A,
         "rr_max": 0x002F,
         "opcodes": [0x06],
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Functional Modules"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x002F, 0x06: 0x002F},
+        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
     },
     0x06: {
-        "name": "Unknown 0x06",
+        "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0030,
-        "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
+        "opcodes": [0x06],
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Unknown"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x0030, 0x06: 0x0030},
+        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
     },
     0x07: {
-        "name": "Unknown 0x07",
+        "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0030,
-        "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
+        "opcodes": [0x06],
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Unknown"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x0030, 0x06: 0x0030},
+        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
     },
     0x0B: {
-        "name": "Unknown 0x0B",
+        "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0010,
-        "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
+        "opcodes": [0x06],
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Unknown"},
+        "namespace_opcodes": [0x02, 0x06],
+        "rr_max_by_opcode": {0x02: 0x0010, 0x06: 0x0010},
+        "ii_max_by_opcode": {0x02: 0x0A, 0x06: 0x0A},
     },
     0x0D: {
-        "name": "Unknown 0x0D (VWZIO?)",
+        "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0030,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
     },
     0x0E: {
-        "name": "Unknown 0x0E",
+        "name": "Clock",
         "ii_max": 0x0A,
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Clock"},
     },
     0x0F: {
-        "name": "Unknown 0x0F",
+        "name": "Base Stations",
         "ii_max": 0x0A,
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
+        "name_by_opcode": {0x02: "Unknown", 0x06: "Base Stations"},
     },
     0x10: {
-        "name": "Unknown 0x10",
+        "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
     },
     0x11: {
-        "name": "Unknown 0x11",
+        "name": "Unknown",
         "ii_max": 0x0A,
         "rr_max": 0x0010,
         "opcodes": [0x02, 0x06],
-        "exhaustive_only": True,
     },
 }
 KNOWN_CORE_GROUPS: Final[frozenset[int]] = frozenset({0x02, 0x03})
+
+
+@dataclass(frozen=True, slots=True)
+class NamespaceProfile:
+    opcode: int
+    name: str
+    ii_max: int
+    rr_max: int
+
+
+def group_namespace_profiles(group: int) -> dict[int, NamespaceProfile]:
+    """Return namespace-aware profile rows keyed by opcode.
+
+    The returned map is canonical for config/model surfaces that need opcode-first
+    identity decisions without depending on scanner heuristics.
+    """
+
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return {}
+
+    namespace_opcodes = config.get("namespace_opcodes", config["opcodes"])
+    rr_overrides = config.get("rr_max_by_opcode", {})
+    ii_overrides = config.get("ii_max_by_opcode", {})
+    name_overrides = config.get("name_by_opcode", {})
+    default_name = str(config["name"])
+    default_rr = int(config["rr_max"])
+    default_ii = int(config["ii_max"])
+
+    profiles: dict[int, NamespaceProfile] = {}
+    for opcode in namespace_opcodes:
+        op = int(opcode)
+        profiles[op] = NamespaceProfile(
+            opcode=op,
+            name=str(name_overrides.get(op, default_name)),
+            ii_max=int(ii_overrides.get(op, default_ii)),
+            rr_max=int(rr_overrides.get(op, default_rr)),
+        )
+    return profiles
+
+
+def group_name_for_opcode(group: int, opcode: int) -> str:
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return f"Unknown 0x{group:02X}"
+    name_overrides = config.get("name_by_opcode")
+    if isinstance(name_overrides, dict):
+        override = name_overrides.get(int(opcode))
+        if isinstance(override, str) and override.strip():
+            return override
+    profiles = group_namespace_profiles(group)
+    profile = profiles.get(int(opcode))
+    if profile is not None:
+        return profile.name
+    return str(config["name"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +290,7 @@ def _parse_directory_descriptor(resp: bytes, group: int) -> float:
             "Short directory probe response: "
             f"expected >=4 bytes, got {len(resp)} bytes for GG=0x{group:02X}"
         )
-    return struct.unpack("<f", resp[:4])[0]
+    return cast(float, struct.unpack("<f", resp[:4])[0])
 
 
 def _directory_probe_retry_budget(group: int) -> int:
@@ -211,7 +308,8 @@ def discover_groups(
     """Phase A: Probe GG=0x00..0xFF via directory probe (opcode 0x00).
 
     Terminator logic: stop on the first NaN descriptor.
-    Descriptor `0.0` is a weak negative hint only: known core groups remain candidates.
+    Directory descriptors are not semantic authority for group identity, namespace topology,
+    or scan-plan inclusion. The only authoritative structural signal here is the NaN terminator.
     """
 
     discovered: list[DiscoveredGroup] = []
@@ -327,21 +425,6 @@ def discover_groups(
             # NaN streak.
             continue
 
-        if descriptor == 0.0:
-            if gg in KNOWN_CORE_GROUPS:
-                discovered.append(DiscoveredGroup(group=gg, descriptor=descriptor))
-                if observer is not None:
-                    observer.log(
-                        f"GG=0x{gg:02X} descriptor=0.0 but known core group - included",
-                        level="info",
-                    )
-            elif observer is not None:
-                observer.log(
-                    f"GG=0x{gg:02X} descriptor=0.0, non-core group - skipped (weak hint)",
-                    level="info",
-                )
-            continue
-
         if math.isnan(descriptor):
             logger.info("Directory terminator at GG=0x%02X (NaN)", gg)
             if observer is not None:
@@ -365,7 +448,8 @@ def classify_groups(
 ) -> list[ClassifiedGroup]:
     """Phase C (per issue wording): Map discovered groups using GROUP_CONFIG.
 
-    Descriptors are opaque hints, not structural authority.
+    Descriptors are advisory metadata for semantic identity and namespace topology once a group
+    is a scan candidate; discovery-time filtering still happens earlier in Phase A.
     """
 
     classified: list[ClassifiedGroup] = []

@@ -8,6 +8,8 @@ from helianthus_vrc_explorer.scanner.plan import (
     build_work_queue,
     estimate_register_requests,
     format_int_set,
+    format_plan_key,
+    make_plan_key,
     parse_int_set,
     parse_int_token,
 )
@@ -41,13 +43,15 @@ def test_parse_int_set_rejects_out_of_range() -> None:
 
 def test_estimate_register_requests() -> None:
     plan = {
-        (0x02, 0x02): GroupScanPlan(
+        make_plan_key(0x02, 0x02): GroupScanPlan(
             group=0x02,
             opcode=0x02,
             rr_max=0x0003,
             instances=(0x00, 0x01),
         ),
-        (0x01, 0x02): GroupScanPlan(group=0x01, opcode=0x02, rr_max=0x0001, instances=(0x00,)),
+        make_plan_key(0x01, 0x02): GroupScanPlan(
+            group=0x01, opcode=0x02, rr_max=0x0001, instances=(0x00,)
+        ),
     }
     # GG=0x02: 2 instances * (3+1) regs = 8
     # GG=0x01: 1 instance * (1+1) regs = 2
@@ -62,7 +66,7 @@ def test_format_int_set_compacts_ranges() -> None:
 
 def test_build_work_queue_skips_done_tasks() -> None:
     plan = {
-        (0x02, 0x02): GroupScanPlan(
+        make_plan_key(0x02, 0x02): GroupScanPlan(
             group=0x02,
             opcode=0x02,
             rr_max=0x0002,
@@ -95,7 +99,6 @@ def test_plan_dual_namespace_creates_two_entries() -> None:
             rr_max_full=0x000F,
             present_instances=(0x00,),
             namespace_label="local",
-            primary=True,
         ),
         PlannerGroup(
             group=0x09,
@@ -104,22 +107,102 @@ def test_plan_dual_namespace_creates_two_entries() -> None:
             descriptor=1.0,
             known=True,
             ii_max=0x0A,
-            rr_max=0x000F,
+            rr_max=0x0035,
             rr_max_full=0x0035,
             present_instances=(0x00,),
             namespace_label="remote",
-            primary=False,
         ),
     ]
 
     recommended = build_plan_from_preset(groups, preset="recommended")
-    assert sorted(recommended) == [(0x09, 0x02), (0x09, 0x06)]
-    assert recommended[(0x09, 0x02)].rr_max == 0x000F
-    assert recommended[(0x09, 0x06)].rr_max == 0x000F
-    assert recommended[(0x09, 0x02)].instances == (0x00,)
-    assert recommended[(0x09, 0x06)].instances == (0x00,)
+    local_key = make_plan_key(0x09, 0x02)
+    remote_key = make_plan_key(0x09, 0x06)
+    assert sorted(recommended) == [local_key, remote_key]
+    assert recommended[local_key].rr_max == 0x000F
+    assert recommended[remote_key].rr_max == 0x0035
+    assert recommended[local_key].instances == (0x00,)
+    assert recommended[remote_key].instances == (0x00,)
 
     full = build_plan_from_preset(groups, preset="full")
-    assert full[(0x09, 0x02)].instances == tuple(range(0x0A + 1))
-    assert full[(0x09, 0x06)].instances == tuple(range(0x0A + 1))
-    assert full[(0x09, 0x06)].rr_max == 0x0035
+    assert full[local_key].instances == tuple(range(0x0A + 1))
+    assert full[remote_key].instances == tuple(range(0x0A + 1))
+    assert full[remote_key].rr_max == 0x0035
+
+
+def test_plan_dual_namespace_presets_keep_namespace_specific_ii_max() -> None:
+    groups = [
+        PlannerGroup(
+            group=0x08,
+            opcode=0x02,
+            name="Unknown",
+            descriptor=1.0,
+            known=True,
+            ii_max=0x0A,
+            rr_max=0x0007,
+            rr_max_full=0x0007,
+            present_instances=(0x00,),
+            namespace_label="local",
+        ),
+        PlannerGroup(
+            group=0x08,
+            opcode=0x06,
+            name="Unknown",
+            descriptor=1.0,
+            known=True,
+            ii_max=0x0A,
+            rr_max=0x0004,
+            rr_max_full=0x0004,
+            present_instances=(0x00, 0x02),
+            namespace_label="remote",
+        ),
+    ]
+
+    recommended = build_plan_from_preset(groups, preset="recommended")
+    assert recommended[make_plan_key(0x08, 0x02)].instances == (0x00,)
+    assert recommended[make_plan_key(0x08, 0x06)].instances == (0x00, 0x02)
+
+    full = build_plan_from_preset(groups, preset="full")
+    assert full[make_plan_key(0x08, 0x02)].instances == tuple(range(0x0A + 1))
+    assert full[make_plan_key(0x08, 0x06)].instances == tuple(range(0x0A + 1))
+
+
+def test_plan_key_is_opcode_first_namespace_identity() -> None:
+    key = make_plan_key(0x09, 0x06)
+
+    assert key == (0x06, 0x09)
+    assert format_plan_key(key) == "0x09/0x06"
+
+
+def test_recommended_preset_skips_non_core_namespaces_without_verified_presence_contract() -> None:
+    groups = [
+        PlannerGroup(
+            group=0x01,
+            opcode=0x02,
+            name="Hot Water Circuit",
+            descriptor=3.0,
+            known=True,
+            ii_max=None,
+            rr_max=0x0013,
+            rr_max_full=0x0013,
+            present_instances=(0x00,),
+            recommended=False,
+        ),
+        PlannerGroup(
+            group=0x01,
+            opcode=0x06,
+            name="Primary Heating Source",
+            descriptor=3.0,
+            known=True,
+            ii_max=None,
+            rr_max=0x0015,
+            rr_max_full=0x0015,
+            present_instances=(0x00,),
+            namespace_label="remote",
+            recommended=False,
+        ),
+    ]
+
+    assert build_plan_from_preset(groups, preset="recommended") == {}
+
+    full = build_plan_from_preset(groups, preset="full")
+    assert sorted(full) == [make_plan_key(0x01, 0x02), make_plan_key(0x01, 0x06)]

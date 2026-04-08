@@ -441,8 +441,9 @@ def run_browse_from_artifact(
             root.data = "root"
             self._tree_node_by_ref = {"root": root}
             protocols: dict[str, Any] = {}
-            groups: dict[tuple[str, str], Any] = {}
-            namespaces: dict[tuple[str, str, str], Any] = {}
+            sections: dict[tuple[str, str], Any] = {}
+            groups: dict[tuple[str, str, str], Any] = {}
+            namespaces: dict[tuple[str, str, str, str], Any] = {}
             for node in self._store.tree_nodes:
                 if node.level == "root":
                     continue
@@ -452,15 +453,30 @@ def run_browse_from_artifact(
                     self._tree_node_by_ref[node.node_id] = proto_node
                     continue
                 if (
-                    node.level == "group"
+                    node.level == "section"
                     and node.protocol is not None
-                    and node.group_key is not None
+                    and node.section_key is not None
                 ):
                     parent = protocols.get(node.protocol)
                     if parent is None:
                         continue
+                    section_node = parent.add(node.label, data=node.node_id)
+                    sections[(node.protocol, node.section_key)] = section_node
+                    self._tree_node_by_ref[node.node_id] = section_node
+                    continue
+                if (
+                    node.level == "group"
+                    and node.protocol is not None
+                    and node.group_key is not None
+                ):
+                    section_key = node.section_key or ""
+                    parent = sections.get(
+                        (node.protocol, section_key), protocols.get(node.protocol)
+                    )
+                    if parent is None:
+                        continue
                     group_node = parent.add(node.label, data=node.node_id)
-                    groups[(node.protocol, node.group_key)] = group_node
+                    groups[(node.protocol, section_key, node.group_key)] = group_node
                     self._tree_node_by_ref[node.node_id] = group_node
                     continue
                 if (
@@ -469,11 +485,14 @@ def run_browse_from_artifact(
                     and node.group_key is not None
                     and node.namespace_key is not None
                 ):
-                    parent = groups.get((node.protocol, node.group_key))
+                    section_key = node.section_key or ""
+                    parent = groups.get((node.protocol, section_key, node.group_key))
                     if parent is None:
                         continue
                     namespace_node = parent.add(node.label, data=node.node_id)
-                    namespaces[(node.protocol, node.group_key, node.namespace_key)] = namespace_node
+                    namespaces[(node.protocol, section_key, node.group_key, node.namespace_key)] = (
+                        namespace_node
+                    )
                     self._tree_node_by_ref[node.node_id] = namespace_node
                     continue
                 if (
@@ -481,15 +500,40 @@ def run_browse_from_artifact(
                     and node.group_key is not None
                     and node.protocol is not None
                 ):
-                    parent = (
-                        namespaces.get((node.protocol, node.group_key, node.namespace_key))
-                        if node.namespace_key is not None
-                        else groups.get((node.protocol, node.group_key))
-                    )
+                    section_key = node.section_key or ""
+                    parent = None
+                    if node.namespace_key is not None:
+                        parent = namespaces.get(
+                            (
+                                node.protocol,
+                                section_key,
+                                node.group_key,
+                                node.namespace_key,
+                            )
+                        )
+                    if parent is None:
+                        parent = groups.get((node.protocol, section_key, node.group_key))
                     if parent is None:
                         continue
                     instance_node = parent.add(node.label, data=node.node_id)
                     self._tree_node_by_ref[node.node_id] = instance_node
+                    continue
+                if (
+                    node.level == "register"
+                    and node.group_key is not None
+                    and node.instance_key is not None
+                    and node.protocol is not None
+                ):
+                    section_key = node.section_key or ""
+                    parts = ["b524", "inst", section_key, node.group_key]
+                    if node.namespace_key is not None:
+                        parts.append(node.namespace_key)
+                    parts.append(node.instance_key)
+                    parent = self._tree_node_by_ref.get(":".join(parts))
+                    if parent is None:
+                        continue
+                    register_node = parent.add(node.label, data=node.node_id)
+                    self._tree_node_by_ref[node.node_id] = register_node
                     continue
                 if node.level == "range" and node.protocol is not None:
                     parent = protocols.get(node.protocol)
@@ -519,6 +563,7 @@ def run_browse_from_artifact(
         def _refresh_table(self) -> None:
             table = self.query_one("#browse-table", DataTable)
             selected = self._current_node()
+            self._sync_tabs_for_selection(selected)
             self._table_rows = self._store.rows_for_selection(selected, tab=self._active_tab)
             cursor = max(0, table.cursor_row)
             table.clear(columns=False)
@@ -557,6 +602,34 @@ def run_browse_from_artifact(
                 f"Namespace: {self._selection_namespace_label(selected)} | Tab: {self._active_tab}"
             )
             self._set_status(status_text)
+
+        def _allowed_tabs_for_selection(self, node: TreeNodeRef | None) -> tuple[BrowseTab, ...]:
+            if node is None:
+                return ("config", "config_limits", "state")
+            if node.protocol != "b524":
+                return ("state",)
+            section_key = node.section_key
+            if section_key is None and node.level != "protocol":
+                return ("config", "config_limits", "state")
+            if section_key == "controller_registers" or (
+                node.level == "protocol" and node.protocol == "b524"
+            ):
+                return ("config", "config_limits", "state")
+            return ("state",)
+
+        def _sync_tabs_for_selection(self, node: TreeNodeRef | None) -> None:
+            tabs_widget = self.query_one("#browse-tabs", Tabs)
+            allowed = set(self._allowed_tabs_for_selection(node))
+            tab_map = {
+                "config": self.query_one("#tab-config", Tab),
+                "config_limits": self.query_one("#tab-config-limits", Tab),
+                "state": self.query_one("#tab-state", Tab),
+            }
+            for key, tab in tab_map.items():
+                tab.disabled = key not in allowed
+            if self._active_tab not in allowed:
+                self._active_tab = "state"
+                tabs_widget.active = _tab_id("state")
 
         def _selected_table_row(self) -> RegisterRow | None:
             if not self._table_rows:
@@ -654,9 +727,15 @@ def run_browse_from_artifact(
             self._focus_by_index()
 
         def action_tab_config(self) -> None:
+            if "config" not in self._allowed_tabs_for_selection(self._current_node()):
+                self._set_status("Config tab is not available for this B524 operation.")
+                return
             self.query_one("#browse-tabs", Tabs).active = _tab_id("config")
 
         def action_tab_config_limits(self) -> None:
+            if "config_limits" not in self._allowed_tabs_for_selection(self._current_node()):
+                self._set_status("Config-Limits tab is not available for this B524 operation.")
+                return
             self.query_one("#browse-tabs", Tabs).active = _tab_id("config_limits")
 
         def action_tab_state(self) -> None:
@@ -837,22 +916,31 @@ def run_browse_from_artifact(
         def _entry_for_row(self, row: RegisterRow) -> dict[str, Any] | None:
             if row.protocol != "b524" or row.group_key is None or row.instance_key is None:
                 return None
-            groups = self._artifact.get("groups")
-            if not isinstance(groups, dict):
+            # Navigate operations-first: operations[op_key].groups[group_key]
+            operations = self._artifact.get("operations")
+            if not isinstance(operations, dict):
                 return None
-            group_obj = groups.get(row.group_key)
+            group_obj = None
+            if row.namespace_key is not None:
+                op_obj = operations.get(row.namespace_key)
+                if isinstance(op_obj, dict):
+                    op_groups = op_obj.get("groups")
+                    if isinstance(op_groups, dict):
+                        group_obj = op_groups.get(row.group_key)
+            if not isinstance(group_obj, dict):
+                # Fallback: search all operations for the group
+                for op_obj in operations.values():
+                    if not isinstance(op_obj, dict):
+                        continue
+                    op_groups = op_obj.get("groups")
+                    if isinstance(op_groups, dict):
+                        candidate = op_groups.get(row.group_key)
+                        if isinstance(candidate, dict):
+                            group_obj = candidate
+                            break
             if not isinstance(group_obj, dict):
                 return None
-            if row.namespace_key is not None and bool(group_obj.get("dual_namespace")):
-                namespaces = group_obj.get("namespaces")
-                if not isinstance(namespaces, dict):
-                    return None
-                namespace_obj = namespaces.get(row.namespace_key)
-                if not isinstance(namespace_obj, dict):
-                    return None
-                instances = namespace_obj.get("instances")
-            else:
-                instances = group_obj.get("instances")
+            instances = group_obj.get("instances")
             if not isinstance(instances, dict):
                 return None
             instance_obj = instances.get(row.instance_key)

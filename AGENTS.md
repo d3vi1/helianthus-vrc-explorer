@@ -461,8 +461,8 @@ def parse_b524_id(id_hex: str) -> dict:
 **Known groups (hardcoded reference, validated against CSV):**
 
     GROUP_CONFIG = {
-        0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x00FF, "opcodes": [0x02]},
-        0x01: {"desc": 3.0, "name": "Hot Water Circuit", "ii_max": 0x00, "rr_max": 0x13, "opcodes": [0x02]},
+        0x00: {"desc": 3.0, "name": "Regulator Parameters", "ii_max": 0x00, "rr_max": 0x00FF, "opcodes": [0x02], "name_by_opcode": {0x02: "Regulator Parameters", 0x06: "Primary Heating Sources"}},
+        0x01: {"desc": 3.0, "name": "Hot Water Circuit", "ii_max": 0x00, "rr_max": 0x13, "opcodes": [0x02], "name_by_opcode": {0x02: "Hot Water Circuit", 0x06: "Secondary Heating Sources"}, "namespace_opcodes": [0x02, 0x06], "rr_max_by_opcode": {0x02: 0x13, 0x06: 0x15}, "ii_max_by_opcode": {0x02: 0x00, 0x06: 0x00}},
         0x02: {"desc": 1.0, "name": "Heating Circuits", "ii_max": 0x0A, "rr_max": 0x25, "opcodes": [0x02]},
         0x03: {"desc": 1.0, "name": "Zones", "ii_max": 0x0A, "rr_max": 0x2E, "opcodes": [0x02]},
         0x04: {"desc": 6.0, "name": "Solar Circuit", "ii_max": 0x00, "rr_max": 0x0B, "opcodes": [0x02]},
@@ -477,8 +477,8 @@ def parse_b524_id(id_hex: str) -> dict:
 
     Group  | Opcode Family | Notes
     -------|---------------|-----------------------------------------------
-    0x00   | 0x02 (local)  | Regulator parameters (singleton)
-    0x01   | 0x02 (local)  | Singleton (no instances)
+    0x00   | 0x02 (local)  | Local namespace: Regulator parameters (singleton)
+    0x01   | 0x02 + 0x06   | 0x02: Hot Water Circuit, 0x06: Secondary Heating Sources
     0x02   | 0x02 (local)  | Heating circuits (instanced)
     0x03   | 0x02 (local)  | Zones (instanced)
     0x04   | 0x02 (local)  | Solar circuit (special Type 6 format)
@@ -492,9 +492,16 @@ def parse_b524_id(id_hex: str) -> dict:
 
 - **GG=0x02 (Heating Circuits):** Probe RR=0x0002 (CircuitType u16). Absent if response is 0x0000, 0xFFFF, or NaN.
 - **GG=0x03 (Zones):** Probe RR=0x001C (zone index u8). Absent if response is 0xFF.
-- **GG=0x08 (Buffer / Solar Cylinder 2):** Include it in documented group enumerations; local `0x02` stays singleton while remote `0x06` can be instanced.
-- **GG=0x09 / 0x0A (Radio Sensors VRC7xx / Radio Sensors VR92):** Present if RR=0x0007 or RR=0x000F returns non-NaN.
-- **GG=0x0C (Remote Accessories / FM5 Slots):** Present if any of RR in {0x0002, 0x0007, 0x000F, 0x0016} responds.
+- **GG=0x05 (Hot Water Cylinder):** Probe RR=0x0004 (EXP). Present if the decoded value is not null.
+- **GG=0x08 / opcode 0x06 (Buffer / Solar Cylinder 2 remote namespace):** Probe RR=0x0001 (`BOOL`). Present if `device_connected == true`.
+- **GG=0x09 / 0x0A / opcode 0x02 (local namespace):** Probe RR=0x0001 in the local namespace. Present if the read succeeds and is not `absent`.
+- **GG=0x09 / 0x0A / opcode 0x06 (remote namespace):** Probe RR=0x0001 (`BOOL`). Present if `device_connected == true`.
+- **GG=0x0C (Remote Accessories / FM5 Slots):** Probe RR=0x0001 (`BOOL`). Present if `device_connected == true`.
+
+**Shared vs independent namespace discovery:**
+
+- **GG=0x09 / 0x0A** use **independent namespace discovery**. Local (`0x02`) and remote (`0x06`) instance presence may diverge, so the scanner must not copy remote results into the local namespace.
+- Raw presence-probe evidence is retained in the artifact under `availability_probes`, and the contract used for each namespace is retained under `availability_contract`.
 
 **Instance discovery probes all slots from 0x00 to ii_max** (do not stop at gaps, they are legitimate holes). The default register scan then uses the discovered present set; only the `full` preset expands back to every slot.
 
@@ -566,9 +573,10 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 │ --help     -h        Show this message and exit.                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ scan      Scan a VRC regulator using B524 (GetExtendedRegisters).                                                    │
-│ discover  Discover eBUS devices via QueryExistence broadcast and per-address scan (0704).                            │
-│ browse    Browse scan results in fullscreen Textual UI (file mode).                                                  │
+│ scan          Scan a VRC regulator using B524 (GetExtendedRegisters).                                                │
+│ replay-trace  Replay an ENH/ENS trace into a fresh schema-2.3 JSON artifact + HTML report.                           │
+│ discover      Discover eBUS devices via QueryExistence broadcast and per-address scan (0704).                        │
+│ browse        Browse scan results in fullscreen Textual UI (file mode).                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -608,8 +616,11 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 │                                                               file.                                                  │
 │                                                               [env var: HELIA_EBUSD_TRACE_PATH]                      │
 │ --b509-range                                         TEXT     B509 register range to dump (repeatable), format:      │
-│                                                               0x0000..0x00FF. If omitted, defaults to                │
-│                                                               0x0000..0x00FF.                                        │
+│                                                               0x0000..0x00FF. Requires --b509-dump. If omitted,      │
+│                                                               defaults to 0x0000..0x00FF.                            │
+│ --b509-dump                --no-b509-dump                     Opt-in B509 register dump (disabled by default). Use   │
+│                                                               --b509-range to narrow/expand ranges.                  │
+│                                                               [default: no-b509-dump]                                │
 │ --b555-dump                --no-b555-dump                     Opt-in read-only B555 timer dump (A3/A4/A5). Disabled  │
 │                                                               by default to keep the standard B524/B509 scan path    │
 │                                                               unchanged.                                             │
@@ -621,10 +632,11 @@ CI enforces this via `python scripts/check_docs_sync.py`.
 │ --planner-ui                                         TEXT     Interactive planner mode: disabled, auto, textual, or  │
 │                                                               classic.                                               │
 │                                                               [default: disabled]                                    │
-│ --preset                                             TEXT     Planner preset: conservative, recommended, full,       │
-│                                                               exhaustive, or custom. `full` scans every instance     │
-│                                                               slot and full RR ranges; `exhaustive` also injects all │
-│                                                               GG 0x00-0x11 groups. Expect very long runs.            │
+│ --preset                                             TEXT     Planner preset: recommended, full, research, or        │
+│                                                               custom. `full` expands all groups to full instance     │
+│                                                               slots; `research` enables all groups with expanded RR  │
+│                                                               ranges. Legacy aliases: aggressive->full,              │
+│                                                               exhaustive->research, conservative->recommended.       │
 │                                                               [default: recommended]                                 │
 │ --no-tips                                                     Hide scan header tips in interactive terminal mode.    │
 │ --redact                                                      Redact device identity fields (e.g. serial number) in  │
@@ -1245,9 +1257,10 @@ Example: `./out/b524_scan_0x15_2026-02-06T194424Z.json`
 
 **Presence detection logic:**
 
-Presence is determined by group-specific heuristics in `src/helianthus_vrc_explorer/scanner/register.py`
-(function `is_instance_present`). It uses `tt_kind` + decoded values to avoid false positives
-(e.g. NaN or TT=00 "no data").
+Presence is determined by explicit namespace availability contracts in
+`src/helianthus_vrc_explorer/scanner/register.py` (function `probe_instance_availability`, with
+`is_instance_present` as the boolean wrapper). The scanner keeps the raw probe evidence in the
+artifact so later UI/report layers can inspect why a slot was considered present or absent.
 
 **Instance discovery probes ALL slots 0x00..ii_max** (do not stop at gaps, they are legitimate holes). The default register scan remains presence-aware; only the `full` preset expands back to every slot.
 

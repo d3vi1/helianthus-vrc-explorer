@@ -129,7 +129,13 @@ def test_scan_vrc_adds_b516_dump_when_opted_in(monkeypatch) -> None:
     monkeypatch.setattr(scan_mod, "scan_b516", _fake_scan_b516)
     monkeypatch.setattr(scan_mod, "scan_b509", _fake_scan_b509)
 
-    artifact = scan_vrc(_NoopTransport(), dst=0x15, b509_ranges=[], b516_dump=True)
+    artifact = scan_vrc(
+        _NoopTransport(),
+        dst=0x15,
+        b509_ranges=[],
+        b516_dump=True,
+        b509_dump=True,
+    )
 
     assert artifact["b516_dump"]["meta"]["read_count"] == 12
     assert artifact["b509_dump"]["meta"]["read_count"] == 0

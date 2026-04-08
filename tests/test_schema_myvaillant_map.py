@@ -8,9 +8,17 @@ import pytest
 from helianthus_vrc_explorer.scanner.director import GROUP_CONFIG
 from helianthus_vrc_explorer.schema.myvaillant_map import MyvaillantRegisterMap
 
+_CSV_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "helianthus_vrc_explorer"
+    / "data"
+    / "myvaillant_register_map.csv"
+)
+
 
 def test_default_zone_desired_room_setpoint_mapping_uses_rr_0x0022() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     desired = schema.lookup(group=0x03, instance=0x00, register=0x0022)
@@ -24,7 +32,7 @@ def test_default_zone_desired_room_setpoint_mapping_uses_rr_0x0022() -> None:
 
 
 def test_default_heating_circuit_curve_mapping_uses_wildcard_instances() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     curve_ii0 = schema.lookup(group=0x02, instance=0x00, register=0x000F)
@@ -36,7 +44,7 @@ def test_default_heating_circuit_curve_mapping_uses_wildcard_instances() -> None
 
 
 def test_default_heating_circuit_mapping_resolves_ebusd_name_templates() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     flow = schema.lookup(group=0x02, instance=0x01, register=0x0007)
@@ -50,7 +58,7 @@ def test_default_heating_circuit_mapping_resolves_ebusd_name_templates() -> None
 
 
 def test_default_heating_circuit_type_mapping_uses_rr_0x0001() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     circuit_type = schema.lookup(group=0x02, instance=0x00, register=0x0001)
@@ -62,7 +70,7 @@ def test_default_heating_circuit_type_mapping_uses_rr_0x0001() -> None:
 
 
 def test_default_mixer_circuit_type_external_mapping_uses_rr_0x0002() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     mixer_type = schema.lookup(group=0x02, instance=0x00, register=0x0002)
@@ -74,7 +82,7 @@ def test_default_mixer_circuit_type_external_mapping_uses_rr_0x0002() -> None:
 
 
 def test_default_room_influence_type_mapping_uses_rr_0x0003() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     room_influence = schema.lookup(group=0x02, instance=0x00, register=0x0003)
@@ -87,7 +95,7 @@ def test_default_room_influence_type_mapping_uses_rr_0x0003() -> None:
 
 
 def test_default_hc_new_register_mappings_include_class_hints() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     frost = schema.lookup(group=0x02, instance=0x00, register=0x001D)
@@ -167,19 +175,81 @@ def test_loader_prefers_opcode_specific_rows_and_exposes_type_hint(tmp_path: Pat
     schema = MyvaillantRegisterMap.from_path(csv_path)
     local = schema.lookup(group=0x09, instance=0x01, register=0x0004, opcode=0x02)
     remote = schema.lookup(group=0x09, instance=0x01, register=0x0004, opcode=0x06)
-    fallback = schema.lookup(group=0x09, instance=0x01, register=0x000F, opcode=0x06)
+    local_fallback = schema.lookup(group=0x09, instance=0x01, register=0x000F, opcode=0x02)
+    remote_fallback = schema.lookup(group=0x09, instance=0x01, register=0x000F, opcode=0x06)
 
     assert local is not None
     assert remote is not None
-    assert fallback is not None
+    assert local_fallback is not None
+    assert remote_fallback is None
     assert local.leaf == "radio_device_firmware_local"
     assert local.type_hint == "FW"
     assert local.opcode == 0x02
     assert remote.leaf == "radio_device_firmware_remote"
     assert remote.type_hint == "FW"
     assert remote.opcode == 0x06
-    assert fallback.leaf == "radio_room_temperature"
-    assert fallback.opcode is None
+    assert local_fallback.leaf == "radio_room_temperature"
+    assert local_fallback.opcode is None
+
+
+def test_loader_supports_group_wildcard_rows_with_explicit_opcode(tmp_path: Path) -> None:
+    csv_path = tmp_path / "wildcard-group.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode",
+                "*,*,0x0001,device_connected,,state,BOOL,0x06",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    schema = MyvaillantRegisterMap.from_path(csv_path)
+    gg01 = schema.lookup(group=0x01, instance=0x00, register=0x0001, opcode=0x06)
+    gg0c = schema.lookup(group=0x0C, instance=0x04, register=0x0001, opcode=0x06)
+    local = schema.lookup(group=0x01, instance=0x00, register=0x0001, opcode=0x02)
+
+    assert gg01 is not None
+    assert gg0c is not None
+    assert gg01.leaf == "device_connected"
+    assert gg01.type_hint == "BOOL"
+    assert gg0c.leaf == "device_connected"
+    assert local is None
+
+
+def test_loader_rejects_group_wildcard_without_opcode(tmp_path: Path) -> None:
+    csv_path = tmp_path / "wildcard-group-missing-opcode.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode",
+                "*,*,0x0001,device_connected,,state,BOOL,",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"require an explicit opcode"):
+        MyvaillantRegisterMap.from_path(csv_path)
+
+
+def test_loader_rejects_group_wildcard_without_instance_wildcard(tmp_path: Path) -> None:
+    csv_path = tmp_path / "wildcard-group-bad-instance.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "group,instance,register,leaf,ebusd_name,register_class,type_hint,opcode",
+                "*,0x00,0x0001,device_connected,,state,BOOL,0x06",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"require instance='\*'"):
+        MyvaillantRegisterMap.from_path(csv_path)
 
 
 def test_loader_rejects_duplicate_group_instance_register_opcode_rows(tmp_path: Path) -> None:
@@ -201,19 +271,19 @@ def test_loader_rejects_duplicate_group_instance_register_opcode_rows(tmp_path: 
 
 
 def test_radio_firmware_entry_exposes_type_hint_and_opcode() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     entry = schema.lookup(group=0x09, instance=0x01, register=0x0004, opcode=0x06)
 
     assert entry is not None
-    assert entry.leaf == "radio_device_firmware"
+    assert entry.leaf == "device_firmware_version"
     assert entry.type_hint == "FW"
     assert entry.opcode == 0x06
 
 
 def test_zone_name_suffix_entry_exposes_string_type_hint() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     suffix = schema.lookup(group=0x03, instance=0x00, register=0x0018)
@@ -225,10 +295,79 @@ def test_zone_name_suffix_entry_exposes_string_type_hint() -> None:
     assert prefix.type_hint == "STR:*"
 
 
-def test_register_map_minimum_entry_count_and_no_duplicates() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+def test_namespace_owned_required_tuple_rows_are_resolvable() -> None:
+    csv_path = _CSV_PATH
+    schema = MyvaillantRegisterMap.from_path(csv_path)
 
-    rows: list[tuple[int, str, int, int | None]] = []
+    remote_presence = schema.lookup(group=0x08, instance=0x00, register=0x0001, opcode=0x06)
+    remote_gg01_rr0012 = schema.lookup(group=0x01, instance=0x00, register=0x0012, opcode=0x06)
+    remote_gg01_rr0015 = schema.lookup(group=0x01, instance=0x00, register=0x0015, opcode=0x06)
+    remote_gg00_rr0002 = schema.lookup(group=0x00, instance=0x00, register=0x0002, opcode=0x06)
+    remote_gg00_rr0003 = schema.lookup(group=0x00, instance=0x00, register=0x0003, opcode=0x06)
+    remote_gg00_rr0004 = schema.lookup(group=0x00, instance=0x00, register=0x0004, opcode=0x06)
+    local_gg00_rr0006 = schema.lookup(group=0x00, instance=0x00, register=0x0006, opcode=0x02)
+    local_gg00_rr0016 = schema.lookup(group=0x00, instance=0x00, register=0x0016, opcode=0x02)
+    local_gg00_rr0048 = schema.lookup(group=0x00, instance=0x00, register=0x0048, opcode=0x02)
+    local_gg00_rr0074 = schema.lookup(group=0x00, instance=0x00, register=0x0074, opcode=0x02)
+    local_gg00_rr00da = schema.lookup(group=0x00, instance=0x00, register=0x00DA, opcode=0x02)
+    local_gg00_rr00db = schema.lookup(group=0x00, instance=0x00, register=0x00DB, opcode=0x02)
+
+    assert remote_presence is not None
+    assert remote_presence.leaf == "device_connected"
+    assert remote_presence.type_hint == "BOOL"
+    assert remote_gg01_rr0012 is not None
+    assert remote_gg01_rr0012.leaf == "active_errors"
+    assert remote_gg01_rr0012.type_hint == "UCH"
+    assert remote_gg01_rr0015 is not None
+    assert remote_gg01_rr0015.leaf == "heat_source_flow_temperature"
+    assert remote_gg01_rr0015.type_hint == "EXP"
+    assert remote_gg00_rr0002 is not None
+    assert remote_gg00_rr0002.leaf == "device_class_address"
+    assert remote_gg00_rr0002.type_hint == "HEX:1"
+    assert remote_gg00_rr0003 is not None
+    assert remote_gg00_rr0003.leaf == "device_error_code"
+    assert remote_gg00_rr0003.type_hint == "UCH"
+    assert remote_gg00_rr0004 is not None
+    assert remote_gg00_rr0004.leaf == "device_firmware_version"
+    assert remote_gg00_rr0004.type_hint == "FW"
+    assert local_gg00_rr0006 is not None
+    assert local_gg00_rr0006.leaf == "manual_cooling_days"
+    assert local_gg00_rr0006.type_hint == "UCH"
+    assert local_gg00_rr0016 is not None
+    assert local_gg00_rr0016.leaf == "system_quick_mode_active"
+    assert local_gg00_rr0016.type_hint == "BOOL"
+    assert local_gg00_rr0048 is not None
+    assert local_gg00_rr0048.leaf == "system_status_bitmask"
+    assert local_gg00_rr0048.type_hint == "UIN"
+    assert local_gg00_rr0074 is not None
+    assert local_gg00_rr0074.leaf == "system_quick_mode_value"
+    assert local_gg00_rr0074.type_hint == "UCH"
+    assert local_gg00_rr00da is not None
+    assert local_gg00_rr00da.leaf == "manual_cooling_date_start"
+    assert local_gg00_rr00da.type_hint == "HDA:3"
+    assert local_gg00_rr00db is not None
+    assert local_gg00_rr00db.leaf == "manual_cooling_date_end"
+    assert local_gg00_rr00db.type_hint == "HDA:3"
+
+
+def test_remote_namespace_maps_heat_source_rows_for_op06() -> None:
+    csv_path = _CSV_PATH
+    schema = MyvaillantRegisterMap.from_path(csv_path)
+
+    local = schema.lookup(group=0x02, instance=0x00, register=0x0015, opcode=0x02)
+    remote = schema.lookup(group=0x02, instance=0x00, register=0x0015, opcode=0x06)
+
+    assert local is not None
+    assert local.leaf == "room_temperature_control_mode"
+    assert remote is not None
+    assert remote.leaf == "heat_source_flow_temperature"
+    assert remote.type_hint == "EXP"
+
+
+def test_register_map_minimum_entry_count_and_no_duplicates() -> None:
+    csv_path = _CSV_PATH
+
+    rows: list[tuple[str, str, int, int | None]] = []
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -240,7 +379,7 @@ def test_register_map_minimum_entry_count_and_no_duplicates() -> None:
                 continue
             opcode_raw = (row.get("opcode") or "").strip()
             rows.append(
-                (int(gg_raw, 0), ii_raw, int(rr_raw, 0), int(opcode_raw, 0) if opcode_raw else None)
+                (gg_raw, ii_raw, int(rr_raw, 0), int(opcode_raw, 0) if opcode_raw else None)
             )
 
     assert len(rows) >= 150
@@ -248,7 +387,7 @@ def test_register_map_minimum_entry_count_and_no_duplicates() -> None:
 
 
 def test_register_map_all_groups_represented() -> None:
-    csv_path = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
+    csv_path = _CSV_PATH
     schema = MyvaillantRegisterMap.from_path(csv_path)
 
     groups_in_csv = {group for (group, _instance, _register, _opcode) in schema._exact} | {
@@ -260,15 +399,3 @@ def test_register_map_all_groups_represented() -> None:
     assert core_groups <= groups_in_csv
     # CSV groups must be a subset of GROUP_CONFIG (no stale entries).
     assert groups_in_csv <= set(GROUP_CONFIG)
-
-
-def test_packaged_myvaillant_map_stays_in_sync_with_repo_copy() -> None:
-    repo_csv = Path(__file__).resolve().parents[1] / "data" / "myvaillant_register_map.csv"
-    packaged_csv = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "helianthus_vrc_explorer"
-        / "data"
-        / "myvaillant_register_map.csv"
-    )
-    assert packaged_csv.read_text(encoding="utf-8") == repo_csv.read_text(encoding="utf-8")

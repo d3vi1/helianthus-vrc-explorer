@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-import math
-from typing import Final, NotRequired, TypedDict, cast
+from dataclasses import dataclass
+from typing import Final, Literal, NotRequired, TypedDict, cast
 
 from ..protocol.b524 import RegisterOpcode, build_register_read_payload
 from ..protocol.parser import ValueParseError, parse_typed_value
@@ -10,14 +10,24 @@ from ..transport.base import (
     TransportCommandNotEnabled,
     TransportError,
     TransportInterface,
+    TransportNack,
     TransportTimeout,
     emit_trace_label,
 )
 from .director import GROUP_CONFIG
+from .identity import make_register_identity, operation_label
 
 logger = logging.getLogger(__name__)
 
 _PRINTABLE_LATIN1: Final[set[int]] = set(range(0x20, 0x7F)) | set(range(0xA0, 0x100))
+_I32_INVALID_SENTINEL: Final[int] = 0x7FFFFFFF
+_I32_INVALID_SENTINEL_RAW_HEX: Final[str] = "ffffff7f"
+_REMOTE_HEADER_PROBE_REGISTERS: Final[tuple[tuple[int, str], ...]] = (
+    (0x0001, "BOOL"),
+    (0x0002, "UCH"),
+    (0x0003, "UCH"),
+    (0x0004, "FW"),
+)
 
 
 class RegisterEntry(TypedDict):
@@ -30,8 +40,15 @@ class RegisterEntry(TypedDict):
     reply_hex: str | None
     # FLAGS byte extracted from the reply, if present.
     flags: int | None
+    # Protocol-level DT byte interpretation:
+    # bit1=config-vs-simple; bit0 meaning depends on opcode namespace.
+    reply_kind: str | None
     # Access semantics derived from FLAGS and payload shape.
     flags_access: str | None
+    # Wire-level response state for the request.
+    # One of: "active", "empty_reply", "nack", "timeout", or None for non-protocol transport
+    # failures where a state could not be determined.
+    response_state: NotRequired[str | None]
     # Optional register name annotations.
     ebusd_name: str | None
     myvaillant_name: str | None
@@ -46,6 +63,8 @@ class RegisterEntry(TypedDict):
     constraint_max: NotRequired[int | float | str]
     constraint_step: NotRequired[int | float]
     constraint_source: NotRequired[str]
+    constraint_scope: NotRequired[str]
+    constraint_provenance: NotRequired[str]
     constraint_mismatch_reason: NotRequired[str]
     register_class: NotRequired[str]
     enum_raw_name: NotRequired[str]
@@ -53,44 +72,244 @@ class RegisterEntry(TypedDict):
     value_display: NotRequired[str]
 
 
+@dataclass(frozen=True, slots=True)
+class NamespaceAvailabilityContract:
+    source: Literal["heuristic_probe", "always_present"]
+    namespace_relationship: Literal["single_namespace", "independent"]
+    probe_register: int | None
+    probe_type_hint: str | None
+    positive_when: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceAvailabilityProbe:
+    present: bool
+    contract: NamespaceAvailabilityContract
+    evidence: RegisterEntry | None
+
+
 def opcodes_for_group(group: int) -> list[RegisterOpcode]:
-    """Return all B524 register opcode families for a group."""
+    """Return active B524 register opcode families for a group."""
 
     config = GROUP_CONFIG.get(group)
     if config is None:
-        return [0x02, 0x06]
+        raise ValueError(
+            "Unknown group 0x"
+            f"{group:02X} has no implicit opcode defaults. "
+            "Use discovery evidence to classify namespace opcodes."
+        )
     return [cast(RegisterOpcode, opcode) for opcode in config["opcodes"]]
 
 
-def _interpret_flags(flags: int, *, response_len: int) -> str:
-    """Interpret the leading FLAGS byte of a B524 register reply."""
+def namespace_opcodes_for_group(group: int) -> list[RegisterOpcode]:
+    """Return namespace-capable opcode families for a group.
+
+    This can be broader than `opcodes_for_group` while scanner heuristics are
+    still staged. It is intended for opcode-first model/config decisions.
+    """
+
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        raise ValueError(
+            "Unknown group 0x"
+            f"{group:02X} has no implicit namespace defaults. "
+            "Use discovery evidence to classify namespace opcodes."
+        )
+    raw_opcodes = config.get("namespace_opcodes", config["opcodes"])
+    return [cast(RegisterOpcode, opcode) for opcode in raw_opcodes]
+
+
+def _namespace_relationship(group: int) -> Literal["single_namespace", "independent"]:
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return "single_namespace"
+    namespace_opcodes = config.get("namespace_opcodes", config["opcodes"])
+    return "independent" if len(namespace_opcodes) > 1 else "single_namespace"
+
+
+def namespace_availability_contract(
+    *,
+    group: int,
+    opcode: RegisterOpcode,
+) -> NamespaceAvailabilityContract:
+    """Return the explicit availability contract for a namespace.
+
+    The contract documents whether presence is derived from a namespace-specific
+    probe or from a conscious always-present fallback.
+    """
+
+    relationship = _namespace_relationship(group)
+
+    if group == 0x02 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0002,
+            probe_type_hint="UIN",
+            positive_when="value not in {0x0000, 0xFFFF}",
+            description="Heating circuit CircuitType must decode to a non-empty u16.",
+        )
+
+    if group == 0x03 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x001C,
+            probe_type_hint="UCH",
+            positive_when="value != 0xFF",
+            description="Zone index 0xFF marks an absent zone slot.",
+        )
+
+    if group == 0x05 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0004,
+            probe_type_hint="EXP",
+            positive_when="decoded EXP value is not null",
+            description="Cylinder availability requires a decodable float payload.",
+        )
+
+    if group == 0x04 and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0004,
+            probe_type_hint="EXP",
+            positive_when="decoded EXP value is not null",
+            description="Solar circuit availability requires a decodable float payload.",
+        )
+
+    if opcode == 0x06:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0001,
+            probe_type_hint="BOOL",
+            positive_when="any generic header register RR=0x0001..0x0004 decodes and is not absent",
+            description=(
+                "Remote namespace presence is derived from the generic header block "
+                "RR=0x0001..0x0004; RR=0x0001 (device_connected) is the universal "
+                "presence indicator for all device-slot groups."
+            ),
+        )
+
+    if group in {0x09, 0x0A} and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0001,
+            probe_type_hint="UCH",
+            positive_when="register read succeeds and is not absent",
+            description="Local namespace presence is derived from a readable local slot register.",
+        )
+
+    if group in {0x06, 0x07, 0x08, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11} and opcode == 0x02:
+        return NamespaceAvailabilityContract(
+            source="heuristic_probe",
+            namespace_relationship=relationship,
+            probe_register=0x0000,
+            probe_type_hint=None,
+            positive_when="register read succeeds and is not absent",
+            description="Exploratory local namespace presence requires actual local evidence.",
+        )
+
+    if group in {0x06, 0x07, 0x0B, 0x0D, 0x0E, 0x0F, 0x10, 0x11}:
+        return NamespaceAvailabilityContract(
+            source="always_present",
+            namespace_relationship=relationship,
+            probe_register=None,
+            probe_type_hint=None,
+            positive_when="all configured slots are treated as present",
+            description=(
+                "Exploratory research group without a verified namespace-specific heuristic."
+            ),
+        )
+
+    logger.debug(
+        "No explicit availability contract for GG=0x%02X OP=0x%02X; using always-present fallback",
+        group,
+        opcode,
+    )
+    return NamespaceAvailabilityContract(
+        source="always_present",
+        namespace_relationship=relationship,
+        probe_register=None,
+        probe_type_hint=None,
+        positive_when="all configured slots are treated as present",
+        description="Fallback contract for namespaces without a verified probe heuristic.",
+    )
+
+
+def _interpret_flags(flags: int, *, response_len: int, opcode: int = 0x02) -> str:
+    """Interpret the leading FLAGS byte of a B524 register reply.
+
+    The flags byte uses 2 effective bits (bits 2-7 are always zero) with
+    the same {0,1,2,3} structure on both opcodes but different semantics:
+
+    OP=0x02 (controller registers):
+        bit1 = writable, bit0 = stable vs volatile
+        0 = volatile_ro, 1 = stable_ro, 2 = technical_rw, 3 = user_rw
+
+    OP=0x06 (device-slot registers):
+        bit1 = config (instance-independent), bit0 = valid data (vs sentinel)
+        0 = volatile_sentinel, 1 = volatile_valid, 2 = config_sentinel, 3 = config_valid
+    """
 
     if response_len == 1:
         if flags == 0x00:
             return "absent"
         return "unknown_status"
 
+    if opcode == 0x06:
+        match flags:
+            case 0x00:
+                return "invalid"
+            case 0x01:
+                return "valid"
+            case 0x02:
+                return "config_sentinel"
+            case 0x03:
+                return "config_valid"
+            case _:
+                return "unknown"
+
     match flags:
         case 0x00:
-            return "volatile_ro"
+            return "state_volatile"
         case 0x01:
-            return "stable_ro"
+            return "state_stable"
         case 0x02:
-            return "technical_rw"
+            return "config_installer"
         case 0x03:
-            return "user_rw"
+            return "config_user"
         case _:
             return "unknown"
 
 
-def _opcode_label(opcode: int) -> str:
-    match opcode:
-        case 0x02:
-            return "local"
-        case 0x06:
-            return "remote"
-        case _:
-            return f"0x{opcode:02x}"
+def _reply_kind(
+    flags: int | None,
+    *,
+    response_len: int,
+    opcode: RegisterOpcode,
+) -> str | None:
+    """Return protocol-level DT byte semantics for the register reply."""
+
+    if flags is None:
+        return None
+    if response_len == 1:
+        return None
+    if flags not in {0x00, 0x01, 0x02, 0x03}:
+        return None
+    class_kind = "config" if flags & 0x02 else "simple"
+    if opcode == 0x06:
+        # Remote namespace: bit0 indicates validity vs sentinel/invalid payload.
+        value_kind = "valid" if flags & 0x01 else "invalid"
+        return f"{class_kind}_{value_kind}"
+    # Local namespace: bit0 indicates stable vs volatile.
+    value_kind = "stable" if flags & 0x01 else "volatile"
+    return f"{class_kind}_{value_kind}"
 
 
 def _looks_like_nul_terminated_latin1(value_bytes: bytes) -> bool:
@@ -202,6 +421,20 @@ def _parse_inferred_value(value_bytes: bytes) -> tuple[str | None, object | None
     return _hex_fallback()
 
 
+def _sentinel_value_display(
+    *, value: object | None, raw_hex: str | None, value_type: str | None
+) -> str | None:
+    if value_type != "I32":
+        return None
+    if raw_hex != _I32_INVALID_SENTINEL_RAW_HEX:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value == _I32_INVALID_SENTINEL:
+        return "sentinel_invalid_i32 (0x7FFFFFFF)"
+    return None
+
+
 def read_register(
     transport: TransportInterface,
     dst: int,
@@ -214,22 +447,46 @@ def read_register(
 ) -> RegisterEntry:
     """Read a B524 register and parse it into an artifact-ready entry."""
 
+    register_key = make_register_identity(
+        opcode=opcode, group=group, instance=instance, register=register
+    )
     read_opcode = f"0x{opcode:02x}"
-    read_opcode_label = _opcode_label(opcode)
+    read_opcode_label = operation_label(opcode=opcode, optype=0x00)
     emit_trace_label(
         transport,
-        f"Reading dst=0x{dst:02X} GG=0x{group:02X} II=0x{instance:02X} RR=0x{register:04X}",
+        "Reading "
+        f"key=(op=0x{register_key[0]:02X},gg=0x{register_key[1]:02X},"
+        f"ii=0x{register_key[2]:02X},rr=0x{register_key[3]:04X}) "
+        f"dst=0x{dst:02X}",
     )
     payload = build_register_read_payload(opcode, group=group, instance=instance, register=register)
     try:
         response = transport.send(dst, payload)
+    except TransportNack:
+        return {
+            "read_opcode": read_opcode,
+            "read_opcode_label": read_opcode_label,
+            "reply_hex": None,
+            "flags": None,
+            "reply_kind": None,
+            "flags_access": None,
+            "response_state": "nack",
+            "ebusd_name": None,
+            "myvaillant_name": None,
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": "nack",
+        }
     except TransportTimeout:
         return {
             "read_opcode": read_opcode,
             "read_opcode_label": read_opcode_label,
             "reply_hex": None,
             "flags": None,
+            "reply_kind": None,
             "flags_access": None,
+            "response_state": "timeout",
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
@@ -245,7 +502,9 @@ def read_register(
             "read_opcode_label": read_opcode_label,
             "reply_hex": None,
             "flags": None,
+            "reply_kind": None,
             "flags_access": None,
+            "response_state": None,
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
@@ -254,10 +513,30 @@ def read_register(
             "error": f"transport_error: {exc}",
         }
 
+    if len(response) == 0:
+        return {
+            "read_opcode": read_opcode,
+            "read_opcode_label": read_opcode_label,
+            "reply_hex": "",
+            "flags": None,
+            "reply_kind": None,
+            "flags_access": None,
+            "response_state": "empty_reply",
+            "ebusd_name": None,
+            "myvaillant_name": None,
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+        }
+
     reply_hex = response.hex()
     flags: int | None = response[0] if response else None
+    reply_kind = _reply_kind(flags, response_len=len(response), opcode=opcode)
     flags_access: str | None = (
-        _interpret_flags(flags, response_len=len(response)) if flags is not None else None
+        _interpret_flags(flags, response_len=len(response), opcode=opcode)
+        if flags is not None
+        else None
     )
 
     # Some registers respond with a single status byte (no GG/RR echo and no value bytes).
@@ -268,7 +547,9 @@ def read_register(
             "read_opcode_label": read_opcode_label,
             "reply_hex": reply_hex,
             "flags": flags,
+            "reply_kind": reply_kind,
             "flags_access": flags_access,
+            "response_state": "active",
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
@@ -285,7 +566,9 @@ def read_register(
             "read_opcode_label": read_opcode_label,
             "reply_hex": reply_hex,
             "flags": flags,
+            "reply_kind": reply_kind,
             "flags_access": flags_access,
+            "response_state": "active",
             "ebusd_name": None,
             "myvaillant_name": None,
             "raw_hex": None,
@@ -298,12 +581,14 @@ def read_register(
     if type_hint is not None:
         try:
             value = parse_typed_value(type_hint, value_bytes)
-            return {
+            typed_entry: RegisterEntry = {
                 "read_opcode": read_opcode,
                 "read_opcode_label": read_opcode_label,
                 "reply_hex": reply_hex,
                 "flags": flags,
+                "reply_kind": reply_kind,
                 "flags_access": flags_access,
+                "response_state": "active",
                 "ebusd_name": None,
                 "myvaillant_name": None,
                 "raw_hex": raw_hex,
@@ -311,13 +596,23 @@ def read_register(
                 "value": value,
                 "error": None,
             }
+            sentinel_display = _sentinel_value_display(
+                value=value,
+                raw_hex=raw_hex,
+                value_type=type_hint,
+            )
+            if sentinel_display is not None:
+                typed_entry["value_display"] = sentinel_display
+            return typed_entry
         except ValueParseError as exc:
             return {
                 "read_opcode": read_opcode,
                 "read_opcode_label": read_opcode_label,
                 "reply_hex": reply_hex,
                 "flags": flags,
+                "reply_kind": reply_kind,
                 "flags_access": flags_access,
+                "response_state": "active",
                 "ebusd_name": None,
                 "myvaillant_name": None,
                 "raw_hex": raw_hex,
@@ -327,12 +622,14 @@ def read_register(
             }
 
     inferred_type, inferred_value, inferred_error = _parse_inferred_value(value_bytes)
-    return {
+    entry: RegisterEntry = {
         "read_opcode": read_opcode,
         "read_opcode_label": read_opcode_label,
         "reply_hex": reply_hex,
         "flags": flags,
+        "reply_kind": reply_kind,
         "flags_access": flags_access,
+        "response_state": "active",
         "ebusd_name": None,
         "myvaillant_name": None,
         "raw_hex": raw_hex,
@@ -340,6 +637,146 @@ def read_register(
         "value": inferred_value,
         "error": inferred_error,
     }
+    sentinel_display = _sentinel_value_display(
+        value=inferred_value,
+        raw_hex=raw_hex,
+        value_type=inferred_type,
+    )
+    if sentinel_display is not None:
+        entry["value_display"] = sentinel_display
+    elif inferred_type == "EXP" and inferred_value is None:
+        entry["value_display"] = "NaN"
+    return entry
+
+
+def probe_instance_availability(
+    transport: TransportInterface,
+    dst: int,
+    group: int,
+    instance: int,
+    *,
+    opcode: RegisterOpcode | None = None,
+) -> InstanceAvailabilityProbe:
+    """Probe one instance slot and retain the evidence used for presence."""
+
+    if opcode is None:
+        opcode = opcodes_for_group(group)[0]
+
+    contract = namespace_availability_contract(group=group, opcode=opcode)
+    if contract.source == "always_present":
+        return InstanceAvailabilityProbe(present=True, contract=contract, evidence=None)
+
+    assert contract.probe_register is not None
+    entry = read_register(
+        transport,
+        dst,
+        opcode,
+        group=group,
+        instance=instance,
+        register=contract.probe_register,
+        type_hint=contract.probe_type_hint,
+    )
+
+    present = False
+    response_state = entry.get("response_state")
+
+    if response_state in {"nack", "timeout"}:
+        return InstanceAvailabilityProbe(present=False, contract=contract, evidence=entry)
+
+    if group == 0x02 and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
+        if entry["error"] is None and entry.get("flags_access") != "absent":
+            value = entry["value"]
+            present = (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value
+                not in {
+                    0x0000,
+                    0xFFFF,
+                }
+            )
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group == 0x03 and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
+        if entry["error"] is None and entry.get("flags_access") != "absent":
+            value = entry["value"]
+            present = isinstance(value, int) and not isinstance(value, bool) and value != 0xFF
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group == 0x05 and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
+        present = (
+            entry["error"] is None
+            and entry.get("flags_access") != "absent"
+            and entry["value"] is not None
+        )
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group == 0x04 and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
+        present = (
+            entry["error"] is None
+            and entry.get("flags_access") != "absent"
+            and entry["value"] is not None
+        )
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if opcode == 0x06:
+        header_evidence = entry
+        entry_reply_kind = entry.get("reply_kind")
+        present = (
+            entry["error"] is None
+            and entry.get("flags_access") != "absent"
+            and isinstance(entry_reply_kind, str)
+            and entry_reply_kind.endswith("_valid")
+            and entry["value"] is True
+        )
+        if not present:
+            for register_id, type_hint in _REMOTE_HEADER_PROBE_REGISTERS[1:]:
+                header_entry = read_register(
+                    transport,
+                    dst,
+                    opcode,
+                    group=group,
+                    instance=instance,
+                    register=register_id,
+                    type_hint=type_hint,
+                )
+                header_reply_kind = header_entry.get("reply_kind")
+                if (
+                    header_entry["error"] is None
+                    and header_entry.get("flags_access") != "absent"
+                    and isinstance(header_reply_kind, str)
+                    and header_reply_kind.endswith("_valid")
+                ):
+                    present = True
+                    header_evidence = header_entry
+                    break
+        return InstanceAvailabilityProbe(
+            present=present,
+            contract=contract,
+            evidence=header_evidence,
+        )
+
+    if group in {0x09, 0x0A} and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
+        present = entry["error"] is None and entry.get("flags_access") != "absent"
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    if group in {0x06, 0x07, 0x08, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11} and opcode == 0x02:
+        if response_state == "empty_reply":
+            return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
+        present = entry["error"] is None and entry.get("flags_access") != "absent"
+        return InstanceAvailabilityProbe(present=present, contract=contract, evidence=entry)
+
+    return InstanceAvailabilityProbe(present=True, contract=contract, evidence=entry)
 
 
 def is_instance_present(
@@ -354,107 +791,10 @@ def is_instance_present(
 
     Source of truth: `AGENTS.md` (keep in sync).
     """
-
-    if opcode is None:
-        opcode = opcodes_for_group(group)[0]
-
-    if group == 0x02:
-        entry = read_register(
-            transport, dst, opcode, group=group, instance=instance, register=0x0002, type_hint="UIN"
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        value = entry["value"]
-        if value is None:
-            return False
-        if not isinstance(value, int) or isinstance(value, bool):
-            return False
-        return value not in {0x0000, 0xFFFF}
-
-    if group == 0x03:
-        entry = read_register(
-            transport, dst, opcode, group=group, instance=instance, register=0x001C, type_hint="UCH"
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        value = entry["value"]
-        if not isinstance(value, int) or isinstance(value, bool):
-            return False
-        return value != 0xFF
-
-    if group == 0x05:
-        entry = read_register(
-            transport,
-            dst,
-            opcode,
-            group=group,
-            instance=instance,
-            register=0x0004,
-            type_hint="EXP",
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        return entry["value"] is not None
-
-    if group == 0x08:
-        entry = read_register(
-            transport,
-            dst,
-            opcode,
-            group=group,
-            instance=instance,
-            register=0x0001,
-        )
-        if entry["error"] is not None:
-            return False
-        return entry.get("flags_access") != "absent"
-
-    if group in {0x09, 0x0A}:
-        entry_1 = read_register(
-            transport, dst, 0x06, group=group, instance=instance, register=0x0007, type_hint="EXP"
-        )
-        value_1 = entry_1["value"]
-        if (
-            entry_1["error"] is None
-            and entry_1.get("flags_access") != "absent"
-            and value_1 is not None
-            and not (isinstance(value_1, float) and math.isnan(value_1))
-        ):
-            return True
-        entry_2 = read_register(
-            transport, dst, 0x06, group=group, instance=instance, register=0x000F, type_hint="EXP"
-        )
-        value_2 = entry_2["value"]
-        return (
-            entry_2["error"] is None
-            and entry_2.get("flags_access") != "absent"
-            and value_2 is not None
-            and not (isinstance(value_2, float) and math.isnan(value_2))
-        )
-
-    if group == 0x0C:
-        entry = read_register(
-            transport,
-            dst,
-            0x06,
-            group=group,
-            instance=instance,
-            register=0x0001,
-            type_hint="BOOL",
-        )
-        if entry["error"] is not None:
-            return False
-        if entry.get("flags_access") == "absent":
-            return False
-        return entry["value"] is True
-
-    logger.debug(
-        "No presence heuristic for GG=0x%02X; assuming present for II=0x%02X", group, instance
-    )
-    return True
+    return probe_instance_availability(
+        transport,
+        dst=dst,
+        group=group,
+        instance=instance,
+        opcode=opcode,
+    ).present

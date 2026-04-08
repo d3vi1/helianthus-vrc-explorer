@@ -17,12 +17,18 @@ from rich.console import Console
 from rich.text import Text
 
 from . import __version__
+from .artifact_schema import ArtifactSchemaError, migrate_artifact_schema
 from .ebusd import parse_ebusd_info_target_addresses
 from .protocol.b524 import build_directory_probe_payload
 from .protocol.basv import (
     ScanIdentification,
     parse_scan_identification,
     parse_vaillant_scan_id_chunks,
+)
+from .replay_trace import (
+    TraceReplayError,
+    UnsupportedTraceFormatError,
+    replay_trace_to_artifact,
 )
 from .scanner.b509 import parse_b509_range
 from .scanner.director import GROUP_CONFIG, classify_groups, discover_groups
@@ -73,6 +79,10 @@ def _normalize_planner_preset(raw: str) -> str:
     normalized = raw.strip().lower()
     if normalized == "aggressive":
         return "full"
+    if normalized == "exhaustive":
+        return "research"
+    if normalized == "conservative":
+        return "recommended"
     return normalized
 
 
@@ -89,16 +99,6 @@ def _load_default_myvaillant_map() -> tuple[MyvaillantRegisterMap | None, str | 
                 f"myvaillant_map:{map_path.name}",
             )
     except Exception:
-        # Dev fallback (editable checkout) when package resources are unavailable.
-        fallback = Path(__file__).resolve().parents[2] / "data" / "myvaillant_register_map.csv"
-        if fallback.exists():
-            try:
-                return (
-                    MyvaillantRegisterMap.from_path(fallback),
-                    f"myvaillant_map:{fallback.name}",
-                )
-            except Exception:
-                return (None, None)
         return (None, None)
 
 
@@ -645,7 +645,15 @@ def scan(
         "--b509-range",
         help=(
             "B509 register range to dump (repeatable), format: 0x0000..0x00FF. "
-            "If omitted, defaults to 0x0000..0x00FF."
+            "Requires --b509-dump. If omitted, defaults to 0x0000..0x00FF."
+        ),
+    ),
+    b509_dump: bool = typer.Option(  # noqa: B008
+        False,
+        "--b509-dump/--no-b509-dump",
+        help=(
+            "Opt-in B509 register dump (disabled by default). "
+            "Use --b509-range to narrow/expand ranges."
         ),
     ),
     b555_dump: bool = typer.Option(  # noqa: B008
@@ -673,9 +681,10 @@ def scan(
         "recommended",
         "--preset",
         help=(
-            "Planner preset: conservative, recommended, full, exhaustive, or custom. "
-            "`full` scans every instance slot and full RR ranges; "
-            "`exhaustive` also injects all GG 0x00-0x11 groups. Expect very long runs."
+            "Planner preset: recommended, full, research, or custom. "
+            "`full` expands all groups to full instance slots; "
+            "`research` enables all groups with expanded RR ranges. "
+            "Legacy aliases: aggressive->full, exhaustive->research, conservative->recommended."
         ),
     ),
     no_tips: bool = typer.Option(  # noqa: B008
@@ -732,11 +741,12 @@ def scan(
         )
         raise typer.Exit(2)
     preset_value = _normalize_planner_preset(preset)
-    valid_presets = {"conservative", "recommended", "full", "exhaustive", "custom"}
+    valid_presets = {"recommended", "full", "research", "custom"}
     if preset_value not in valid_presets:
         typer.echo(
             "Invalid --preset value. Expected one of: "
-            "conservative, recommended, aggressive, exhaustive, custom.",
+            "recommended, full, research, custom "
+            "(aliases: aggressive, exhaustive, conservative).",
             err=True,
         )
         raise typer.Exit(2)
@@ -762,6 +772,13 @@ def scan(
     else:
         myvaillant_map, myvaillant_map_source = _load_default_myvaillant_map()
 
+    if b509_range and not b509_dump:
+        typer.echo(
+            "--b509-range requires --b509-dump.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     if dry_run:
         dst_u8 = 0x15 if requested_dst == "auto" else cast(int, explicit_dst_u8)
         fixture_text, fixture_source = _load_default_dry_run_fixture_text()
@@ -773,6 +790,12 @@ def scan(
         except json.JSONDecodeError as exc:
             origin = fixture_source or "vrc720_full_scan.json"
             typer.echo(f"Invalid JSON fixture: {origin} ({exc})", err=True)
+            raise typer.Exit(2) from exc
+        try:
+            artifact, _migration = migrate_artifact_schema(artifact)
+        except ArtifactSchemaError as exc:
+            origin = fixture_source or "vrc720_full_scan.json"
+            typer.echo(f"Unsupported dry-run fixture schema: {origin} ({exc})", err=True)
             raise typer.Exit(2) from exc
         preface = _build_scan_session_preface(
             dst=dst_u8,
@@ -792,15 +815,16 @@ def scan(
         )
         allow_transport_retry = _is_default_transport_settings(transport_settings)
         b509_ranges: list[tuple[int, int]] = []
-        if b509_range:
-            for spec in b509_range:
-                try:
-                    b509_ranges.append(parse_b509_range(spec))
-                except ValueError as exc:
-                    typer.echo(f"Invalid --b509-range {spec!r}: {exc}", err=True)
-                    raise typer.Exit(2) from exc
-        else:
-            b509_ranges = [(0x0000, 0x00FF)]
+        if b509_dump:
+            if b509_range:
+                for spec in b509_range:
+                    try:
+                        b509_ranges.append(parse_b509_range(spec))
+                    except ValueError as exc:
+                        typer.echo(f"Invalid --b509-range {spec!r}: {exc}", err=True)
+                        raise typer.Exit(2) from exc
+            else:
+                b509_ranges = [(0x0000, 0x00FF)]
         while True:
             _emit_scan_status(
                 console,
@@ -849,6 +873,7 @@ def scan(
                             transport,
                             dst=dst_u8,
                             b509_ranges=b509_ranges,
+                            b509_dump=b509_dump,
                             b555_dump=b555_dump,
                             b516_dump=b516_dump,
                             ebusd_host=transport_settings.host,
@@ -927,12 +952,98 @@ def scan(
     html_path.write_text(
         render_html_report(
             artifact,
-            title=f"helianthus-vrc-explorer scan report ({output_path.name})",
+            title="Regulator Scan Browser",
         ),
         encoding="utf-8",
     )
 
     # Summary to stderr; keep stdout stable for scripting (artifact path only).
+    render_summary(console, artifact, output_path=output_path)
+    typer.echo(str(output_path))
+
+
+@app.command("replay-trace")
+def replay_trace(
+    trace_file: Path = typer.Argument(  # noqa: B008
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help=(
+            "Path to an ENH/ENS trace file captured via --trace-file. "
+            "Only the current EnhancedTcpTransport trace format is supported."
+        ),
+    ),
+    output_dir: Path = typer.Option(  # noqa: B008
+        Path("."),
+        "--output-dir",
+        help="Directory where regenerated JSON+HTML artifacts will be written.",
+    ),
+    output: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output",
+        help=(
+            "Optional explicit JSON output path. If omitted, a standard "
+            "b524_scan_*.json filename is generated in --output-dir."
+        ),
+    ),
+) -> None:
+    """Replay an ENH/ENS trace into a fresh schema-2.3 JSON artifact + HTML report.
+
+    Limitations (v1):
+    - Supports only current enhanced/ENS trace lines emitted by EnhancedTcpTransport.
+    - Reconstructs only deterministically derivable artifact content from captured payloads.
+    - No live probing/identity enrichment is performed during replay.
+    """
+
+    try:
+        artifact = replay_trace_to_artifact(trace_file)
+    except UnsupportedTraceFormatError as exc:
+        typer.echo(f"Unsupported trace format: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    except TraceReplayError as exc:
+        typer.echo(f"Trace replay failed: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if output is not None:
+        output_path = output
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        meta_obj = artifact.get("meta")
+        dst_u8 = 0x00
+        scan_timestamp: str | None = None
+        if isinstance(meta_obj, dict):
+            dst_obj = meta_obj.get("destination_address")
+            if isinstance(dst_obj, str):
+                with contextlib.suppress(ValueError):
+                    dst_u8 = int(dst_obj, 0)
+            scan_ts_obj = meta_obj.get("scan_timestamp")
+            if isinstance(scan_ts_obj, str):
+                scan_timestamp = scan_ts_obj
+        output_path = output_dir / default_output_filename(
+            dst=dst_u8,
+            scan_timestamp=scan_timestamp,
+        )
+
+    output_path.write_text(
+        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    html_path = output_path.with_suffix(".html")
+    html_path.write_text(
+        render_html_report(
+            artifact,
+            title="Regulator Scan Browser",
+        ),
+        encoding="utf-8",
+    )
+
+    console = Console(stderr=True)
     render_summary(console, artifact, output_path=output_path)
     typer.echo(str(output_path))
 
@@ -1128,6 +1239,11 @@ def browse(
     if not isinstance(artifact, dict):
         typer.echo(f"Invalid artifact root object: {file}", err=True)
         raise typer.Exit(2)
+    try:
+        artifact, _migration = migrate_artifact_schema(artifact)
+    except ArtifactSchemaError as exc:
+        typer.echo(f"Unsupported artifact schema: {file} ({exc})", err=True)
+        raise typer.Exit(2) from exc
 
     if not Console().is_terminal:
         console = Console(stderr=True)

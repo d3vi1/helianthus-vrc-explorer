@@ -7,6 +7,13 @@ BrowseTab = Literal["config", "config_limits", "state"]
 ProtocolKey = Literal["b524", "b555", "b516", "b509"]
 
 
+def _compact_hex_label(raw: str) -> str:
+    try:
+        return f"0x{int(raw, 0):x}"
+    except ValueError:
+        return raw
+
+
 @dataclass(frozen=True, slots=True)
 class RegisterAddress:
     protocol: ProtocolKey
@@ -27,9 +34,10 @@ class RegisterAddress:
             return f"B555 {group_key} {self.register_key}{suffix}".strip()
         if self.protocol == "b516":
             return f"B516 {self.register_key}{suffix}".strip()
-        group_key = self.group_key or "0x??"
-        instance_key = self.instance_key or "0x??"
-        return f"GG={group_key} II={instance_key} RR={self.register_key}{suffix}"
+        gg = f"GG={_compact_hex_label(self.group_key)}" if self.group_key else ""
+        rr = f"RR={_compact_hex_label(self.register_key)}"
+        parts = [p for p in ("B524", gg, rr) if p]
+        return " ".join(parts) + suffix
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +47,7 @@ class RegisterRow:
     group_key: str | None
     namespace_key: str | None
     namespace_label: str | None
+    section_key: str | None
     group_name: str
     instance_key: str | None
     register_key: str
@@ -58,7 +67,16 @@ class RegisterRow:
     search_blob: str
 
 
-TreeNodeLevel = Literal["root", "protocol", "group", "namespace", "instance", "range"]
+TreeNodeLevel = Literal[
+    "root",
+    "protocol",
+    "section",
+    "group",
+    "namespace",
+    "instance",
+    "register",
+    "range",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +85,10 @@ class TreeNodeRef:
     label: str
     level: TreeNodeLevel
     protocol: ProtocolKey | None = None
+    section_key: str | None = None
     group_key: str | None = None
     namespace_key: str | None = None
     namespace_label: str | None = None
     instance_key: str | None = None
+    register_key: str | None = None
     range_key: str | None = None

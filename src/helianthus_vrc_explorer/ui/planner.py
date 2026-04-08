@@ -17,6 +17,7 @@ from ..scanner.plan import (
     estimate_register_requests,
     format_int_set,
     format_plan_key,
+    make_plan_key,
     parse_int_set,
     parse_int_token,
 )
@@ -34,16 +35,17 @@ class PlannerGroup:
     rr_max_full: int
     present_instances: tuple[int, ...]
     namespace_label: str | None = None
-    primary: bool = True
-    exhaustive_only: bool = False
+    recommended: bool = True
 
     @property
     def key(self) -> PlanKey:
-        return (self.group, self.opcode)
+        return make_plan_key(self.group, self.opcode)
 
     @property
     def display_name(self) -> str:
         if self.namespace_label is None:
+            return self.name
+        if self.name.lower().endswith(f"({self.namespace_label.lower()})"):
             return self.name
         return f"{self.name} ({self.namespace_label})"
 
@@ -54,7 +56,12 @@ class PlannerGroup:
         return f"{_hex_u8(self.group)} ({self.namespace_label})"
 
 
-PlannerPreset = Literal["conservative", "recommended", "full", "exhaustive", "custom"]
+PlannerPreset = Literal[
+    "recommended",
+    "full",
+    "research",
+    "custom",
+]
 
 
 def _hex_u8(value: int) -> str:
@@ -63,6 +70,39 @@ def _hex_u8(value: int) -> str:
 
 def _hex_u16(value: int) -> str:
     return f"0x{value:04x}"
+
+
+def _namespace_opcode_rank(opcode: int) -> tuple[int, int]:
+    if opcode == 0x02:
+        return (0, opcode)
+    if opcode == 0x06:
+        return (1, opcode)
+    return (2, opcode)
+
+
+def planner_group_sort_key(group: PlannerGroup) -> tuple[int, int, int]:
+    return (*_namespace_opcode_rank(group.opcode), group.group)
+
+
+def planner_namespace_title(opcode: int) -> str:
+    if opcode == 0x02:
+        return "Local Devices (0x02)"
+    if opcode == 0x06:
+        return "Remote Devices (0x06)"
+    return f"Other Namespace ({_hex_u8(opcode)})"
+
+
+def split_planner_groups_by_namespace(
+    groups: list[PlannerGroup],
+) -> list[tuple[str, list[PlannerGroup]]]:
+    buckets: dict[int, list[PlannerGroup]] = {}
+    for group in sorted(groups, key=planner_group_sort_key):
+        buckets.setdefault(group.opcode, []).append(group)
+    return [
+        (planner_namespace_title(opcode), buckets[opcode])
+        for opcode in sorted(buckets, key=_namespace_opcode_rank)
+        if buckets[opcode]
+    ]
 
 
 def _format_seconds(seconds: float) -> str:
@@ -125,6 +165,8 @@ def _ask_yes_no(console: Console, prompt: str, *, default: bool) -> bool:
 def _build_default_plan(
     eligible: dict[PlanKey, PlannerGroup],
     default_plan: dict[PlanKey, GroupScanPlan] | None,
+    *,
+    default_preset: PlannerPreset,
 ) -> dict[PlanKey, GroupScanPlan]:
     if default_plan is not None:
         selected: dict[PlanKey, GroupScanPlan] = {}
@@ -134,34 +176,32 @@ def _build_default_plan(
         if selected:
             return selected
 
-    defaults: dict[PlanKey, GroupScanPlan] = {}
-    for g in eligible.values():
-        if not g.known:
-            continue
-        defaults[g.key] = GroupScanPlan(
-            group=g.group,
-            opcode=g.opcode,
-            rr_max=g.rr_max,
-            instances=((0x00,) if g.ii_max is None else g.present_instances),
-        )
-    return defaults
+    return build_plan_from_preset(
+        sorted(eligible.values(), key=planner_group_sort_key),
+        preset=default_preset,
+    )
+
+
+_RECOMMENDED_ALWAYS_ON: frozenset[int] = frozenset({0x00, 0x01, 0x04, 0x05})
 
 
 def _instances_for_preset(group: PlannerGroup, preset: PlannerPreset) -> tuple[int, ...]:
     if group.ii_max is None:
         return (0x00,)
-    if preset in {"conservative", "recommended"}:
+    if preset == "recommended":
+        # always_on groups in OP=0x02 get full instance range;
+        # present_gated groups get only discovered instances.
+        if group.opcode == 0x02 and group.group in _RECOMMENDED_ALWAYS_ON:
+            full_range = tuple(range(0x00, group.ii_max + 1))
+            if 0xFF in group.present_instances:
+                return full_range + (0xFF,)
+            return full_range
         return group.present_instances
+    # full and research: scan all instance slots
     full_range = tuple(range(0x00, group.ii_max + 1))
     if 0xFF in group.present_instances:
         return full_range + (0xFF,)
     return full_range
-
-
-def _instances_for_exhaustive(ii_max: int | None) -> tuple[int, ...]:
-    if ii_max is None:
-        return (0x00,)
-    return tuple(range(0x00, ii_max + 1))
 
 
 def build_plan_from_preset(
@@ -170,62 +210,67 @@ def build_plan_from_preset(
     preset: PlannerPreset,
 ) -> dict[PlanKey, GroupScanPlan]:
     selected: dict[PlanKey, GroupScanPlan] = {}
-    for group in sorted(groups, key=lambda g: (g.group, g.opcode)):
-        if preset == "exhaustive":
-            # Exhaustive: include ALL groups with rr_max_full and all instances.
+    for group in sorted(groups, key=planner_group_sort_key):
+        if preset == "recommended":
+            if not group.recommended:
+                continue
+            selected[group.key] = GroupScanPlan(
+                group=group.group,
+                opcode=group.opcode,
+                rr_max=group.rr_max,
+                instances=_instances_for_preset(group, preset),
+            )
+        elif preset == "full":
+            # Full: ALL groups (incl. unknown), full instances, normal RR.
+            # Discovery pass — "what exists on the bus?"
+            selected[group.key] = GroupScanPlan(
+                group=group.group,
+                opcode=group.opcode,
+                rr_max=group.rr_max,
+                instances=_instances_for_preset(group, preset),
+            )
+        elif preset == "research":
+            # Research: ALL groups (incl. unknown), full instances, expanded RR.
+            # Deep-dive — "every register on every group."
             selected[group.key] = GroupScanPlan(
                 group=group.group,
                 opcode=group.opcode,
                 rr_max=group.rr_max_full,
-                instances=_instances_for_exhaustive(group.ii_max),
+                instances=_instances_for_preset(group, preset),
             )
-            continue
-        if group.exhaustive_only:
-            # exhaustive_only groups (GG 0x06..0x11 experimental)
-            # are only included under --preset exhaustive.
-            continue
-        if not group.known and preset != "full":
-            continue
-        if preset == "conservative" and not group.primary:
-            continue
-        selected[group.key] = GroupScanPlan(
-            group=group.group,
-            opcode=group.opcode,
-            rr_max=(group.rr_max_full if preset == "full" else group.rr_max),
-            instances=_instances_for_preset(group, preset),
-        )
     return selected
 
 
 def _render_table(title: str, rows: list[PlannerGroup], *, unknown: bool, console: Console) -> None:
     if not rows:
         return
-    console.print(Rule(title, style="dim"))
-    table = Table(show_lines=False, header_style="bold dim")
-    table.add_column("GG", style="cyan", no_wrap=True)
-    table.add_column("Name", style="white")
-    table.add_column("Type", style="dim", justify="right", no_wrap=True)
-    table.add_column("Instances", style="dim", justify="right", no_wrap=True)
-    table.add_column("RR_max", style="magenta", justify="right", no_wrap=True)
-    for g in rows:
-        if g.ii_max is None:
-            instances = "singleton"
-        elif unknown:
-            instances = f"0/{g.ii_max + 1} (est.)"
-        else:
-            instances = f"{len(g.present_instances)}/{g.ii_max + 1}"
-        name = g.display_name if not unknown else f"{g.display_name} (experimental)"
-        rr_max = _hex_u16(g.rr_max_full)
-        if g.rr_max_full != g.rr_max:
-            rr_max = f"{_hex_u16(g.rr_max)} / {rr_max}"
-        table.add_row(
-            _hex_u8(g.group),
-            name,
-            f"{g.descriptor:.1f}",
-            instances,
-            rr_max,
-        )
-    console.print(table)
+    for namespace_title, namespace_rows in split_planner_groups_by_namespace(rows):
+        console.print(Rule(f"{title} - {namespace_title}", style="dim"))
+        table = Table(show_lines=False, header_style="bold dim")
+        table.add_column("GG", style="cyan", no_wrap=True)
+        table.add_column("Name", style="white")
+        table.add_column("Type", style="dim", justify="right", no_wrap=True)
+        table.add_column("Instances", style="dim", justify="right", no_wrap=True)
+        table.add_column("RR_max", style="magenta", justify="right", no_wrap=True)
+        for g in namespace_rows:
+            if g.ii_max is None:
+                instances = "singleton"
+            elif unknown:
+                instances = f"0/{g.ii_max + 1} (est.)"
+            else:
+                instances = f"{len(g.present_instances)}/{g.ii_max + 1}"
+            name = g.display_name if not unknown else f"{g.display_name} (experimental)"
+            rr_max = _hex_u16(g.rr_max_full)
+            if g.rr_max_full != g.rr_max:
+                rr_max = f"{_hex_u16(g.rr_max)} / {rr_max}"
+            table.add_row(
+                _hex_u8(g.group),
+                name,
+                f"{g.descriptor:.1f}",
+                instances,
+                rr_max,
+            )
+        console.print(table)
 
 
 def _print_plan_breakdown(console: Console, plan: dict[PlanKey, GroupScanPlan]) -> None:
@@ -235,8 +280,9 @@ def _print_plan_breakdown(console: Console, plan: dict[PlanKey, GroupScanPlan]) 
     console.print("[bold]Selected groups[/bold]")
     for key in sorted(plan.keys()):
         group_plan = plan[key]
-        instance_spec = "singleton"
-        if len(group_plan.instances) != 1 or group_plan.instances[0] != 0x00:
+        if not group_plan.instances:
+            instance_spec = "none"
+        else:
             instance_spec = format_int_set(list(group_plan.instances))
         console.print(
             "  • "
@@ -247,25 +293,24 @@ def _print_plan_breakdown(console: Console, plan: dict[PlanKey, GroupScanPlan]) 
 
 
 def _ask_preset(console: Console, *, default_preset: PlannerPreset) -> PlannerPreset:
-    preset_hint = "Preset: (1) conservative, (2) recommended, (3) full, (4) exhaustive, (5) custom"
+    preset_hint = "Preset: (1) recommended, (2) full, (3) research, (4) custom"
     default_token = {
-        "conservative": "1",
-        "recommended": "2",
-        "full": "3",
-        "exhaustive": "4",
-        "custom": "5",
+        "recommended": "1",
+        "full": "2",
+        "research": "3",
+        "custom": "4",
     }[default_preset]
     mapping: dict[str, PlannerPreset] = {
-        "1": "conservative",
-        "conservative": "conservative",
-        "2": "recommended",
+        "1": "recommended",
         "recommended": "recommended",
-        "3": "full",
+        "conservative": "recommended",
+        "2": "full",
         "full": "full",
         "aggressive": "full",
-        "4": "exhaustive",
-        "exhaustive": "exhaustive",
-        "5": "custom",
+        "3": "research",
+        "research": "research",
+        "exhaustive": "research",
+        "4": "custom",
         "custom": "custom",
     }
     while True:
@@ -282,7 +327,7 @@ def _ask_preset(console: Console, *, default_preset: PlannerPreset) -> PlannerPr
         preset = mapping.get(raw)
         if preset is not None:
             return preset
-        console.print("[red]Invalid preset. Use 1,2,3,4,5 or name.[/red]")
+        console.print("[red]Invalid preset. Use 1,2,3,4 or name.[/red]")
 
 
 def _ask_groups_to_scan(
@@ -399,7 +444,11 @@ def prompt_scan_plan(
     for group in groups:
         eligible_groups.setdefault(group.group, []).append(group)
 
-    default_selected_plan = _build_default_plan(eligible, default_plan)
+    default_selected_plan = _build_default_plan(
+        eligible,
+        default_plan,
+        default_preset=default_preset,
+    )
 
     console.print(Rule("Scan Planner", style="dim"))
     console.print(
@@ -439,8 +488,13 @@ def prompt_scan_plan(
 
     if preset == "full":
         console.print(
-            "[bold yellow]Warning:[/bold yellow] full preset expands all instance slots and full "
-            "RR ranges. Expect large multi-hour live scans on BASV2.",
+            "[bold yellow]Warning:[/bold yellow] full preset scans all groups (including "
+            "unknown) with full instance slots. Discovery pass — may take tens of minutes.",
+        )
+    if preset == "research":
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] research preset scans all groups with "
+            "expanded RR ranges. Deep-dive — expect very long reverse-engineering runs.",
         )
 
     if preset == "custom":

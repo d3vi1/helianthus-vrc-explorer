@@ -6,13 +6,16 @@ from helianthus_vrc_explorer.scanner.register import (
     _interpret_flags,
     _parse_inferred_value,
     is_instance_present,
+    namespace_opcodes_for_group,
     opcodes_for_group,
+    probe_instance_availability,
     read_register,
 )
 from helianthus_vrc_explorer.transport.base import (
     TransportCommandNotEnabled,
     TransportError,
     TransportInterface,
+    TransportNack,
     TransportTimeout,
 )
 
@@ -41,6 +44,15 @@ class _AlwaysTimeoutTransport(TransportInterface):
         raise TransportTimeout("boom")
 
 
+class _AlwaysNackTransport(TransportInterface):
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        self.calls += 1
+        raise TransportNack("nack")
+
+
 def test_read_register_surfaces_timeout_without_local_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -60,6 +72,7 @@ def test_read_register_surfaces_timeout_without_local_retry(
     # Scanner layer now delegates retry policy to transport, so a timeout from this dummy
     # transport is surfaced directly.
     assert transport.calls == 1
+    assert entry["response_state"] == "timeout"
     assert entry["error"] == "timeout"
     assert entry["raw_hex"] is None
 
@@ -81,7 +94,27 @@ def test_read_register_timeout_returns_timeout_entry_without_local_retry(
     )
 
     assert transport.calls == 1
+    assert entry["response_state"] == "timeout"
     assert entry["error"] == "timeout"
+    assert entry["raw_hex"] is None
+
+
+def test_read_register_nack_returns_nack_response_state() -> None:
+    transport = _AlwaysNackTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x02,
+        instance=0x00,
+        register=0x0002,
+        type_hint="UIN",
+    )
+
+    assert transport.calls == 1
+    assert entry["response_state"] == "nack"
+    assert entry["error"] == "nack"
     assert entry["raw_hex"] is None
 
 
@@ -146,9 +179,32 @@ class _BoolTrueTransport(TransportInterface):
         return bytes((0x01, group)) + rr + b"\x01"
 
 
+class _FlagsU8Transport(TransportInterface):
+    def __init__(self, flags: int, value: int = 0x01) -> None:
+        self.flags = flags
+        self.value = value
+
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        group = payload[2]
+        rr = payload[4:6]
+        return bytes((self.flags, group)) + rr + bytes((self.value,))
+
+
 class _StatusOnlyTransport(TransportInterface):
     def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
         return b"\x00"
+
+
+class _EmptyResponseTransport(TransportInterface):
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        return b""
+
+
+class _I32SentinelTransport(TransportInterface):
+    def send(self, dst: int, payload: bytes) -> bytes:  # noqa: ARG002
+        group = payload[2]
+        rr = payload[4:6]
+        return bytes((0x01, group)) + rr + b"\xff\xff\xff\x7f"
 
 
 class _UnparseableU24Transport(TransportInterface):
@@ -180,15 +236,95 @@ def test_read_register_status_only_response_is_not_decode_error() -> None:
     assert entry["error"] is None
 
 
+def test_read_register_empty_response_is_classified_as_empty_reply() -> None:
+    transport = _EmptyResponseTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0016,
+    )
+
+    assert entry["reply_hex"] == ""
+    assert entry["flags"] is None
+    assert entry["flags_access"] is None
+    assert entry["response_state"] == "empty_reply"
+    assert entry["raw_hex"] is None
+    assert entry["type"] is None
+    assert entry["value"] is None
+    assert entry["error"] is None
+
+
+def test_read_register_empty_response_without_whitelist_is_still_empty_reply() -> None:
+    transport = _EmptyResponseTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0000,
+    )
+
+    assert entry["reply_hex"] == ""
+    assert entry["flags"] is None
+    assert entry["flags_access"] is None
+    assert entry["response_state"] == "empty_reply"
+    assert entry["raw_hex"] is None
+    assert entry["type"] is None
+    assert entry["value"] is None
+    assert entry["error"] is None
+
+
+def test_read_register_i32_sentinel_adds_value_display_annotation() -> None:
+    transport = _I32SentinelTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0048,
+        type_hint="I32",
+    )
+
+    assert entry["raw_hex"] == "ffffff7f"
+    assert entry["value"] == 0x7FFFFFFF
+    assert entry["value_display"] == "sentinel_invalid_i32 (0x7FFFFFFF)"
+
+
+def test_read_register_u32_max_does_not_add_i32_sentinel_annotation() -> None:
+    transport = _I32SentinelTransport()
+
+    entry = read_register(
+        transport,
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0048,
+        type_hint="U32",
+    )
+
+    assert entry["raw_hex"] == "ffffff7f"
+    assert entry["value"] == 0x7FFFFFFF
+    assert "value_display" not in entry
+
+
 def test_flags_interpretation_single_byte() -> None:
     assert _interpret_flags(0x00, response_len=1) == "absent"
 
 
 def test_flags_interpretation_multi_byte() -> None:
-    assert _interpret_flags(0x00, response_len=7) == "volatile_ro"
-    assert _interpret_flags(0x01, response_len=7) == "stable_ro"
-    assert _interpret_flags(0x02, response_len=7) == "technical_rw"
-    assert _interpret_flags(0x03, response_len=7) == "user_rw"
+    assert _interpret_flags(0x00, response_len=7) == "state_volatile"
+    assert _interpret_flags(0x01, response_len=7) == "state_stable"
+    assert _interpret_flags(0x02, response_len=7) == "config_installer"
+    assert _interpret_flags(0x03, response_len=7) == "config_user"
 
 
 def test_opcodes_for_group_dual_namespace() -> None:
@@ -198,6 +334,26 @@ def test_opcodes_for_group_dual_namespace() -> None:
 def test_opcodes_for_group_single_namespace() -> None:
     assert opcodes_for_group(0x00) == [0x02]
     assert opcodes_for_group(0x0C) == [0x06]
+    assert opcodes_for_group(0x06) == [0x06]
+    assert opcodes_for_group(0x07) == [0x06]
+    assert opcodes_for_group(0x0B) == [0x06]
+
+
+def test_opcodes_for_group_unknown_group_requires_discovery_evidence() -> None:
+    with pytest.raises(ValueError, match="Unknown group 0x69"):
+        opcodes_for_group(0x69)
+
+
+def test_namespace_opcodes_for_group_supports_staged_remote_namespaces() -> None:
+    assert namespace_opcodes_for_group(0x00) == [0x02]
+    assert namespace_opcodes_for_group(0x01) == [0x02, 0x06]
+    assert namespace_opcodes_for_group(0x02) == [0x02, 0x06]
+    assert namespace_opcodes_for_group(0x0C) == [0x02, 0x06]
+
+
+def test_namespace_opcodes_for_group_unknown_group_requires_discovery_evidence() -> None:
+    with pytest.raises(ValueError, match="Unknown group 0x69"):
+        namespace_opcodes_for_group(0x69)
 
 
 def test_read_register_infers_hex_for_unparseable_u24_values() -> None:
@@ -214,25 +370,49 @@ def test_read_register_infers_hex_for_unparseable_u24_values() -> None:
 
     assert entry["reply_hex"] == "030035000e3803"
     assert entry["flags"] == 0x03
-    assert entry["flags_access"] == "user_rw"
+    assert entry["flags_access"] == "config_user"
     assert entry["raw_hex"] == "0e3803"
     assert entry["type"] == "HEX:3"
     assert entry["value"] == "0x0e3803"
     assert entry["error"] is None
 
 
+def test_reply_kind_uses_opcode_specific_semantics_for_bit0() -> None:
+    local = read_register(
+        _FlagsU8Transport(flags=0x01),
+        0x15,
+        0x02,
+        group=0x00,
+        instance=0x00,
+        register=0x0001,
+        type_hint="BOOL",
+    )
+    remote = read_register(
+        _FlagsU8Transport(flags=0x01),
+        0x15,
+        0x06,
+        group=0x0C,
+        instance=0x00,
+        register=0x0001,
+        type_hint="BOOL",
+    )
+
+    assert local["reply_kind"] == "simple_stable"
+    assert remote["reply_kind"] == "simple_valid"
+
+
 def test_is_instance_present_group_0c_requires_valid_register_response() -> None:
     transport = _AlwaysDecodeErrorTransport()
 
     assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is False
-    assert transport.calls == 1
+    assert transport.calls == 4
 
 
 def test_is_instance_present_group_0c_transport_errors_do_not_count_as_present() -> None:
     transport = _AlwaysTransportErrorTransport()
 
     assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is False
-    assert transport.calls == 1
+    assert transport.calls == 4
 
 
 def test_is_instance_present_group_0c_true_on_first_valid_register_response() -> None:
@@ -243,11 +423,11 @@ def test_is_instance_present_group_0c_true_on_first_valid_register_response() ->
     assert transport.calls == 1
 
 
-def test_is_instance_present_group_0c_false_when_device_connected_is_false() -> None:
+def test_is_instance_present_group_0c_accepts_secondary_header_evidence() -> None:
     transport = _BoolFalseTransport()
 
-    assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is False
-    assert transport.calls == 1
+    assert is_instance_present(transport, dst=0x15, group=0x0C, instance=0x00) is True
+    assert transport.calls == 2
 
 
 def test_instance_present_cylinder_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -262,7 +442,7 @@ def test_instance_present_cylinder_found(monkeypatch: pytest.MonkeyPatch) -> Non
             "type": "EXP",
             "value": 50.0,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -297,10 +477,11 @@ def test_instance_present_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
         calls.append((int(opcode), int(kwargs["group"]), int(kwargs["register"])))
         return {
             "raw_hex": "01",
-            "type": "UCH",
-            "value": 1,
+            "type": "BOOL",
+            "value": True,
             "error": None,
-            "flags_access": "stable_ro",
+            "flags_access": "state_stable",
+            "reply_kind": "simple_valid",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -318,7 +499,9 @@ def test_instance_present_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [(0x06, 0x08, 0x0001)]
 
 
-def test_is_instance_present_group_09_rejects_nan_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_instance_present_group_09_remote_requires_all_header_registers_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import helianthus_vrc_explorer.scanner.register as register
 
     calls: list[int] = []
@@ -326,10 +509,11 @@ def test_is_instance_present_group_09_rejects_nan_values(monkeypatch: pytest.Mon
     def _fake_read_register(*_args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(int(kwargs["register"]))
         return {
-            "raw_hex": "00000000",
-            "type": "EXP",
-            "value": float("nan"),
+            "raw_hex": None,
+            "type": None,
+            "value": None,
             "error": None,
+            "flags_access": "absent",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -340,25 +524,26 @@ def test_is_instance_present_group_09_rejects_nan_values(monkeypatch: pytest.Mon
             dst=0x15,
             group=0x09,
             instance=0x00,
+            opcode=0x06,
         )
         is False
     )
-    assert calls == [0x0007, 0x000F]
+    assert calls == [0x0001, 0x0002, 0x0003, 0x0004]
 
 
-def test_is_instance_present_group_09_accepts_non_nan_values(
+def test_is_instance_present_group_09_remote_accepts_device_connected_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import helianthus_vrc_explorer.scanner.register as register
 
-    values = iter([float("nan"), 1.0])
-
-    def _fake_read_register(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+    def _fake_read_register(*_args, **kwargs):  # type: ignore[no-untyped-def]
         return {
-            "raw_hex": "00000000",
-            "type": "EXP",
-            "value": next(values),
+            "raw_hex": "01",
+            "type": "BOOL",
+            "value": True,
             "error": None,
+            "flags_access": "state_stable",
+            "reply_kind": "simple_valid",
         }
 
     monkeypatch.setattr(register, "read_register", _fake_read_register)
@@ -369,9 +554,307 @@ def test_is_instance_present_group_09_accepts_non_nan_values(
             dst=0x15,
             group=0x09,
             instance=0x00,
+            opcode=0x06,
         )
         is True
     )
+
+
+def test_is_instance_present_group_09_remote_accepts_secondary_header_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, str | None]] = []
+
+    def _fake_read_register(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        type_hint = kwargs.get("type_hint")
+        calls.append((register_id, type_hint))
+        if register_id == 0x0001:
+            return {
+                "raw_hex": "00",
+                "type": "BOOL",
+                "value": False,
+                "error": None,
+                "flags_access": "state_stable",
+                "reply_kind": "simple_valid",
+            }
+        if register_id == 0x0002:
+            return {
+                "raw_hex": "15",
+                "type": "UCH",
+                "value": 0x15,
+                "error": None,
+                "flags_access": "state_stable",
+                "reply_kind": "simple_valid",
+            }
+        return {
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": "absent",
+            "reply_kind": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    assert (
+        is_instance_present(
+            transport=_StatusOnlyTransport(),
+            dst=0x15,
+            group=0x09,
+            instance=0x00,
+            opcode=0x06,
+        )
+        is True
+    )
+    assert calls == [(0x0001, "BOOL"), (0x0002, "UCH")]
+
+
+def test_probe_instance_availability_group_09_local_uses_rr_0001(monkeypatch) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((int(opcode), int(kwargs["register"])))
+        return {
+            "raw_hex": "34",
+            "type": "UCH",
+            "value": 0x34,
+            "error": None,
+            "flags_access": "state_stable",
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x09,
+        instance=0x02,
+        opcode=0x02,
+    )
+
+    assert probe.present is True
+    assert probe.contract.probe_register == 0x0001
+    assert calls == [(0x02, 0x0001)]
+
+
+def test_probe_instance_availability_group_09_remote_uses_generic_header_probe(monkeypatch) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int, str | None]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((int(opcode), int(kwargs["register"]), kwargs.get("type_hint")))
+        if int(kwargs["register"]) == 0x0001:
+            return {
+                "raw_hex": "00",
+                "type": "BOOL",
+                "value": False,
+                "error": None,
+                "flags_access": "state_stable",
+                "reply_kind": "simple_valid",
+            }
+        return {
+            "raw_hex": "15",
+            "type": "UCH",
+            "value": 0x15,
+            "error": None,
+            "flags_access": "state_stable",
+            "reply_kind": "simple_valid",
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x09,
+        instance=0x01,
+        opcode=0x06,
+    )
+
+    assert probe.present is True
+    assert probe.contract.probe_register == 0x0001
+    assert probe.contract.probe_type_hint == "BOOL"
+    assert calls == [(0x06, 0x0001, "BOOL"), (0x06, 0x0002, "UCH")]
+
+
+def test_probe_instance_availability_group_09_remote_ignores_invalid_header_fallback(
+    monkeypatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int, str | None]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        calls.append((int(opcode), register_id, kwargs.get("type_hint")))
+        if register_id == 0x0001:
+            return {
+                "raw_hex": "00",
+                "type": "BOOL",
+                "value": False,
+                "error": None,
+                "flags_access": "state_stable",
+                "reply_kind": "simple_valid",
+            }
+        if register_id == 0x0002:
+            return {
+                "raw_hex": "ff",
+                "type": "UCH",
+                "value": 0xFF,
+                "error": None,
+                "flags_access": "state_stable",
+                "reply_kind": "simple_invalid",
+            }
+        return {
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": "absent",
+            "reply_kind": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x09,
+        instance=0x01,
+        opcode=0x06,
+    )
+
+    assert probe.present is False
+    assert calls == [
+        (0x06, 0x0001, "BOOL"),
+        (0x06, 0x0002, "UCH"),
+        (0x06, 0x0003, "UCH"),
+        (0x06, 0x0004, "FW"),
+    ]
+
+
+def test_probe_instance_availability_group_09_remote_ignores_invalid_primary_header(
+    monkeypatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int, str | None]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        calls.append((int(opcode), register_id, kwargs.get("type_hint")))
+        if register_id == 0x0001:
+            return {
+                "raw_hex": "01",
+                "type": "BOOL",
+                "value": True,
+                "error": None,
+                "flags_access": "state_stable",
+                "reply_kind": "simple_invalid",
+            }
+        return {
+            "raw_hex": None,
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": "absent",
+            "reply_kind": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x09,
+        instance=0x01,
+        opcode=0x06,
+    )
+
+    assert probe.present is False
+    assert calls == [
+        (0x06, 0x0001, "BOOL"),
+        (0x06, 0x0002, "UCH"),
+        (0x06, 0x0003, "UCH"),
+        (0x06, 0x0004, "FW"),
+    ]
+
+
+def test_probe_instance_availability_remote_empty_reply_does_not_mark_slot_present(
+    monkeypatch,
+) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int, str | None]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        register_id = int(kwargs["register"])
+        calls.append((int(opcode), register_id, kwargs.get("type_hint")))
+        return {
+            "raw_hex": "",
+            "type": None,
+            "value": None,
+            "error": None,
+            "flags_access": None,
+            "response_state": "empty_reply",
+            "reply_kind": None,
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x04,
+        instance=0x03,
+        opcode=0x06,
+    )
+
+    assert probe.present is False
+    assert calls == [
+        (0x06, 0x0001, "BOOL"),
+        (0x06, 0x0002, "UCH"),
+        (0x06, 0x0003, "UCH"),
+        (0x06, 0x0004, "FW"),
+    ]
+
+
+def test_probe_instance_availability_group_04_local_uses_rr_0004(monkeypatch) -> None:
+    import helianthus_vrc_explorer.scanner.register as register
+
+    calls: list[tuple[int, int]] = []
+
+    def _fake_read_register(_transport, _dst, opcode, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((int(opcode), int(kwargs["register"])))
+        return {
+            "raw_hex": "0000803f",
+            "type": "EXP",
+            "value": 1.0,
+            "error": None,
+            "flags_access": "state_stable",
+            "response_state": "active",
+        }
+
+    monkeypatch.setattr(register, "read_register", _fake_read_register)
+
+    probe = probe_instance_availability(
+        _StatusOnlyTransport(),
+        dst=0x15,
+        group=0x04,
+        instance=0x01,
+        opcode=0x02,
+    )
+
+    assert probe.present is True
+    assert probe.contract.probe_register == 0x0004
+    assert calls == [(0x02, 0x0004)]
 
 
 def test_fw_not_added_to_inferred_type_selection() -> None:

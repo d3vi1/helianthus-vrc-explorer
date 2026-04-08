@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
-from .base import TransportError, TransportInterface, TransportTimeout
+from .base import TransportError, TransportInterface, TransportNack, TransportTimeout
 
 _EBUS_ESCAPE = 0xA9
 _EBUS_SYN = 0xAA
@@ -314,6 +314,11 @@ class EnhancedTcpConfig:
     # START floods cause transient eBUS signal loss (ebus_error=0x00).
     collision_backoff_min_ms: int = 50
     collision_backoff_max_ms: int = 50
+    # TCP reconnect: when timeout retries are exhausted, reconnect instead
+    # of giving up.  This handles stale TCP sessions (adapter reboot,
+    # network blip) without aborting the scan.
+    reconnect_max_retries: int = 3
+    reconnect_delay_s: float = 2.0
 
 
 @dataclass(slots=True)
@@ -326,7 +331,7 @@ class _EnhancedCollision(TransportError):
     """Retryable collision or unexpected bus-ownership event."""
 
 
-class _EnhancedNack(TransportError):
+class _EnhancedNack(TransportNack):
     """Retryable NACK from the bus peer."""
 
 
@@ -589,7 +594,8 @@ class EnhancedTcpTransport(TransportInterface):
     def _init_transport(self, *, features: int) -> None:
         self._trace(f"INIT features=0x{features:02X}")
         self._send_enh_frame(_ENH_REQ_INIT, features)
-        while True:
+        deadline = time.monotonic() + self._config.timeout_s
+        while time.monotonic() < deadline:
             try:
                 kind, command, data = self._read_message()
             except TransportTimeout:
@@ -607,11 +613,13 @@ class EnhancedTcpTransport(TransportInterface):
             if command == _ENH_RES_ERROR_HOST:
                 self._trace(f"INIT_RESP host_error=0x{data:02X}")
                 raise TransportError(f"ENH init host error 0x{data:02X}")
+        self._trace("INIT_RESP deadline expired (bus data flooding)")
 
     def _start_arbitration(self, initiator: int) -> None:
         self._trace(f"START initiator=0x{initiator:02X}")
         self._send_enh_frame(_ENH_REQ_START, initiator)
-        while True:
+        deadline = time.monotonic() + self._config.timeout_s
+        while time.monotonic() < deadline:
             kind, command, data = self._read_message()
             if kind != "frame":
                 continue
@@ -635,24 +643,33 @@ class EnhancedTcpTransport(TransportInterface):
                 raise _EnhancedCollision(f"enhanced arbitration host error 0x{data:02X}")
             if command == _ENH_RES_RESETTED:
                 self._trace(f"START_RESP reset features=0x{data:02X}")
-                self._reset_parser()
+                self.close()
+                self._open_session()
+                raise _EnhancedCollision(
+                    f"Adapter reset during arbitration (features=0x{data:02X})"
+                )
+        self._trace("START_RESP deadline expired")
+        raise _EnhancedCollision("Arbitration deadline expired (bus data flooding)")
 
     def _recv_bus_symbol(self) -> int:
-        while True:
+        deadline = time.monotonic() + self._config.timeout_s
+        while time.monotonic() < deadline:
             kind, command, data = self._read_message()
             if kind == "data":
                 return command
             if command == _ENH_RES_RECEIVED:
                 return data
             if command == _ENH_RES_RESETTED:
-                self._reset_parser()
-                continue
+                self.close()
+                self._open_session()
+                raise TransportTimeout(f"Adapter reset during bus read (features=0x{data:02X})")
             if command == _ENH_RES_INFO:
                 continue
             if command == _ENH_RES_ERROR_EBUS:
                 raise TransportError(f"enhanced bus read eBUS error 0x{data:02X}")
             if command == _ENH_RES_ERROR_HOST:
                 raise TransportError(f"enhanced bus read host error 0x{data:02X}")
+        raise TransportTimeout("Bus symbol read deadline expired")
 
     def _send_symbol_with_echo(self, symbol: int) -> None:
         self._send_enh_frame(_ENH_REQ_SEND, symbol)
@@ -702,8 +719,19 @@ class EnhancedTcpTransport(TransportInterface):
             ),
         )
 
+    def _reconnect(self, seq: int, attempt: int) -> None:
+        """Close the current session and re-establish a fresh TCP + INIT handshake."""
+        self._trace(
+            f"#{seq} RECONNECT attempt={attempt}/{self._config.reconnect_max_retries} "
+            f"delay={self._config.reconnect_delay_s}s"
+        )
+        self.close()
+        time.sleep(self._config.reconnect_delay_s)
+        self._open_session()
+
     def _send_with_policy(self, seq: int, send_once: Callable[[], bytes]) -> bytes:
         timeout_retries = 0
+        reconnect_retries = 0
         collision_retries = 0
         nack_retries = 0
 
@@ -713,12 +741,27 @@ class EnhancedTcpTransport(TransportInterface):
             except TransportTimeout as exc:
                 timeout_retries += 1
                 if timeout_retries > self._config.timeout_max_retries:
-                    self.close()
-                    raise TransportTimeout(
-                        f"{exc} (timeout retries exhausted ({self._config.timeout_max_retries}))"
-                    ) from exc
+                    # Timeout retries exhausted — try TCP reconnect before giving up.
+                    reconnect_retries += 1
+                    if reconnect_retries > self._config.reconnect_max_retries:
+                        self.close()
+                        raise TransportTimeout(
+                            f"{exc} (reconnect retries exhausted "
+                            f"({self._config.reconnect_max_retries}))"
+                        ) from exc
+                    try:
+                        self._reconnect(seq, reconnect_retries)
+                    except (TransportError, TransportTimeout, OSError) as reconn_exc:
+                        self._trace(f"#{seq} RECONNECT failed: {reconn_exc}")
+                        if reconnect_retries >= self._config.reconnect_max_retries:
+                            raise TransportTimeout(
+                                f"{exc} (reconnect failed: {reconn_exc})"
+                            ) from exc
+                        time.sleep(self._config.reconnect_delay_s)
+                        continue
+                    timeout_retries = 0
+                    continue
                 # First timeout: reset parser and retry on the same session.
-                # Subsequent timeouts after exhaustion: close above.
                 self._reset_parser()
                 self._trace(
                     f"#{seq} RETRY type=timeout "
@@ -757,9 +800,12 @@ class EnhancedTcpTransport(TransportInterface):
                 nack_retries += 1
                 if nack_retries > self._config.nack_max_retries:
                     self.close()
-                    raise TransportError(
+                    message = (
                         f"{exc} (nack/crc retries exhausted ({self._config.nack_max_retries}))"
-                    ) from exc
+                    )
+                    if isinstance(exc, _EnhancedNack):
+                        raise TransportNack(message) from exc
+                    raise TransportError(message) from exc
                 self._reset_parser()
                 self._trace(
                     f"#{seq} RETRY type=nack_or_crc "

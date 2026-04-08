@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..scanner.identity import opcode_label
 from ..scanner.plan import (
     GroupScanPlan,
     PlanKey,
@@ -11,7 +12,14 @@ from ..scanner.plan import (
     parse_int_set,
     parse_int_token,
 )
-from .planner import PlannerGroup, PlannerPreset, _format_seconds, build_plan_from_preset
+from .planner import (
+    PlannerGroup,
+    PlannerPreset,
+    _format_seconds,
+    build_plan_from_preset,
+    planner_namespace_title,
+    split_planner_groups_by_namespace,
+)
 
 
 @dataclass(slots=True)
@@ -20,6 +28,25 @@ class _EditableGroup:
     enabled: bool
     rr_max: int
     instances: tuple[int, ...]
+
+
+def _namespace_text(group: PlannerGroup) -> str:
+    return group.namespace_label or opcode_label(group.opcode)
+
+
+def _table_row_values(state: _EditableGroup) -> tuple[str, str, str, str, str, str, str]:
+    group = state.group
+    mark = "✓" if state.enabled else " "
+    name = group.name if group.known else f"{group.name} (experimental)"
+    return (
+        mark,
+        f"0x{group.group:02X}",
+        name,
+        _namespace_text(group),
+        f"{group.descriptor:.1f}",
+        _format_instances(group, state.instances, enabled=state.enabled),
+        f"0x{state.rr_max:04X}",
+    )
 
 
 def _format_instances(group: PlannerGroup, instances: tuple[int, ...], *, enabled: bool) -> str:
@@ -82,6 +109,29 @@ def _estimate_footer(
     )
 
 
+def _planner_pane_id(opcode: int) -> str:
+    if opcode == 0x02:
+        return "local"
+    # Keep the planner bounded to the two B524 namespace panes. Unexpected
+    # opcodes are routed to remote instead of being silently dropped.
+    return "remote"
+
+
+_PANE_TABLE_IDS: dict[str, str] = {
+    "local": "planner-table-local",
+    "remote": "planner-table-remote",
+}
+
+
+def _table_id_to_pane_key(table_id: str | None) -> str | None:
+    if table_id is None:
+        return None
+    for pane_key, pane_table_id in _PANE_TABLE_IDS.items():
+        if table_id == pane_table_id:
+            return pane_key
+    return None
+
+
 def run_textual_scan_plan(
     groups: list[PlannerGroup],
     *,
@@ -103,6 +153,13 @@ def run_textual_scan_plan(
 
     class _InputDialog(ModalScreen[str | None]):
         BINDINGS = [
+            Binding(
+                "enter,return,ctrl+j,ctrl+m",
+                "submit",
+                "Save",
+                show=False,
+                priority=True,
+            ),
             Binding("escape", "cancel", "Cancel"),
         ]
         CSS = """
@@ -139,21 +196,25 @@ def run_textual_scan_plan(
         def action_cancel(self) -> None:
             self.dismiss(None)
 
-        def on_input_submitted(self, event: Input.Submitted) -> None:
-            # Enter is handled by the Input widget first; submit explicitly so
-            # users can confirm edits without relying on screen-level bindings.
-            event.stop()
-            self.dismiss(event.value.strip())
+        def action_submit(self) -> None:
+            value = self.query_one(Input).value.strip()
+            self.dismiss(value)
 
     class _PlannerApp(App[dict[PlanKey, GroupScanPlan] | None]):
         BINDINGS = [
             Binding("space", "toggle_enabled", "Toggle"),
+            Binding(
+                "enter,return,ctrl+j,ctrl+m",
+                "edit_rr_max",
+                "Edit RR",
+                show=False,
+            ),
             Binding("tab", "focus_next", "Next"),
             Binding("i", "edit_instances", "Edit II"),
-            Binding("1", "preset_conservative", "Preset 1"),
-            Binding("2", "preset_recommended", "Preset 2"),
-            Binding("3", "preset_full", "Preset 3"),
-            Binding("4", "preset_exhaustive", "Preset 4"),
+            Binding("1", "preset_recommended", "Preset 1"),
+            Binding("2", "preset_full", "Preset 2"),
+            Binding("3", "preset_research", "Preset 3"),
+            Binding("4", "preset_custom", "Preset 4"),
             Binding("s", "save", "Save"),
             Binding("q", "cancel", "Cancel"),
             Binding("question_mark", "show_help", "Help"),
@@ -163,6 +224,9 @@ def run_textual_scan_plan(
         Screen {
             background: #2e3436;
             color: #eeeeec;
+        }
+        #planner-pane-local, #planner-pane-remote {
+            height: 1fr;
         }
         DataTable {
             height: 1fr;
@@ -181,12 +245,16 @@ def run_textual_scan_plan(
 
         def __init__(self) -> None:
             super().__init__()
-            self._groups = sorted(groups, key=lambda group: (group.group, group.opcode))
+            namespace_sections = split_planner_groups_by_namespace(groups)
+            self._groups = [
+                group for (_title, pane_groups) in namespace_sections for group in pane_groups
+            ]
             preset_plan = build_plan_from_preset(self._groups, preset=default_preset)
             initial_plan = default_plan if default_plan is not None else preset_plan
             self._states: dict[PlanKey, _EditableGroup] = {}
-            self._row_groups: list[PlanKey] = []
+            self._row_groups: dict[str, list[PlanKey]] = {"local": [], "remote": []}
             self._editing_group: PlanKey | None = None
+            self._suppress_next_enter = False
             for group in self._groups:
                 group_plan = initial_plan.get(group.key)
                 if group_plan is None:
@@ -207,18 +275,34 @@ def run_textual_scan_plan(
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
-            yield DataTable(id="planner-table")
+            yield Vertical(
+                Vertical(
+                    Label(planner_namespace_title(0x02)),
+                    DataTable(id="planner-table-local"),
+                    id="planner-pane-local",
+                ),
+                Vertical(
+                    Label(planner_namespace_title(0x06)),
+                    DataTable(id="planner-table-remote"),
+                    id="planner-pane-remote",
+                ),
+                id="planner-panes",
+            )
             yield Static("", id="status")
             yield Static("", id="help")
             yield Footer()
 
         def on_mount(self) -> None:
-            table = self.query_one(DataTable)
-            table.cursor_type = "row"
-            table.add_columns("On", "GG", "Name", "Type", "Instances", "RR_max")
+            for table_id in _PANE_TABLE_IDS.values():
+                table = self.query_one(f"#{table_id}", DataTable)
+                table.cursor_type = "row"
+                table.add_columns("On", "GG", "Name", "Namespace", "Type", "Instances", "RR_max")
             self._refresh_table()
             self._set_help("1/2/3/4 presets | Space toggle | Enter edit RR_max | i edit instances")
-            table.focus()
+            if self._row_groups["local"]:
+                self.query_one("#planner-table-local", DataTable).focus()
+            else:
+                self.query_one("#planner-table-remote", DataTable).focus()
 
         def _set_help(self, text: str) -> None:
             self.query_one("#help", Static).update(text)
@@ -229,38 +313,62 @@ def run_textual_scan_plan(
             )
 
         def _focused_group(self) -> PlanKey | None:
-            table = self.query_one(DataTable)
-            if not self._row_groups:
+            if not isinstance(self.focused, DataTable):
                 return None
-            row = table.cursor_row
-            if row < 0 or row >= len(self._row_groups):
+            pane_key = _table_id_to_pane_key(self.focused.id)
+            if pane_key is None:
                 return None
-            return self._row_groups[row]
+            row_groups = self._row_groups[pane_key]
+            if not row_groups:
+                return None
+            row = self.focused.cursor_row
+            if row < 0 or row >= len(row_groups):
+                return None
+            return row_groups[row]
 
         def _refresh_table(self) -> None:
-            table = self.query_one(DataTable)
-            current = max(0, table.cursor_row)
-            table.clear(columns=False)
-            self._row_groups = []
+            table_by_pane = {
+                pane_key: self.query_one(f"#{table_id}", DataTable)
+                for pane_key, table_id in _PANE_TABLE_IDS.items()
+            }
+            cursor_by_pane = {
+                pane: max(0, table.cursor_row) for pane, table in table_by_pane.items()
+            }
+            for table in table_by_pane.values():
+                table.clear(columns=False)
+            self._row_groups = {pane_key: [] for pane_key in _PANE_TABLE_IDS}
             for group in self._groups:
+                pane_key = _planner_pane_id(group.opcode)
+                pane_table = table_by_pane.get(pane_key)
+                if pane_table is None:
+                    continue
                 state = self._states[group.key]
-                mark = "✓" if state.enabled else " "
-                name = group.display_name if group.known else f"{group.display_name} (experimental)"
-                table.add_row(
-                    mark,
-                    f"0x{group.group:02X}",
-                    name,
-                    f"{group.descriptor:.1f}",
-                    _format_instances(group, state.instances, enabled=state.enabled),
-                    f"0x{state.rr_max:04X}",
-                )
-                self._row_groups.append(group.key)
-            if self._row_groups:
-                table.move_cursor(row=min(current, len(self._row_groups) - 1))
+                pane_table.add_row(*_table_row_values(state))
+                self._row_groups[pane_key].append(group.key)
+            for pane_key, table in table_by_pane.items():
+                row_groups = self._row_groups[pane_key]
+                if row_groups:
+                    table.move_cursor(row=min(cursor_by_pane[pane_key], len(row_groups) - 1))
             self._set_status()
 
         def _focus_table(self) -> None:
-            self.query_one(DataTable).focus()
+            if (
+                isinstance(self.focused, DataTable)
+                and _table_id_to_pane_key(self.focused.id) is not None
+            ):
+                self.focused.focus()
+                return
+            for pane_key in ("local", "remote"):
+                if self._row_groups[pane_key]:
+                    self.query_one(f"#{_PANE_TABLE_IDS[pane_key]}", DataTable).focus()
+                    return
+            self.query_one("#planner-table-local", DataTable).focus()
+
+        def _suppress_enter_reactivation(self) -> None:
+            # A modal input dialog closes on Enter and immediately refocuses the
+            # table. Suppress the next planner-level Enter handling so the same
+            # keystroke doesn't reopen RR editing underneath the dismissed modal.
+            self._suppress_next_enter = True
 
         def _apply_preset(self, preset: PlannerPreset) -> None:
             preset_plan = build_plan_from_preset(self._groups, preset=preset)
@@ -286,10 +394,12 @@ def run_textual_scan_plan(
                 rr_max = parse_int_token(value)
             except ValueError as exc:
                 self._set_help(f"Invalid RR_max: {exc}")
+                self._suppress_enter_reactivation()
                 self._focus_table()
                 return
             if not (0x0000 <= rr_max <= 0xFFFF):
                 self._set_help("RR_max must be in 0x0000..0xFFFF")
+                self._suppress_enter_reactivation()
                 self._focus_table()
                 return
             self._states[self._editing_group].rr_max = rr_max
@@ -297,6 +407,7 @@ def run_textual_scan_plan(
             edited_group = self._states[self._editing_group].group
             self._set_help(f"Updated RR_max for {edited_group.prompt_label}")
             self._editing_group = None
+            self._suppress_enter_reactivation()
             self._focus_table()
 
         def _edit_instances(self, value: str | None) -> None:
@@ -315,28 +426,50 @@ def run_textual_scan_plan(
                 instances = _parse_instances_spec(value, group=group)
             except ValueError as exc:
                 self._set_help(f"Invalid instances: {exc}")
+                self._suppress_enter_reactivation()
                 self._focus_table()
                 return
             self._states[self._editing_group].instances = instances
             self._refresh_table()
             self._set_help(f"Updated instances for {group.prompt_label}")
             self._editing_group = None
+            self._suppress_enter_reactivation()
             self._focus_table()
 
         def action_focus_next(self) -> None:
-            table = self.query_one(DataTable)
-            if not self._row_groups:
+            tables = [
+                self.query_one("#planner-table-local", DataTable),
+                self.query_one("#planner-table-remote", DataTable),
+            ]
+            if not any(self._row_groups[pane_key] for pane_key in _PANE_TABLE_IDS):
                 return
-            next_row = (table.cursor_row + 1) % len(self._row_groups)
-            table.move_cursor(row=next_row)
+            if isinstance(self.focused, DataTable):
+                current_idx = next(
+                    (index for index, table in enumerate(tables) if table.id == self.focused.id),
+                    0,
+                )
+            else:
+                current_idx = 0
+            for offset in range(1, len(tables) + 1):
+                candidate = tables[(current_idx + offset) % len(tables)]
+                pane_key = _table_id_to_pane_key(candidate.id)
+                if pane_key is not None and self._row_groups[pane_key]:
+                    candidate.focus()
+                    return
 
         def on_key(self, event: Key) -> None:
             # Accept Enter/Return variants for row edit while avoiding modal interference.
             if event.key not in {"enter", "ctrl+j", "ctrl+m"}:
                 return
+            if self._suppress_next_enter:
+                self._suppress_next_enter = False
+                event.stop()
+                return
             if len(self.screen_stack) > 1:
                 return
-            if isinstance(self.focused, DataTable) and self.focused.id == "planner-table":
+            if isinstance(self.focused, DataTable) and self.focused.id in set(
+                _PANE_TABLE_IDS.values()
+            ):
                 event.stop()
                 self.action_edit_rr_max()
 
@@ -367,6 +500,9 @@ def run_textual_scan_plan(
 
         def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
             # Keep Enter behavior stable even if DataTable handles Enter locally.
+            if self._suppress_next_enter:
+                self._suppress_next_enter = False
+                return
             self.action_edit_rr_max()
 
         def action_edit_instances(self) -> None:
@@ -391,17 +527,17 @@ def run_textual_scan_plan(
                 self._edit_instances,
             )
 
-        def action_preset_conservative(self) -> None:
-            self._apply_preset("conservative")
-
         def action_preset_recommended(self) -> None:
             self._apply_preset("recommended")
 
         def action_preset_full(self) -> None:
             self._apply_preset("full")
 
-        def action_preset_exhaustive(self) -> None:
-            self._apply_preset("exhaustive")
+        def action_preset_research(self) -> None:
+            self._apply_preset("research")
+
+        def action_preset_custom(self) -> None:
+            self._apply_preset("custom")
 
         def action_show_help(self) -> None:
             self._set_help("Space=toggle Enter=RR i=instances 1/2/3/4=presets s=save q=cancel")

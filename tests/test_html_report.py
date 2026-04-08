@@ -35,10 +35,13 @@ def test_html_report_supports_b509_tab_and_dual_naming() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B509 Dump" in html
+    assert "PB=B5 SB=09" in html
     assert "Hide timeouts" in html
     assert "hideAbsent" in html
     assert "ebusd: " in html
+    assert "Group Directory" in html
+    assert "Controller Registers" in html
+    assert "Device Slots" in html
 
 
 def test_html_report_supports_b555_tab() -> None:
@@ -90,11 +93,61 @@ def test_html_report_supports_b555_tab() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B555 Dump" in html
+    assert "PB=B5 SB=55" in html
     assert "No B555 dump in artifact." in html
     assert "request_hex=" in html
     assert '"zone":"0x00"' in html
     assert '"hc":"0x00"' in html
+
+
+def test_html_report_includes_dormant_status_rendering_logic() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {
+            "0x00": {
+                "name": "Regulator Parameters",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0006": {
+                                "raw_hex": None,
+                                "type": None,
+                                "value": None,
+                                "error": None,
+                                "flags_access": "dormant",
+                                "reply_hex": "",
+                                "read_opcode": "0x02",
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+
+    assert "status-dormant" in html
+    assert 'if (access === "dormant") return "dormant";' in html
+    assert "Dormant (feature inactive)" in html
+
+
+def test_html_report_register_constraints_has_replay_fallback_path() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {},
+        "b524_operations": {
+            "register_constraints": [
+                {"group": "0x02", "register_selector": "0x01", "reply_hex": "09020100000100020001"}
+            ]
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+
+    assert "Array.isArray(operations.register_constraints)" in html
+    expected = 'register: typeof row.register_selector === "string" ? row.register_selector : "n/a"'
+    assert expected in html
 
 
 def test_html_report_supports_b516_tab() -> None:
@@ -126,7 +179,7 @@ def test_html_report_supports_b516_tab() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B516 Dump" in html
+    assert "PB=B5 SB=16" in html
     assert "No B516 dump in artifact." in html
     assert "System Gas Heating" in html
     assert '"period":"system"' in html
@@ -175,7 +228,7 @@ def test_html_report_supports_b516_tab_with_raw_evidence() -> None:
 
     html = render_html_report(artifact, title="test")
 
-    assert "B516 Dump" in html
+    assert "PB=B5 SB=16" in html
     assert "No B516 dump in artifact." in html
     assert "No B516 entries in artifact." in html
     assert '"system.gas.heating"' in html
@@ -186,16 +239,15 @@ def test_html_report_supports_b516_tab_with_raw_evidence() -> None:
     assert '"echo_period":"0x0"' in html
 
 
-def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespace_groups() -> None:
+def test_html_report_renders_flags_access_for_multi_operation_groups() -> None:
     artifact = {
+        "schema_version": "2.3",
         "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
-        "groups": {
-            "0x09": {
-                "name": "Regulators",
-                "dual_namespace": True,
-                "namespaces": {
-                    "0x02": {
-                        "label": "local",
+        "operations": {
+            "0x02": {
+                "groups": {
+                    "0x09": {
+                        "name": "System",
                         "instances": {
                             "0x00": {
                                 "registers": {
@@ -204,7 +256,7 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                         "type": "EXP",
                                         "value": 20.5,
                                         "error": None,
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "read_opcode": "0x02",
                                         "read_opcode_label": "local",
                                         "myvaillant_name": "temperature_local",
@@ -212,9 +264,13 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                 }
                             }
                         },
-                    },
-                    "0x06": {
-                        "label": "remote",
+                    }
+                }
+            },
+            "0x06": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
                         "instances": {
                             "0x00": {
                                 "registers": {
@@ -223,7 +279,7 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                         "type": "EXP",
                                         "value": 21.0,
                                         "error": None,
-                                        "flags_access": "user_rw",
+                                        "flags_access": "config_user",
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "remote",
                                         "myvaillant_name": "temperature_remote",
@@ -231,20 +287,21 @@ def test_html_report_renders_namespace_totals_and_flags_access_for_dual_namespac
                                 }
                             }
                         },
-                    },
-                },
-            }
+                    }
+                }
+            },
         },
     }
 
     html = render_html_report(artifact, title="test")
 
-    assert "Namespace Totals" in html
-    assert "FLAGS Access" in html
+    assert "Namespace Totals" not in html
+    assert "cell-flags" in html
     assert "Regulators" in html
     assert "activeNamespaceByGroup" in html
-    assert '"label":"local"' in html
-    assert '"label":"remote"' in html
+    # v2.3: operations-first, operations are serialized with op_key as key
+    assert '"0x02"' in html
+    assert '"0x06"' in html
 
 
 def test_html_report_renders_identity_card_with_star_bold_markers() -> None:
@@ -271,3 +328,129 @@ def test_html_report_renders_identity_card_with_star_bold_markers() -> None:
     assert "<strong>BA</strong>se" in html
     assert "<strong>S</strong>tation" in html
     assert "<strong>V</strong>aillant-branded Revision <strong>2</strong>" in html
+
+
+def test_html_report_does_not_use_single_namespace_identity_sentinel() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {
+            "0x00": {
+                "name": "Regulator Parameters",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {
+                                "raw_hex": "00",
+                                "value": 1,
+                                "error": None,
+                                "flags_access": "state_stable",
+                                "read_opcode": "0x02",
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+    assert 'namespaceKey || "single"' not in html
+    assert '|| "single"' not in html
+    assert 'namespaceKey || "0x00"' not in html
+    assert ': "0x00"' not in html
+
+
+def test_html_report_namespace_helpers_are_opcode_key_authoritative() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {
+            "0x09": {
+                "name": "Regulators",
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x06": {
+                        "label": "local",
+                        "instances": {
+                            "0x00": {
+                                "registers": {
+                                    "0x0001": {
+                                        "raw_hex": "0000a841",
+                                        "type": "EXP",
+                                        "value": 21.0,
+                                        "read_opcode": "0x06",
+                                        "read_opcode_label": "local",
+                                    }
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+
+    assert "function canonicalNamespaceLabel(namespaceKey)" in html
+    assert 'if (trimmed === "local") return "0x02";' in html
+    assert 'if (trimmed === "remote") return "0x06";' in html
+    assert "if (canonical) {" in html
+    assert "(${namespaceKey})" in html
+
+
+def test_html_report_operations_first_direct_lookup_and_scopes_overrides() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {"raw_hex": "01", "read_opcode": "0x02"},
+                            "0x0002": {"raw_hex": "02", "read_opcode": "0x06"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+
+    # Operations-first: JS uses direct operation group lookup, not merging
+    assert "function getOperationGroup(opKey, groupKey)" in html
+    assert "function groupKeysForOp(opKey)" in html
+    assert "function buildGroupTable(instancesObj" in html
+    # Deleted merge/split functions must NOT be present
+    assert "buildGroupsFromOperations" not in html
+    assert "splitInstancesByNamespace" not in html
+
+
+def test_html_report_legacy_entries_without_read_opcode_present_after_migration() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T00:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {"raw_hex": "01", "read_opcode": "0x02"},
+                            "0x0002": {"raw_hex": "02", "read_opcode": "0x06"},
+                            "0x0003": {"raw_hex": "03"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    html = render_html_report(artifact, title="test")
+
+    # Migration adds response_state to entries; check the entry is present
+    assert '"0x0003":{' in html
+    assert '"raw_hex":"03"' in html
+    # Operations-first: direct lookup, no merging
+    assert "function getOperationGroup(opKey, groupKey)" in html
+    assert "buildGroupsFromOperations" not in html

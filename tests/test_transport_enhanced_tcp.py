@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from queue import Queue
 
+from helianthus_vrc_explorer.transport.base import TransportNack
 from helianthus_vrc_explorer.transport.enhanced_tcp import (
     _ENH_REQ_INIT,
     _ENH_REQ_SEND,
@@ -188,3 +189,9 @@ def test_ens_transport_broadcast_does_not_expect_response() -> None:
         result = transport.send_proto(dst, 0x07, 0xFE, b"", expect_response=False)
 
     assert result == b""
+
+
+def test_internal_enhanced_nack_maps_to_transport_nack() -> None:
+    from helianthus_vrc_explorer.transport.enhanced_tcp import _EnhancedNack
+
+    assert issubclass(_EnhancedNack, TransportNack)

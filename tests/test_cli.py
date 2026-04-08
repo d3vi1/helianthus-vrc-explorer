@@ -408,6 +408,143 @@ def test_scan_cli_passes_b555_dump_flag(monkeypatch, tmp_path: Path) -> None:
     assert captured["b555_dump"] is True
 
 
+def test_scan_cli_b509_is_disabled_by_default(monkeypatch, tmp_path: Path) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    captured: dict[str, object] = {}
+
+    class _OkTransport:
+        @contextmanager
+        def session(self):
+            yield self
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = settings
+        _ = trace_file
+        return _OkTransport()
+
+    @contextmanager
+    def _fake_observer(*_args, **_kwargs):
+        yield None
+
+    def _fake_scan_vrc(*_args, **kwargs):
+        captured["b509_dump"] = kwargs["b509_dump"]
+        captured["b509_ranges"] = kwargs["b509_ranges"]
+        return {
+            "meta": {
+                "scan_timestamp": "2026-02-13T00:00:00Z",
+                "destination_address": "0x15",
+                "incomplete": False,
+                "schema_sources": [],
+            },
+            "groups": {},
+        }
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_probe_scan_identity", lambda _transport, *, dst: {})
+    monkeypatch.setattr(cli_mod, "make_scan_observer", _fake_observer)
+    monkeypatch.setattr(cli_mod, "scan_vrc", _fake_scan_vrc)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["scan", "--dst", "0x15", "--output-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    assert captured["b509_dump"] is False
+    assert captured["b509_ranges"] == []
+
+
+def test_scan_cli_b509_range_requires_b509_dump(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dst",
+            "0x15",
+            "--b509-range",
+            "0x0000..0x0001",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--b509-range requires --b509-dump." in result.stderr
+
+
+def test_scan_cli_b509_range_requires_b509_dump_in_dry_run(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dry-run",
+            "--b509-range",
+            "0x0000..0x0001",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--b509-range requires --b509-dump." in result.stderr
+
+
+def test_scan_cli_passes_b509_dump_and_ranges(monkeypatch, tmp_path: Path) -> None:
+    import helianthus_vrc_explorer.cli as cli_mod
+
+    captured: dict[str, object] = {}
+
+    class _OkTransport:
+        @contextmanager
+        def session(self):
+            yield self
+
+    def _fake_build_transport(settings, *, trace_file):  # noqa: ANN001
+        _ = settings
+        _ = trace_file
+        return _OkTransport()
+
+    @contextmanager
+    def _fake_observer(*_args, **_kwargs):
+        yield None
+
+    def _fake_scan_vrc(*_args, **kwargs):
+        captured["b509_dump"] = kwargs["b509_dump"]
+        captured["b509_ranges"] = kwargs["b509_ranges"]
+        return {
+            "meta": {
+                "scan_timestamp": "2026-02-13T00:00:00Z",
+                "destination_address": "0x15",
+                "incomplete": False,
+                "schema_sources": [],
+            },
+            "groups": {},
+        }
+
+    monkeypatch.setattr(cli_mod, "_build_transport", _fake_build_transport)
+    monkeypatch.setattr(cli_mod, "_probe_scan_identity", lambda _transport, *, dst: {})
+    monkeypatch.setattr(cli_mod, "make_scan_observer", _fake_observer)
+    monkeypatch.setattr(cli_mod, "scan_vrc", _fake_scan_vrc)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--dst",
+            "0x15",
+            "--b509-dump",
+            "--b509-range",
+            "0x0000..0x0001",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["b509_dump"] is True
+    assert captured["b509_ranges"] == [(0x0000, 0x0001)]
+
+
 def test_scan_cli_passes_b516_dump_flag(monkeypatch, tmp_path: Path) -> None:
     import helianthus_vrc_explorer.cli as cli_mod
 
@@ -640,8 +777,8 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
     assert isinstance(artifact, dict)
     assert "meta" in artifact
-    assert "groups" in artifact
-    assert isinstance(artifact["groups"], dict)
+    assert "operations" in artifact
+    assert isinstance(artifact["operations"], dict)
 
     # myVaillant mapping is loaded when a CSV path is provided (even in --dry-run mode).
     schema_sources = artifact.get("meta", {}).get("schema_sources")
@@ -649,24 +786,27 @@ def test_scan_dry_run_writes_scan_artifact(tmp_path: Path) -> None:
     assert "myvaillant_map:myvaillant_register_map.csv" in schema_sources
 
     raw_hex_values: list[str] = []
-    for group in artifact["groups"].values():
-        if not isinstance(group, dict):
+    for op_obj in artifact["operations"].values():
+        if not isinstance(op_obj, dict):
             continue
-        instances = group.get("instances", {})
-        if not isinstance(instances, dict):
-            continue
-        for instance in instances.values():
-            if not isinstance(instance, dict):
+        for group in op_obj.get("groups", {}).values():
+            if not isinstance(group, dict):
                 continue
-            registers = instance.get("registers", {})
-            if not isinstance(registers, dict):
+            instances = group.get("instances", {})
+            if not isinstance(instances, dict):
                 continue
-            for register in registers.values():
-                if not isinstance(register, dict):
+            for instance in instances.values():
+                if not isinstance(instance, dict):
                     continue
-                raw_hex = register.get("raw_hex")
-                if isinstance(raw_hex, str):
-                    raw_hex_values.append(raw_hex)
+                registers = instance.get("registers", {})
+                if not isinstance(registers, dict):
+                    continue
+                for register in registers.values():
+                    if not isinstance(register, dict):
+                        continue
+                    raw_hex = register.get("raw_hex")
+                    if isinstance(raw_hex, str):
+                        raw_hex_values.append(raw_hex)
 
     assert raw_hex_values
     bytes.fromhex(raw_hex_values[0])

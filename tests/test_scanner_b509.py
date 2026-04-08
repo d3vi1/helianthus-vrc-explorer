@@ -95,7 +95,7 @@ def _write_fixture_group_02(tmp_path: Path) -> Path:
 
 def test_scan_vrc_adds_b509_dump_section(tmp_path: Path) -> None:
     transport = _HybridTransport(_write_fixture_group_02(tmp_path))
-    artifact = scan_vrc(transport, dst=0x15, b509_ranges=[(0x2700, 0x2702)])
+    artifact = scan_vrc(transport, dst=0x15, b509_ranges=[(0x2700, 0x2702)], b509_dump=True)
 
     b509_dump = artifact.get("b509_dump")
     assert isinstance(b509_dump, dict)
@@ -119,11 +119,12 @@ def test_scan_vrc_keeps_b509_when_first_directory_probe_is_status_only(tmp_path:
         _TransientFirstProbeHybridTransport(_write_fixture_group_02(tmp_path)),
         dst=0x15,
         b509_ranges=[(0x2700, 0x2700)],
+        b509_dump=True,
     )
 
     assert "b524_supported" not in artifact["meta"]
     assert "b524_skip_reason" not in artifact["meta"]
-    assert "0x02" in artifact["groups"]
+    assert "0x02" in artifact.get("operations", {}).get("0x02", {}).get("groups", {})
     assert artifact["meta"]["incomplete"] is False
 
     b509_dump = artifact.get("b509_dump")

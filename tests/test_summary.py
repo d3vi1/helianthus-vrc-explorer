@@ -25,7 +25,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                             "0x0001": {
                                 "read_opcode": "0x02",
                                 "read_opcode_label": "local",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "error": None,
                             }
                         },
@@ -39,6 +39,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                 "namespaces": {
                     "0x02": {
                         "label": "local",
+                        "group_name": "System",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -46,7 +47,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                                     "0x0001": {
                                         "read_opcode": "0x02",
                                         "read_opcode_label": "local",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     }
                                 },
@@ -55,6 +56,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                     },
                     "0x06": {
                         "label": "remote",
+                        "group_name": "Regulators",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -62,7 +64,7 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
                                     "0x0001": {
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "remote",
-                                        "flags_access": "user_rw",
+                                        "flags_access": "config_user",
                                         "error": "timeout",
                                     }
                                 },
@@ -83,12 +85,16 @@ def test_render_summary_shows_namespace_totals_and_flags_distribution(tmp_path: 
     render_summary(console, artifact, output_path=tmp_path / "artifact.json")
 
     text = console.export_text()
-    assert "namespaces local=2, remote=1" in text
-    assert "flags_access volatile_ro=0, stable_ro=2, technical_rw=0, user_rw=1" in text
+    assert "namespaces local (0x02)=2, remote (0x06)=1" in text
+    assert (
+        "flags_access state_volatile=0, state_stable=2, config_installer=0, config_user=1" in text
+    )
     assert "b555 reads=4 errors=1 programs=2" in text
-    assert "local=1, remote=1" in text
+    assert "Local Devices (0x02)" in text
+    assert "Remote Devices (0x06)" in text
+    assert "System" in text
     assert "Regulators" in text
-    assert "2/2" not in text
+    assert "System / Regulators" not in text
 
 
 def test_render_summary_shows_b516_stats(tmp_path: Path) -> None:
@@ -132,3 +138,439 @@ def test_render_summary_shows_b516_stats(tmp_path: Path) -> None:
 
     text = console.export_text()
     assert "b516 reads=12 errors=2 entries=2 incomplete=true" in text
+
+
+def test_render_summary_namespace_totals_ignore_stale_namespace_labels(tmp_path: Path) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "descriptor_observed": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x02": {
+                        "label": "remote",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0001": {
+                                        "read_opcode": "0x02",
+                                        "read_opcode_label": "remote",
+                                        "flags_access": "state_stable",
+                                        "error": None,
+                                    }
+                                },
+                            }
+                        },
+                    },
+                    "0x06": {
+                        "label": "local",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0002": {
+                                        "read_opcode": "0x06",
+                                        "read_opcode_label": "local",
+                                        "flags_access": "state_stable",
+                                        "error": None,
+                                    }
+                                },
+                            }
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=140)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+    assert "namespaces local (0x02)=1, remote (0x06)=1" in text
+    assert "remote (0x02)" not in text
+    assert "local (0x06)" not in text
+
+
+def test_render_summary_namespace_totals_use_namespace_container_when_opcode_missing(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x09": {
+                "name": "Regulators",
+                "descriptor_observed": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x02": {
+                        "label": "remote",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0001": {
+                                        "read_opcode_label": "remote",
+                                        "flags_access": "state_stable",
+                                        "error": None,
+                                    }
+                                },
+                            }
+                        },
+                    },
+                    "0x06": {
+                        "label": "local",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0002": {
+                                        "read_opcode_label": "local",
+                                        "flags_access": "state_stable",
+                                        "error": None,
+                                    }
+                                },
+                            }
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=140)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+    assert "namespaces local (0x02)=1, remote (0x06)=1" in text
+    assert "remote (0x02)" not in text
+    assert "local (0x06)" not in text
+
+
+def test_render_summary_uses_namespace_specific_topology_for_instances(tmp_path: Path) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x08": {
+                "name": "Unknown 0x08",
+                "descriptor_observed": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x02": {
+                        "label": "local",
+                        "ii_max": "0x00",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {"0x0001": {"read_opcode": "0x02", "error": None}},
+                            }
+                        },
+                    },
+                    "0x06": {
+                        "label": "remote",
+                        "ii_max": "0x0a",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {"0x0001": {"read_opcode": "0x06", "error": None}},
+                            }
+                        },
+                    },
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=180)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "Local Devices (0x02)" in text
+    assert "Remote Devices (0x06)" in text
+    assert "singleton" in text
+    assert "1/11" in text
+    assert "remote (0x06) singleton" not in text
+
+
+def test_render_summary_excludes_synthetic_namespace_slots_from_present_counts(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x08": {
+                "name": "Unknown 0x08",
+                "descriptor_observed": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x06": {
+                        "label": "remote",
+                        "ii_max": "0x0a",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {"0x0001": {"read_opcode": "0x06", "error": None}},
+                            },
+                            "0xff": {
+                                "present": True,
+                                "registers": {"0x0000": {"read_opcode": "0x06", "error": None}},
+                            },
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=180)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "Remote Devices (0x06)" in text
+    assert "1/11" in text
+    assert "2/11" not in text
+
+
+def test_render_summary_does_not_infer_singleton_from_observed_remote_count(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x69": {
+                "name": "Unknown 0x69",
+                "descriptor_observed": 1.0,
+                "ii_max": "0x0a",
+                "instances": {
+                    "0x00": {
+                        "present": True,
+                        "registers": {"0x0000": {"read_opcode": "0x06", "error": None}},
+                    }
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=160)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "Unknown 0x69" in text
+    assert "1/11" in text
+    assert "Unknown 0x69" in text and "singleton" not in text
+
+
+def test_render_summary_ignores_synthetic_instance_slots_in_topology_ratios(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x69": {
+                "name": "Unknown 0x69",
+                "descriptor_observed": 1.0,
+                "ii_max": "0x0a",
+                "instances": {
+                    "0x00": {
+                        "present": True,
+                        "registers": {"0x0000": {"read_opcode": "0x06", "error": None}},
+                    },
+                    "0xff": {
+                        "present": True,
+                        "registers": {"0x0001": {"read_opcode": "0x06", "error": None}},
+                    },
+                },
+            },
+            "0x08": {
+                "name": "Unknown 0x08",
+                "descriptor_observed": 1.0,
+                "dual_namespace": True,
+                "namespaces": {
+                    "0x02": {
+                        "label": "local",
+                        "ii_max": "0x00",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {"0x0001": {"read_opcode": "0x02", "error": None}},
+                            }
+                        },
+                    },
+                    "0x06": {
+                        "label": "remote",
+                        "ii_max": "0x0a",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {"0x0001": {"read_opcode": "0x06", "error": None}},
+                            },
+                            "0xff": {
+                                "present": True,
+                                "registers": {"0x0002": {"read_opcode": "0x06", "error": None}},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    console = Console(record=True, width=180)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "2/11" not in text
+    assert "Local Devices (0x02)" in text
+    assert "Remote Devices (0x06)" in text
+    assert "Unknown 0x69" in text and "1/11" in text
+    assert "Unknown 0x08" in text and "singleton" in text
+
+
+def test_render_summary_uses_discovery_namespace_for_omitted_single_namespace_group(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x05": {
+                "name": "Hot Water Cylinder",
+                "descriptor_observed": 1.0,
+                "ii_max": "0x01",
+                "discovery_advisory": {
+                    "kind": "directory_probe",
+                    "semantic_authority": False,
+                    "proven_register_opcodes": ["0x06"],
+                },
+                "instances": {
+                    "0x00": {
+                        "present": False,
+                        "registers": {},
+                    }
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=160)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "Remote Devices (0x06)" in text
+    assert "Hot Water Cylinder" in text
+    assert "Other Namespaces" not in text
+
+
+def test_render_summary_prefers_observed_namespace_over_discovery_fallback(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x01": {
+                "name": "Hot Water Circuit",
+                "descriptor_observed": 3.0,
+                "ii_max": "0x00",
+                "discovery_advisory": {
+                    "kind": "directory_probe",
+                    "semantic_authority": False,
+                    "proven_register_opcodes": ["0x02"],
+                },
+                "instances": {
+                    "0x00": {
+                        "present": True,
+                        "registers": {
+                            "0x0001": {
+                                "read_opcode": "0x06",
+                                "error": None,
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=160)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    assert "Remote Devices (0x06)" in text
+    assert "Hot Water Circuit" in text
+    assert "Local Devices (0x02)" not in text
+    assert "Other Namespaces" not in text
+
+
+def test_render_summary_does_not_collapse_conflicting_observed_namespaces_with_discovery(
+    tmp_path: Path,
+) -> None:
+    artifact = {
+        "meta": {
+            "destination_address": "0x15",
+            "scan_timestamp": "2026-02-11T12:00:00Z",
+            "scan_duration_seconds": 1.0,
+        },
+        "groups": {
+            "0x01": {
+                "name": "Hot Water Circuit",
+                "descriptor_observed": 3.0,
+                "ii_max": "0x00",
+                "discovery_advisory": {
+                    "kind": "directory_probe",
+                    "semantic_authority": False,
+                    "proven_register_opcodes": ["0x02"],
+                },
+                "instances": {
+                    "0x00": {
+                        "present": True,
+                        "registers": {
+                            "0x0001": {"read_opcode": "0x02", "error": None},
+                            "0x0002": {"read_opcode": "0x06", "error": None},
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    console = Console(record=True, width=160)
+    render_summary(console, artifact, output_path=tmp_path / "artifact.json")
+    text = console.export_text()
+
+    # v2.3: after migration, flat groups with mixed opcodes go under a single
+    # operation (determined by first entry read_opcode). The group appears in
+    # the section for that operation.
+    assert "Hot Water Circuit" in text
+    assert "Local Devices (0x02)" in text

@@ -7,18 +7,23 @@ import struct
 import sys
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, cast
 
 from rich.console import Console
 
+from ..artifact_schema import CURRENT_ARTIFACT_SCHEMA_VERSION
 from ..protocol.b524 import RegisterOpcode, build_constraint_probe_payload
 from ..schema.b524_constraints import (
+    CONSTRAINT_SCOPE_PROTOCOL,
+    LIVE_PROBE_CONSTRAINT_SCOPE,
     StaticConstraintCatalog,
     StaticConstraintEntry,
+    constraint_scope_metadata,
     load_default_b524_constraints_catalog,
+    lookup_static_constraint,
 )
 from ..schema.ebusd_csv import EbusdCsvSchema
 from ..schema.myvaillant_map import MyvaillantRegisterMap
@@ -33,7 +38,16 @@ from ..ui.planner import PlannerGroup, PlannerPreset, build_plan_from_preset, pr
 from .b509 import scan_b509
 from .b516 import scan_b516
 from .b555 import scan_b555
-from .director import GROUP_CONFIG, DiscoveredGroup, classify_groups, discover_groups
+from .director import (
+    GROUP_CONFIG,
+    ClassifiedGroup,
+    DiscoveredGroup,
+    classify_groups,
+    discover_groups,
+    group_name_for_opcode,
+    group_namespace_profiles,
+)
+from .identity import make_register_identity, opcode_label, operation_label
 from .observer import ScanObserver
 from .plan import (
     GroupScanPlan,
@@ -41,8 +55,18 @@ from .plan import (
     RegisterTask,
     build_work_queue,
     estimate_register_requests,
+    make_plan_key,
 )
-from .register import RegisterEntry, is_instance_present, opcodes_for_group, read_register
+from .register import (
+    InstanceAvailabilityProbe,
+    NamespaceAvailabilityContract,
+    RegisterEntry,
+    namespace_availability_contract,
+    namespace_opcodes_for_group,
+    opcodes_for_group,
+    probe_instance_availability,
+    read_register,
+)
 
 
 def _hex_u8(value: int) -> str:
@@ -60,6 +84,10 @@ _UNKNOWN_GROUP_DEFAULT_II_MAX = 0x0A
 _UNKNOWN_GROUP_INITIAL_INSTANCES: tuple[int, ...] = (0x00, 0x01)
 _UNKNOWN_GROUP_EXPANDED_INSTANCES: tuple[int, ...] = tuple(range(0x00, 0x0B)) + (0xFF,)
 _UNKNOWN_GROUP_PRESENCE_REGISTER = 0x0000
+_UNKNOWN_GROUP_OPCODE_CANDIDATES: tuple[RegisterOpcode, ...] = (
+    _LOCAL_REGISTER_OPCODE,
+    _REMOTE_REGISTER_OPCODE,
+)
 
 PlannerUiMode = Literal["disabled", "auto", "textual", "classic"]
 _KNOWN_DESCRIPTOR_TYPES = frozenset(
@@ -75,6 +103,10 @@ def _normalize_planner_preset(preset: str) -> PlannerPreset:
     normalized = preset.strip().lower()
     if normalized == "aggressive":
         normalized = "full"
+    if normalized == "exhaustive":
+        normalized = "research"
+    if normalized == "conservative":
+        normalized = "recommended"
     return cast(PlannerPreset, normalized)
 
 
@@ -83,23 +115,129 @@ def _planner_ii_max(ii_max: int | None) -> int | None:
 
 
 def _group_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
-    return tuple(opcodes_for_group(group))
+    return _sorted_namespace_opcodes(opcodes_for_group(group))
+
+
+def _namespace_opcode_sort_key(opcode: int) -> tuple[int, int]:
+    priority = 0 if opcode == 0x02 else 1 if opcode == 0x06 else 2
+    return priority, opcode
+
+
+def _sorted_namespace_opcodes(opcodes: Sequence[int]) -> tuple[RegisterOpcode, ...]:
+    unique = {int(opcode): cast(RegisterOpcode, opcode) for opcode in opcodes}
+    ordered = sorted(unique, key=_namespace_opcode_sort_key)
+    return tuple(unique[opcode] for opcode in ordered)
+
+
+def _planner_source_opcodes(group: int) -> tuple[RegisterOpcode, ...]:
+    """Return broad planner-visible opcode candidates for a group.
+
+    The planner intentionally exposes both local and remote opcode families so
+    users can include exploratory rows even when semantic modeling is still
+    conservative for that namespace.
+    """
+
+    config = GROUP_CONFIG.get(group)
+    if config is None:
+        return _UNKNOWN_GROUP_OPCODE_CANDIDATES
+
+    profiles = group_namespace_profiles(group)
+    candidate_opcodes: set[int] = {int(opcode) for opcode in _UNKNOWN_GROUP_OPCODE_CANDIDATES}
+    if profiles:
+        candidate_opcodes.update(int(opcode) for opcode in profiles)
+    else:
+        candidate_opcodes.update(int(opcode) for opcode in config["opcodes"])
+    # BASV2 confirmed: GG=0x00 has no remote (0x06) namespace; keep it out of
+    # planner-visible candidates to avoid probing a nonexistent namespace.
+    if group == 0x00:
+        candidate_opcodes.discard(int(_REMOTE_REGISTER_OPCODE))
+    return _sorted_namespace_opcodes(tuple(candidate_opcodes))
+
+
+def _planner_primary_opcode(
+    *,
+    group: int,
+    planner_opcodes: tuple[RegisterOpcode, ...],
+    resolved_opcodes: tuple[RegisterOpcode, ...],
+) -> RegisterOpcode:
+    # Planner visibility can be broader than scan semantics. Preserve the
+    # semantic primary namespace from resolved opcodes when available.
+    if resolved_opcodes:
+        return resolved_opcodes[0]
+    if group in GROUP_CONFIG:
+        return _primary_opcode(group)
+    return planner_opcodes[0]
 
 
 def _primary_opcode(group: int) -> RegisterOpcode:
     return _group_opcodes(group)[0]
 
 
-def _opcode_label(opcode: int) -> str:
-    labels: dict[int, str] = {
-        _LOCAL_REGISTER_OPCODE: "local",
-        _REMOTE_REGISTER_OPCODE: "remote",
-    }
-    return labels.get(opcode, _hex_u8(opcode))
-
-
-def _is_dual_namespace_group(group: int) -> bool:
+def _is_multi_operation_group(group: int) -> bool:
     return len(_group_opcodes(group)) > 1
+
+
+_LOCAL_ALWAYS_ON: Final[frozenset[int]] = frozenset({0x00, 0x01, 0x04, 0x05})
+_LOCAL_PRESENT_GATED: Final[frozenset[int]] = frozenset({0x02, 0x03, 0x08, 0x09})
+
+
+def _planner_group_is_recommended(*, group: int, opcode: RegisterOpcode) -> bool:
+    if opcode == _LOCAL_REGISTER_OPCODE:
+        return group in _LOCAL_ALWAYS_ON or group in _LOCAL_PRESENT_GATED
+    # OP=0x06 (remote): all groups are recommended if they have present instances.
+    return True
+
+
+def _instance_discovery_targets(
+    classified: list[ClassifiedGroup],
+    metadata_map: Mapping[int, GroupMetadata],
+    resolved_group_opcodes: Mapping[int, tuple[RegisterOpcode, ...]],
+) -> list[tuple[ClassifiedGroup, GroupMetadata, RegisterOpcode]]:
+    targets: list[tuple[ClassifiedGroup, GroupMetadata, RegisterOpcode]] = []
+    for opcode in (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE):
+        for group in classified:
+            if opcode not in resolved_group_opcodes.get(group.group, ()):
+                continue
+            targets.append((group, metadata_map[group.group], opcode))
+    for group in classified:
+        for opcode in resolved_group_opcodes.get(group.group, ()):
+            if opcode in {_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE}:
+                continue
+            targets.append((group, metadata_map[group.group], opcode))
+    return targets
+
+
+def _group_name_for_opcode(group: int, opcode: RegisterOpcode) -> str:
+    return group_name_for_opcode(group, int(opcode))
+
+
+def _group_display_name_for_opcodes(
+    *, group: int, opcodes: tuple[RegisterOpcode, ...], fallback: str
+) -> str:
+    if not opcodes:
+        return fallback
+    names = [_group_name_for_opcode(group, opcode) for opcode in opcodes]
+    unique_names: list[str] = []
+    for name in names:
+        if name not in unique_names:
+            unique_names.append(name)
+    if not unique_names:
+        return fallback
+    if len(unique_names) == 1:
+        return unique_names[0]
+    config = GROUP_CONFIG.get(group)
+    if config is not None:
+        configured = str(config["name"]).strip()
+        if configured:
+            return configured
+    return unique_names[0]
+
+
+def _rr_max_full_for_opcode(*, group: int, opcode: int) -> int:
+    """Research-mode RR ceiling: 0x01FF for OP=0x02/GG=0x00, 0xFF for everything else."""
+    if opcode == _LOCAL_REGISTER_OPCODE and group == 0x00:
+        return 0x01FF
+    return 0xFF
 
 
 def _rr_max_for_opcode(*, group: int, default_rr_max: int, opcode: int) -> int:
@@ -126,76 +264,123 @@ def _ii_max_for_opcode(*, group: int, default_ii_max: int | None, opcode: int) -
 
 
 def _plan_key(group: int, opcode: int) -> PlanKey:
-    return (group, opcode)
+    return make_plan_key(group, opcode)
+
+
+def _instance_discovery_decision(*, group: int, multi_op: bool) -> dict[str, Any]:
+    if not multi_op:
+        return {
+            "strategy": "single_operation",
+            "decision": "independent_per_operation",
+            "tradeoff": "not_applicable",
+        }
+
+    if group in {0x09, 0x0A}:
+        return {
+            "strategy": "multi_operation",
+            "decision": "independent_per_operation",
+            "tradeoff": (
+                "extra presence probes accepted to avoid cross-operation false-equivalence "
+                "assumptions"
+            ),
+        }
+
+    return {
+        "strategy": "multi_operation",
+        "decision": "independent_per_operation",
+        "tradeoff": "independent probing is authoritative over shared inference",
+    }
+
+
+def _operation_plan_meta(group_plan: GroupScanPlan) -> tuple[str, dict[str, object]]:
+    op_key = _hex_u8(group_plan.opcode)
+    payload = group_plan.to_meta()
+    payload["op_key"] = op_key
+    payload["label"] = opcode_label(group_plan.opcode)
+    payload["operation_label"] = operation_label(opcode=group_plan.opcode, optype=0x00)
+    return op_key, payload
 
 
 def _scan_plan_meta_groups(plan: dict[PlanKey, GroupScanPlan]) -> dict[str, object]:
     serializable: dict[str, object] = {}
+    grouped: dict[int, list[GroupScanPlan]] = {}
     for _key, group_plan in sorted(plan.items()):
-        group_key = _hex_u8(group_plan.group)
-        if _is_dual_namespace_group(group_plan.group):
-            group_obj = serializable.setdefault(
-                group_key,
-                {
-                    "dual_namespace": True,
-                    "namespaces": {},
-                },
-            )
-            assert isinstance(group_obj, dict)
-            namespaces = group_obj.setdefault("namespaces", {})
-            assert isinstance(namespaces, dict)
-            namespace_meta = group_plan.to_meta()
-            namespace_meta["label"] = _opcode_label(group_plan.opcode)
-            namespaces[_hex_u8(group_plan.opcode)] = namespace_meta
+        grouped.setdefault(group_plan.group, []).append(group_plan)
+
+    for group in sorted(grouped):
+        group_plans = sorted(grouped[group], key=lambda gp: gp.opcode)
+        group_key = _hex_u8(group)
+        op_meta: dict[str, object] = {}
+        for group_plan in group_plans:
+            op_key, payload = _operation_plan_meta(group_plan)
+            op_meta[op_key] = payload
+        if len(group_plans) > 1:
+            serializable[group_key] = {
+                "multi_op": True,
+                "operations": op_meta,
+            }
             continue
-        serializable[group_key] = group_plan.to_meta()
+        _, single_payload = _operation_plan_meta(group_plans[0])
+        serializable[group_key] = {
+            **single_payload,
+            "multi_op": False,
+            "operations": op_meta,
+        }
     return serializable
+
+
+def _artifact_contract_metadata() -> dict[str, Any]:
+    return {
+        "operation_identity_keys": "opcode_hex",
+        "operation_labels": "presentation_only",
+        "topology_authority": (
+            "operations-first: operations[op_key].groups[gg].instances are authoritative for "
+            "consumers"
+        ),
+        "b524_row_identity": {
+            "dedupe_key_format": "<group>:<operation>:<instance>:<register>",
+            "path_format": (
+                "B524/<section>/<operation>/<group-name>"
+                "/<operation-display>/<instance>/<register-name>"
+            ),
+            "round_trip_stability": (
+                "operation keys and persisted topology must be preserved without sentinel rewrite"
+            ),
+        },
+    }
 
 
 def _ensure_group_artifact(
     artifact: dict[str, Any],
     *,
     group: int,
+    opcode: int,
     name: str,
     descriptor_observed: float | None,
-    dual_namespace: bool,
+    ii_max: int | None = None,
+    discovery_advisory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Ensure operations[op_hex].groups[group_key] exists in the artifact."""
+    op_hex = _hex_u8(opcode)
     group_key = _hex_u8(group)
+    op_obj = artifact["operations"].setdefault(op_hex, {})
+    op_groups = op_obj.setdefault("groups", {})
     default: dict[str, Any] = {
         "name": name,
         "descriptor_observed": descriptor_observed,
-        "dual_namespace": dual_namespace,
+        "instances": {},
     }
-    if dual_namespace:
-        default["namespaces"] = {}
-    else:
-        default["instances"] = {}
-    group_obj = artifact["groups"].setdefault(group_key, default)
-    if dual_namespace:
-        group_obj.setdefault("namespaces", {})
-        group_obj.pop("instances", None)
-    else:
-        group_obj.setdefault("instances", {})
-        group_obj.pop("namespaces", None)
+    if ii_max is not None:
+        default["ii_max"] = _hex_u8(ii_max)
+    group_obj = op_groups.setdefault(group_key, default)
+    group_obj.setdefault("instances", {})
     group_obj.setdefault("name", name)
     group_obj.setdefault("descriptor_observed", descriptor_observed)
-    group_obj["dual_namespace"] = dual_namespace
-    return group_obj
-
-
-def _ensure_namespace_artifact(group_obj: dict[str, Any], *, opcode: int) -> dict[str, Any]:
-    namespaces = group_obj.setdefault("namespaces", {})
-    namespace_key = _hex_u8(opcode)
-    namespace_obj = namespaces.setdefault(
-        namespace_key,
-        {
-            "label": _opcode_label(opcode),
-            "instances": {},
-        },
-    )
-    namespace_obj.setdefault("label", _opcode_label(opcode))
-    namespace_obj.setdefault("instances", {})
-    return namespace_obj
+    if ii_max is not None:
+        group_obj["ii_max"] = _hex_u8(ii_max)
+    if discovery_advisory is not None:
+        group_obj["discovery_advisory"] = discovery_advisory
+    return cast(dict[str, Any], group_obj)
 
 
 def _instances_object(
@@ -204,11 +389,104 @@ def _instances_object(
     group: int,
     opcode: int,
 ) -> dict[str, Any]:
-    group_obj = artifact["groups"][_hex_u8(group)]
-    if bool(group_obj.get("dual_namespace")):
-        namespace_obj = _ensure_namespace_artifact(group_obj, opcode=opcode)
-        return namespace_obj.setdefault("instances", {})
-    return group_obj.setdefault("instances", {})
+    """Return operations[op_hex].groups[group_key].instances, creating if needed."""
+    op_hex = _hex_u8(opcode)
+    group_key = _hex_u8(group)
+    op_obj = artifact["operations"].setdefault(op_hex, {})
+    op_groups = op_obj.setdefault("groups", {})
+    group_obj = op_groups.setdefault(group_key, {"instances": {}})
+    return cast(dict[str, Any], group_obj.setdefault("instances", {}))
+
+
+def _availability_object(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+) -> dict[str, Any]:
+    """Return operations[op_hex].groups[group_key] for availability data."""
+    op_hex = _hex_u8(opcode)
+    group_key = _hex_u8(group)
+    op_obj = artifact["operations"].setdefault(op_hex, {})
+    op_groups = op_obj.setdefault("groups", {})
+    return cast(dict[str, Any], op_groups.setdefault(group_key, {"instances": {}}))
+
+
+def _serialize_availability_contract(
+    contract: NamespaceAvailabilityContract,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "source": contract.source,
+        "namespace_relationship": contract.namespace_relationship,
+        "positive_when": contract.positive_when,
+        "description": contract.description,
+    }
+    if contract.probe_register is not None:
+        payload["probe_register"] = _hex_u16(contract.probe_register)
+    if contract.probe_type_hint is not None:
+        payload["probe_type_hint"] = contract.probe_type_hint
+    return payload
+
+
+def _serialize_availability_probe(
+    probe: InstanceAvailabilityProbe,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "present": probe.present,
+        "source": probe.contract.source,
+    }
+    evidence = probe.evidence
+    if evidence is not None:
+        payload.update(dict(evidence))
+    return payload
+
+
+def _record_availability_contract(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+    contract: NamespaceAvailabilityContract,
+) -> None:
+    target = _availability_object(artifact, group=group, opcode=opcode)
+    target["availability_contract"] = _serialize_availability_contract(contract)
+    target.setdefault("availability_probes", {})
+
+
+def _record_availability_probes(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+    probes: Mapping[int, InstanceAvailabilityProbe],
+) -> None:
+    target = _availability_object(artifact, group=group, opcode=opcode)
+    probe_map = cast(dict[str, Any], target.setdefault("availability_probes", {}))
+    for instance, probe in sorted(probes.items()):
+        probe_map[_hex_u8(instance)] = _serialize_availability_probe(probe)
+
+
+def _record_namespace_topology(
+    artifact: dict[str, Any],
+    *,
+    group: int,
+    opcode: int,
+    ii_max: int | None,
+) -> None:
+    """Write ii_max to operations[op_hex].groups[group_key]."""
+    op_hex = _hex_u8(opcode)
+    group_key = _hex_u8(group)
+    op_obj = artifact["operations"].get(op_hex)
+    if not isinstance(op_obj, dict):
+        return
+    op_groups = op_obj.get("groups")
+    if not isinstance(op_groups, dict):
+        return
+    group_obj = op_groups.get(group_key)
+    if not isinstance(group_obj, dict):
+        return
+    if ii_max is not None:
+        group_obj["ii_max"] = _hex_u8(ii_max)
 
 
 def _present_instances_for_opcode(
@@ -217,7 +495,20 @@ def _present_instances_for_opcode(
     group: int,
     opcode: int,
 ) -> tuple[int, ...]:
-    instances_obj = _instances_object(artifact, group=group, opcode=opcode)
+    op_hex = _hex_u8(opcode)
+    group_key = _hex_u8(group)
+    op_obj = artifact["operations"].get(op_hex)
+    if not isinstance(op_obj, dict):
+        return ()
+    op_groups = op_obj.get("groups")
+    if not isinstance(op_groups, dict):
+        return ()
+    group_obj = op_groups.get(group_key)
+    if not isinstance(group_obj, dict):
+        return ()
+    instances_obj = group_obj.get("instances")
+    if not isinstance(instances_obj, dict):
+        return ()
     return tuple(
         sorted(
             int(ii_key, 0)
@@ -233,7 +524,66 @@ def _mark_present_instances(instances_obj: dict[str, Any], *, instances: tuple[i
 
 
 def _entry_is_readable(entry: RegisterEntry) -> bool:
+    response_state = entry.get("response_state")
+    if response_state in {"nack", "timeout"}:
+        return False
+    if response_state not in {"active", "empty_reply"}:
+        return False
     return entry["error"] is None and entry.get("flags_access") != "absent"
+
+
+def _entry_is_opcode_responsive(entry: RegisterEntry) -> bool:
+    # Kept separate for intent clarity: responsiveness checks reuse readability semantics.
+    return _entry_is_readable(entry)
+
+
+def _probe_unknown_group_opcodes(
+    transport: TransportInterface,
+    *,
+    dst: int,
+    group: int,
+    observer: ScanObserver | None,
+) -> tuple[tuple[RegisterOpcode, ...], dict[str, Any]]:
+    evidence: dict[str, Any] = {}
+    responsive: list[RegisterOpcode] = []
+
+    for opcode in _UNKNOWN_GROUP_OPCODE_CANDIDATES:
+        if observer is not None:
+            observer.status(
+                f"Probe opcode GG=0x{group:02X} OP={_hex_u8(opcode)} "
+                f"II=0x00 RR={_hex_u16(_UNKNOWN_GROUP_PRESENCE_REGISTER)}"
+            )
+        entry = read_register(
+            transport,
+            dst,
+            opcode,
+            group=group,
+            instance=0x00,
+            register=_UNKNOWN_GROUP_PRESENCE_REGISTER,
+        )
+        is_responsive = _entry_is_opcode_responsive(entry)
+        if is_responsive:
+            responsive.append(opcode)
+        evidence[_hex_u8(opcode)] = {
+            "responsive": is_responsive,
+            "response_state": entry.get("response_state"),
+            "error": entry.get("error"),
+            "flags_access": entry.get("flags_access"),
+            "reply_hex": entry.get("reply_hex"),
+            "raw_hex": entry.get("raw_hex"),
+        }
+
+    selected = tuple(sorted(set(responsive)))
+    probe_summary: dict[str, Any] = {
+        "kind": "opcode_responsiveness",
+        "selector": {
+            "instance": _hex_u8(0x00),
+            "register": _hex_u16(_UNKNOWN_GROUP_PRESENCE_REGISTER),
+        },
+        "candidates": evidence,
+        "responsive_opcodes": [_hex_u8(opcode) for opcode in selected],
+    }
+    return cast(tuple[RegisterOpcode, ...], selected), probe_summary
 
 
 def _probe_unknown_present_instances(
@@ -243,6 +593,7 @@ def _probe_unknown_present_instances(
     group: int,
     opcode: RegisterOpcode,
     observer: ScanObserver | None,
+    expand_fallback: bool,
 ) -> tuple[int, ...]:
     present_instances: list[int] = []
     probed: set[int] = set()
@@ -266,7 +617,7 @@ def _probe_unknown_present_instances(
         if observer is not None:
             observer.phase_advance("instance_discovery", advance=1)
 
-    if not should_expand:
+    if not should_expand or not expand_fallback:
         return tuple(present_instances)
 
     for ii in _UNKNOWN_GROUP_EXPANDED_INSTANCES:
@@ -298,23 +649,22 @@ def _probe_present_instances(
     opcode: RegisterOpcode,
     ii_max: int,
     observer: ScanObserver | None,
-) -> tuple[int, ...]:
-    present_instances: list[int] = []
+) -> dict[int, InstanceAvailabilityProbe]:
+    probes: dict[int, InstanceAvailabilityProbe] = {}
     for ii in range(0x00, ii_max + 1):
         if observer is not None:
             observer.status(f"Probe presence GG=0x{group:02X} OP={_hex_u8(opcode)} II=0x{ii:02X}")
-        is_present = is_instance_present(
+        probe = probe_instance_availability(
             transport,
             dst=dst,
             group=group,
             instance=ii,
             opcode=opcode,
         )
-        if is_present:
-            present_instances.append(ii)
+        probes[ii] = probe
         if observer is not None:
             observer.phase_advance("instance_discovery", advance=1)
-    return tuple(present_instances)
+    return probes
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +687,8 @@ class ConstraintEntry:
     step_value: int | float
     raw_hex: str
     source: str = "opcode_0x01"
+    scope: str = LIVE_PROBE_CONSTRAINT_SCOPE
+    provenance: str = "live_probe_from_opcode_0x01"
 
 
 def _decode_constraint_date(value: bytes) -> str:
@@ -501,6 +853,8 @@ def _constraint_map_to_dict(
                 "step": entry.step_value,
                 "raw_hex": entry.raw_hex,
                 "source": entry.source,
+                "scope": entry.scope,
+                "provenance": entry.provenance,
             }
         serializable[_hex_u8(group)] = group_obj
     return serializable
@@ -512,7 +866,9 @@ def _constraint_catalog_entry_count(catalog: StaticConstraintCatalog) -> int:
 
 def _constraint_for_register(
     *,
+    opcode: int,
     group: int,
+    instance: int,
     register: int,
     live_constraints: dict[int, dict[int, ConstraintEntry]],
     static_constraints: StaticConstraintCatalog,
@@ -520,7 +876,38 @@ def _constraint_for_register(
     live = live_constraints.get(group, {}).get(register)
     if live is not None:
         return live
-    return static_constraints.get(group, {}).get(register)
+    return lookup_static_constraint(
+        static_constraints,
+        identity=make_register_identity(
+            opcode=opcode,
+            group=group,
+            instance=instance,
+            register=register,
+        ),
+    )
+
+
+def _iter_group_namespace_instance_maps(
+    group_obj: dict[str, Any],
+) -> list[tuple[str | None, dict[str, Any]]]:
+    """Iterate instance maps for a group object.
+
+    In v2.3, each group_obj under an operation simply has instances directly.
+    """
+    instances = group_obj.get("instances")
+    if isinstance(instances, dict):
+        return [(None, instances)]
+    return []
+
+
+def _group_instances_for_namespace(
+    group_obj: dict[str, Any], *, namespace_key: str | None = None
+) -> dict[str, Any] | None:
+    """Return instances from a group object (v2.3: direct access)."""
+    instances = group_obj.get("instances")
+    if isinstance(instances, dict):
+        return instances
+    return None
 
 
 def _apply_constraint_metadata(
@@ -533,6 +920,8 @@ def _apply_constraint_metadata(
     entry["constraint_max"] = constraint.max_value
     entry["constraint_step"] = constraint.step_value
     entry["constraint_source"] = constraint.source
+    entry["constraint_scope"] = constraint.scope
+    entry["constraint_provenance"] = constraint.provenance
 
 
 def _constraint_mismatch_reason(
@@ -540,6 +929,8 @@ def _constraint_mismatch_reason(
     constraint: ConstraintEntry | StaticConstraintEntry,
 ) -> str | None:
     if constraint.source != "static_catalog":
+        return None
+    if entry.get("response_state") != "active":
         return None
     if entry.get("error") is not None or entry.get("flags_access") == "absent":
         return None
@@ -649,21 +1040,26 @@ def _resolve_room_influence_type_name(raw_value: int) -> tuple[str, str]:
 
 
 def _apply_contextual_enum_annotations(artifact: dict[str, Any]) -> None:
-    groups = artifact.get("groups")
-    if not isinstance(groups, dict):
+    # v2.3: look up GG=0x02 under OP=0x02
+    op_02 = artifact.get("operations", {}).get(_hex_u8(_LOCAL_REGISTER_OPCODE))
+    if not isinstance(op_02, dict):
+        return
+    op_02_groups = op_02.get("groups")
+    if not isinstance(op_02_groups, dict):
         return
 
-    gg02 = groups.get("0x02")
+    gg02 = op_02_groups.get("0x02")
     if not isinstance(gg02, dict):
         return
-    gg02_instances = gg02.get("instances")
-    if not isinstance(gg02_instances, dict):
+    gg02_namespace_maps = _iter_group_namespace_instance_maps(gg02)
+    gg02_instance_maps = [instances for _namespace_key, instances in gg02_namespace_maps]
+    if not gg02_instance_maps:
         return
 
-    gg00 = groups.get("0x00")
+    gg00 = op_02_groups.get("0x00")
     system_schema: int | None = None
     if isinstance(gg00, dict):
-        gg00_instances = gg00.get("instances")
+        gg00_instances = _group_instances_for_namespace(gg00)
         if isinstance(gg00_instances, dict):
             ii00 = gg00_instances.get("0x00")
             if isinstance(ii00, dict):
@@ -673,54 +1069,55 @@ def _apply_contextual_enum_annotations(artifact: dict[str, Any]) -> None:
                     if isinstance(entry, dict):
                         system_schema = _entry_int_value(entry)
 
-    gg05_present = "0x05" in groups
+    gg05_present = "0x05" in op_02_groups
     pool_sensor_present = False
 
-    for instance_obj in gg02_instances.values():
-        if not isinstance(instance_obj, dict):
-            continue
-        registers = instance_obj.get("registers")
-        if not isinstance(registers, dict):
-            continue
+    for gg02_instances in gg02_instance_maps:
+        for instance_obj in gg02_instances.values():
+            if not isinstance(instance_obj, dict):
+                continue
+            registers = instance_obj.get("registers")
+            if not isinstance(registers, dict):
+                continue
 
-        cooling_enabled = (
-            _entry_int_value(registers.get("0x0006"))
-            if isinstance(registers.get("0x0006"), dict)
-            else None
-        )
+            cooling_enabled = (
+                _entry_int_value(registers.get("0x0006"))
+                if isinstance(registers.get("0x0006"), dict)
+                else None
+            )
 
-        rr01 = registers.get("0x0001")
-        if isinstance(rr01, dict):
-            raw_value = _entry_int_value(rr01)
-            if raw_value is not None:
-                raw_name, resolved_name = _resolve_heating_circuit_type_name(raw_value)
-                rr01["enum_raw_name"] = raw_name
-                rr01["enum_resolved_name"] = resolved_name
-                rr01["value_display"] = f"{raw_name} ({resolved_name})"
+            rr01 = registers.get("0x0001")
+            if isinstance(rr01, dict):
+                raw_value = _entry_int_value(rr01)
+                if raw_value is not None:
+                    raw_name, resolved_name = _resolve_heating_circuit_type_name(raw_value)
+                    rr01["enum_raw_name"] = raw_name
+                    rr01["enum_resolved_name"] = resolved_name
+                    rr01["value_display"] = f"{raw_name} ({resolved_name})"
 
-        rr02 = registers.get("0x0002")
-        if isinstance(rr02, dict):
-            raw_value = _entry_int_value(rr02)
-            if raw_value is not None:
-                raw_name, resolved_name = _resolve_mixer_circuit_type_name(
-                    raw_value,
-                    cooling_enabled=cooling_enabled,
-                    gg05_present=gg05_present,
-                    system_schema=system_schema,
-                    pool_sensor_present=pool_sensor_present,
-                )
-                rr02["enum_raw_name"] = raw_name
-                rr02["enum_resolved_name"] = resolved_name
-                rr02["value_display"] = f"{raw_name} ({resolved_name})"
+            rr02 = registers.get("0x0002")
+            if isinstance(rr02, dict):
+                raw_value = _entry_int_value(rr02)
+                if raw_value is not None:
+                    raw_name, resolved_name = _resolve_mixer_circuit_type_name(
+                        raw_value,
+                        cooling_enabled=cooling_enabled,
+                        gg05_present=gg05_present,
+                        system_schema=system_schema,
+                        pool_sensor_present=pool_sensor_present,
+                    )
+                    rr02["enum_raw_name"] = raw_name
+                    rr02["enum_resolved_name"] = resolved_name
+                    rr02["value_display"] = f"{raw_name} ({resolved_name})"
 
-        rr03 = registers.get("0x0003")
-        if isinstance(rr03, dict):
-            raw_value = _entry_int_value(rr03)
-            if raw_value is not None:
-                raw_name, resolved_name = _resolve_room_influence_type_name(raw_value)
-                rr03["enum_raw_name"] = raw_name
-                rr03["enum_resolved_name"] = resolved_name
-                rr03["value_display"] = f"{raw_name} ({resolved_name})"
+            rr03 = registers.get("0x0003")
+            if isinstance(rr03, dict):
+                raw_value = _entry_int_value(rr03)
+                if raw_value is not None:
+                    raw_name, resolved_name = _resolve_room_influence_type_name(raw_value)
+                    rr03["enum_raw_name"] = raw_name
+                    rr03["enum_resolved_name"] = resolved_name
+                    rr03["value_display"] = f"{raw_name} ({resolved_name})"
 
 
 def _resolve_planner_mode(
@@ -849,6 +1246,7 @@ def scan_b524(
     """
 
     planner_preset = _normalize_planner_preset(planner_preset)
+    research_mode = planner_preset == "research"
     start_perf = time.perf_counter()
     scan_timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     static_constraints, static_constraints_source = load_default_b524_constraints_catalog()
@@ -857,15 +1255,16 @@ def scan_b524(
     transport = counting_transport
 
     artifact: dict[str, Any] = {
-        "schema_version": "2.0",
+        "schema_version": CURRENT_ARTIFACT_SCHEMA_VERSION,
         "meta": {
             "scan_timestamp": scan_timestamp,
             "scan_duration_seconds": 0.0,
             "destination_address": _hex_u8(dst),
             "schema_sources": [],
             "incomplete": False,
+            "artifact_contract": _artifact_contract_metadata(),
         },
-        "groups": {},
+        "operations": {},
     }
     if ebusd_host is not None:
         artifact["meta"]["ebusd_host"] = ebusd_host
@@ -876,6 +1275,7 @@ def scan_b524(
         artifact["meta"]["constraint_catalog_entries"] = _constraint_catalog_entry_count(
             static_constraints
         )
+    artifact["meta"]["constraint_scope"] = constraint_scope_metadata()
 
     incomplete_reason: str | None = None
 
@@ -884,8 +1284,14 @@ def scan_b524(
             observer.log(f"Starting scan dst={_hex_u8(dst)}", level="info")
             if planner_preset == "full":
                 observer.log(
-                    "Full preset selected: scan will expand all instance slots and full RR "
-                    "ranges. Expect multi-hour BASV2 runs.",
+                    "Full preset selected: scan will expand known groups to full instance "
+                    "slots and RR ranges.",
+                    level="warn",
+                )
+            if research_mode:
+                observer.log(
+                    "Research preset selected: scan enables broader non-core and "
+                    "underspecified fallback probing. Expect very long runs.",
                     level="warn",
                 )
             if probe_constraints:
@@ -911,7 +1317,7 @@ def scan_b524(
 
         # Exhaustive mode: inject synthetic DiscoveredGroup entries for any GG in
         # 0x00..0x11 not already found by directory probing.
-        if planner_preset == "exhaustive":
+        if research_mode:
             discovered_ggs = {dg.group for dg in discovered}
             for gg in range(0x00, 0x12):
                 if gg not in discovered_ggs:
@@ -930,9 +1336,6 @@ def scan_b524(
             counting_transport.counters.send_calls - group_discovery_start_calls
         )
         classified = classify_groups(discovered, observer=observer)
-        unknown_groups = sorted(
-            group.group for group in classified if group.group not in GROUP_CONFIG
-        )
         unknown_descriptor_types = sorted(
             {
                 float(group.descriptor)
@@ -941,13 +1344,6 @@ def scan_b524(
                 and float(group.descriptor) not in _KNOWN_DESCRIPTOR_TYPES
             }
         )
-        if unknown_groups and observer is not None:
-            unknown_text = ", ".join(f"0x{gg:02X}" for gg in unknown_groups)
-            observer.log(
-                f"Found {len(unknown_groups)} unknown groups ({unknown_text}); "
-                "scanned conservatively as singleton by default.",
-                level="warn",
-            )
         if unknown_descriptor_types and observer is not None:
             descriptor_text = ", ".join(f"{value:g}" for value in unknown_descriptor_types)
             observer.log(
@@ -955,17 +1351,6 @@ def scan_b524(
                 f"{descriptor_text}. Continue scan, then report with artifact JSON/HTML.",
                 level="warn",
             )
-        if unknown_groups or unknown_descriptor_types:
-            advisory: dict[str, Any] = {
-                "kind": "protocol_discovery",
-                "suggest_issue": True,
-                "attach_artifacts": ["scan_json", "scan_html"],
-            }
-            if unknown_groups:
-                advisory["unknown_groups"] = [f"0x{group:02X}" for group in unknown_groups]
-            if unknown_descriptor_types:
-                advisory["unknown_descriptor_types"] = unknown_descriptor_types
-            artifact["meta"]["issue_suggestion"] = advisory
         if observer is not None:
             observer.phase_finish("group_discovery")
             observer.log(f"Discovered {len(classified)} groups", level="info")
@@ -1036,163 +1421,268 @@ def scan_b524(
                 level="info",
             )
 
-        # Phase C: instance discovery (groups with ii_max > 0 only).
-        instance_total = 0
+        interactive = (
+            console is not None
+            and console.is_terminal
+            and sys.stdin.isatty()
+            and observer is not None
+        )
+        planner_mode = _resolve_planner_mode(
+            interactive=interactive,
+            planner_ui=planner_ui,
+            observer=observer,
+        )
+
+        resolved_group_opcodes: dict[int, tuple[RegisterOpcode, ...]] = {}
+        availability_group_opcodes: dict[int, tuple[RegisterOpcode, ...]] = {}
+        unknown_opcode_probe_map: dict[int, dict[str, Any]] = {}
+        for group in classified:
+            config = GROUP_CONFIG.get(group.group)
+            if config is not None:
+                resolved_group_opcodes[group.group] = _group_opcodes(group.group)
+                availability_group_opcodes[group.group] = (
+                    _sorted_namespace_opcodes(namespace_opcodes_for_group(group.group))
+                    if planner_mode != "disabled"
+                    else resolved_group_opcodes[group.group]
+                )
+                continue
+
+            opcodes, probe_summary = _probe_unknown_group_opcodes(
+                transport,
+                dst=dst,
+                group=group.group,
+                observer=observer,
+            )
+            resolved_group_opcodes[group.group] = opcodes
+            availability_group_opcodes[group.group] = opcodes
+            unknown_opcode_probe_map[group.group] = probe_summary
+            if observer is None:
+                continue
+            if opcodes:
+                observer.log(
+                    f"GG=0x{group.group:02X}: responsive opcode namespaces "
+                    f"{', '.join(_hex_u8(opcode) for opcode in opcodes)}",
+                    level="info",
+                )
+            else:
+                observer.log(
+                    f"GG=0x{group.group:02X}: no responsive opcode namespace detected; "
+                    "group will be skipped unless planner overrides it.",
+                    level="warn",
+                )
+
+        # (v2.3: dual_namespace tracking removed -- operations are top-level)
+        responsive_unknown_groups = sorted(
+            group.group
+            for group in classified
+            if group.group not in GROUP_CONFIG and resolved_group_opcodes.get(group.group, ())
+        )
+        if responsive_unknown_groups and observer is not None:
+            unknown_text = ", ".join(f"0x{gg:02X}" for gg in responsive_unknown_groups)
+            observer.log(
+                f"Found {len(responsive_unknown_groups)} unknown groups ({unknown_text}); "
+                "deriving namespace coverage from opcode responsiveness probes.",
+                level="warn",
+            )
+        if responsive_unknown_groups or unknown_descriptor_types:
+            advisory: dict[str, Any] = {
+                "kind": "protocol_discovery",
+                "suggest_issue": True,
+                "attach_artifacts": ["scan_json", "scan_html"],
+            }
+            if responsive_unknown_groups:
+                advisory["unknown_groups"] = [
+                    f"0x{group:02X}" for group in responsive_unknown_groups
+                ]
+            if unknown_descriptor_types:
+                advisory["unknown_descriptor_types"] = unknown_descriptor_types
+            artifact["meta"]["issue_suggestion"] = advisory
+
         for group in classified:
             meta = metadata_map[group.group]
-            if GROUP_CONFIG.get(group.group) is None:
-                instance_total += len(_UNKNOWN_GROUP_EXPANDED_INSTANCES) * len(
-                    _group_opcodes(group.group)
-                )
-                continue
-            if group.group in {0x09, 0x0A}:
-                shared_present: tuple[int, ...]
-                shared_ii_max = _ii_max_for_opcode(
-                    group=group.group,
-                    default_ii_max=meta.ii_max,
-                    opcode=_REMOTE_REGISTER_OPCODE,
-                )
-                if _is_instanced_group(shared_ii_max):
-                    assert shared_ii_max is not None
-                    instance_total += shared_ii_max + 1
-                continue
-            for opcode in _group_opcodes(group.group):
+            opcodes = availability_group_opcodes.get(group.group, ())
+            multi_op = len(opcodes) > 1
+            # NaN descriptors come from synthetic research-mode injection;
+            # store as None to keep JSON-serializable and avoid polluting analytics.
+            desc_for_artifact = None if math.isnan(group.descriptor) else group.descriptor
+            discovery_advisory: dict[str, Any] = {
+                "kind": "directory_probe",
+                "semantic_authority": False,
+                "proven_register_opcodes": [_hex_u8(opcode) for opcode in opcodes],
+            }
+            if group.group in unknown_opcode_probe_map:
+                discovery_advisory["opcode_probe"] = unknown_opcode_probe_map[group.group]
+            discovery_advisory["instance_discovery_decision"] = _instance_discovery_decision(
+                group=group.group,
+                multi_op=multi_op,
+            )
+            if desc_for_artifact is not None:
+                discovery_advisory["descriptor_observed"] = desc_for_artifact
+            if group.expected_descriptor is not None:
+                discovery_advisory["descriptor_expected"] = group.expected_descriptor
+            if group.descriptor_mismatch:
+                discovery_advisory["descriptor_mismatch"] = True
+            for opcode in opcodes:
+                artifact_group_name = _group_name_for_opcode(group.group, opcode)
                 namespace_ii_max = _ii_max_for_opcode(
                     group=group.group,
                     default_ii_max=meta.ii_max,
                     opcode=opcode,
                 )
-                if _is_instanced_group(namespace_ii_max):
-                    assert namespace_ii_max is not None
-                    instance_total += namespace_ii_max + 1
+                _ensure_group_artifact(
+                    artifact,
+                    group=group.group,
+                    opcode=opcode,
+                    name=artifact_group_name,
+                    descriptor_observed=desc_for_artifact,
+                    ii_max=namespace_ii_max,
+                    discovery_advisory=discovery_advisory,
+                )
+
+        instance_targets = _instance_discovery_targets(
+            classified,
+            metadata_map,
+            availability_group_opcodes,
+        )
+
+        # Phase C: instance discovery (groups with ii_max > 0 only).
+        instance_total = 0
+        for group, meta, opcode in instance_targets:
+            if GROUP_CONFIG.get(group.group) is None:
+                candidate_instances = (
+                    _UNKNOWN_GROUP_EXPANDED_INSTANCES
+                    if research_mode
+                    else _UNKNOWN_GROUP_INITIAL_INSTANCES
+                )
+                instance_total += len(candidate_instances)
+                continue
+            namespace_ii_max = _ii_max_for_opcode(
+                group=group.group,
+                default_ii_max=meta.ii_max,
+                opcode=opcode,
+            )
+            if _is_instanced_group(namespace_ii_max):
+                assert namespace_ii_max is not None
+                instance_total += namespace_ii_max + 1
         if observer is not None:
             observer.phase_start("instance_discovery", total=instance_total or 1)
 
         instance_discovery_start = time.perf_counter()
         instance_discovery_start_calls = counting_transport.counters.send_calls
-        for group in classified:
-            meta = metadata_map[group.group]
+        known_namespace_probe_counts: dict[int, list[str]] = {}
+        unknown_namespace_probe_counts: dict[int, list[str]] = {}
+        for group, meta, opcode in instance_targets:
             rr_max = meta.rr_max
-            opcodes = _group_opcodes(group.group)
-            dual_namespace = len(opcodes) > 1
             config = GROUP_CONFIG.get(group.group)
-            # NaN descriptors come from synthetic exhaustive-mode injection;
-            # store as None to keep JSON-serializable and avoid polluting analytics.
-            desc_for_artifact = None if math.isnan(group.descriptor) else group.descriptor
-            _ensure_group_artifact(
-                artifact,
-                group=group.group,
-                name=group.name,
-                descriptor_observed=desc_for_artifact,
-                dual_namespace=dual_namespace,
-            )
 
             if config is None:
-                namespace_probe_counts: list[str] = []
                 total_slots = len(_UNKNOWN_GROUP_EXPANDED_INSTANCES)
-                for opcode in opcodes:
-                    instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
-                    emit_trace_label(
-                        transport,
-                        "Exploring unknown group "
-                        f"0x{group.group:02X} ({_opcode_label(opcode)}) "
-                        "across multiple instances",
-                    )
-                    present_instances = _probe_unknown_present_instances(
-                        transport,
-                        dst=dst,
-                        group=group.group,
-                        opcode=opcode,
-                        observer=observer,
-                    )
-                    _mark_present_instances(instances_obj, instances=present_instances)
-                    namespace_probe_counts.append(
-                        f"{_opcode_label(opcode)} {len(present_instances)}/{total_slots}"
-                    )
-                if observer is not None:
-                    observer.log(
-                        f"GG=0x{group.group:02X} {group.name}: "
-                        f"{', '.join(namespace_probe_counts)} present (experimental), "
-                        f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
-                        level="info",
-                    )
-                continue
-
-            if group.group in {0x09, 0x0A}:
-                shared_ii_max = _ii_max_for_opcode(
-                    group=group.group,
-                    default_ii_max=meta.ii_max,
-                    opcode=_REMOTE_REGISTER_OPCODE,
-                )
-                if not _is_instanced_group(shared_ii_max):
-                    shared_present = (0x00,)
-                else:
-                    assert shared_ii_max is not None
-                    emit_trace_label(
-                        transport,
-                        "Identifying instances in group "
-                        f"0x{group.group:02X} via shared remote probe",
-                    )
-                    shared_present = _probe_present_instances(
-                        transport,
-                        dst=dst,
-                        group=group.group,
-                        opcode=_REMOTE_REGISTER_OPCODE,
-                        ii_max=shared_ii_max,
-                        observer=observer,
-                    )
-                for opcode in opcodes:
-                    instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
-                    _mark_present_instances(instances_obj, instances=shared_present)
-                if observer is not None:
-                    total_instances = 1 if shared_ii_max is None else shared_ii_max + 1
-                    observer.log(
-                        f"GG=0x{group.group:02X} {group.name}: "
-                        f"{len(shared_present)}/{total_instances} present "
-                        f"(shared across local/remote), "
-                        f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
-                        level="info",
-                    )
-                continue
-
-            known_namespace_probe_counts: list[str] = []
-            for opcode in opcodes:
                 namespace_ii_max = _ii_max_for_opcode(
                     group=group.group,
                     default_ii_max=meta.ii_max,
                     opcode=opcode,
                 )
+                _record_namespace_topology(
+                    artifact,
+                    group=group.group,
+                    opcode=opcode,
+                    ii_max=namespace_ii_max,
+                )
                 instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
-                if not _is_instanced_group(namespace_ii_max):
-                    _mark_present_instances(instances_obj, instances=(0x00,))
-                    known_namespace_probe_counts.append(f"{_opcode_label(opcode)} 1/1")
-                    continue
-
-                assert namespace_ii_max is not None
                 emit_trace_label(
                     transport,
-                    f"Identifying instances in group 0x{group.group:02X} ({_opcode_label(opcode)})",
+                    "Exploring unknown group "
+                    f"0x{group.group:02X} ({opcode_label(opcode)}) "
+                    "across multiple instances",
                 )
-                present_instances = _probe_present_instances(
+                present_instances = _probe_unknown_present_instances(
                     transport,
                     dst=dst,
                     group=group.group,
                     opcode=opcode,
-                    ii_max=namespace_ii_max,
                     observer=observer,
+                    expand_fallback=research_mode,
                 )
                 _mark_present_instances(instances_obj, instances=present_instances)
-                known_namespace_probe_counts.append(
-                    f"{_opcode_label(opcode)} {len(present_instances)}/{namespace_ii_max + 1}"
+                unknown_namespace_probe_counts.setdefault(group.group, []).append(
+                    f"{opcode_label(opcode)} {len(present_instances)}/{total_slots}"
                 )
+                continue
 
-            if observer is not None:
-                observer.log(
-                    f"GG=0x{group.group:02X} {group.name}: "
-                    f"{', '.join(known_namespace_probe_counts)} present, "
-                    f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
-                    level="info",
+            namespace_ii_max = _ii_max_for_opcode(
+                group=group.group,
+                default_ii_max=meta.ii_max,
+                opcode=opcode,
+            )
+            _record_namespace_topology(
+                artifact,
+                group=group.group,
+                opcode=opcode,
+                ii_max=namespace_ii_max,
+            )
+            contract = namespace_availability_contract(group=group.group, opcode=opcode)
+            instances_obj = _instances_object(artifact, group=group.group, opcode=opcode)
+            if _is_instanced_group(namespace_ii_max):
+                _record_availability_contract(
+                    artifact,
+                    group=group.group,
+                    opcode=opcode,
+                    contract=contract,
                 )
+            if not _is_instanced_group(namespace_ii_max):
+                _mark_present_instances(instances_obj, instances=(0x00,))
+                known_namespace_probe_counts.setdefault(group.group, []).append(
+                    f"{_group_name_for_opcode(group.group, opcode)} [{opcode_label(opcode)}] 1/1"
+                )
+                continue
+
+            assert namespace_ii_max is not None
+            emit_trace_label(
+                transport,
+                f"Identifying instances in group 0x{group.group:02X} ({opcode_label(opcode)})",
+            )
+            probes = _probe_present_instances(
+                transport,
+                dst=dst,
+                group=group.group,
+                opcode=opcode,
+                ii_max=namespace_ii_max,
+                observer=observer,
+            )
+            _record_availability_probes(
+                artifact,
+                group=group.group,
+                opcode=opcode,
+                probes=probes,
+            )
+            present_instances = tuple(ii for ii, probe in probes.items() if probe.present)
+            _mark_present_instances(instances_obj, instances=present_instances)
+            known_namespace_probe_counts.setdefault(group.group, []).append(
+                f"{_group_name_for_opcode(group.group, opcode)} "
+                f"[{opcode_label(opcode)}] "
+                f"{len(present_instances)}/{namespace_ii_max + 1}"
+            )
+
+        if observer is not None:
+            for group in classified:
+                rr_max = metadata_map[group.group].rr_max
+                unknown_counts = unknown_namespace_probe_counts.get(group.group)
+                if unknown_counts:
+                    observer.log(
+                        f"GG=0x{group.group:02X} {group.name}: "
+                        f"{', '.join(unknown_counts)} present (experimental), "
+                        f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
+                        level="info",
+                    )
+                    continue
+                known_counts = known_namespace_probe_counts.get(group.group)
+                if known_counts:
+                    observer.log(
+                        f"GG=0x{group.group:02X}: "
+                        f"{', '.join(known_counts)} present, "
+                        f"RR_max=0x{rr_max:04X} ({rr_max + 1} registers/instance)",
+                        level="info",
+                    )
 
         if observer is not None:
             observer.phase_finish("instance_discovery")
@@ -1205,7 +1695,7 @@ def scan_b524(
         plan: dict[PlanKey, GroupScanPlan] = {}
         for group in classified:
             meta = metadata_map[group.group]
-            for opcode in _group_opcodes(group.group):
+            for opcode in resolved_group_opcodes.get(group.group, ()):
                 namespace_ii_max = _ii_max_for_opcode(
                     group=group.group,
                     default_ii_max=meta.ii_max,
@@ -1235,29 +1725,17 @@ def scan_b524(
         if measured_requests > 0 and measured_duration_s > 0:
             request_rate_rps = measured_requests / measured_duration_s
 
-        interactive = (
-            console is not None
-            and console.is_terminal
-            and sys.stdin.isatty()
-            and observer is not None
-        )
-        planner_mode = _resolve_planner_mode(
-            interactive=interactive,
-            planner_ui=planner_ui,
-            observer=observer,
-        )
         planner_groups: list[PlannerGroup] = []
         for group in classified:
             config = GROUP_CONFIG.get(group.group)
             group_meta = metadata_map[group.group]
-            opcodes = _group_opcodes(group.group)
-            primary_opcode = opcodes[0]
-            primary_rr_max = _rr_max_for_opcode(
-                group=group.group,
-                default_rr_max=group_meta.rr_max,
-                opcode=primary_opcode,
-            )
-            dual_namespace = len(opcodes) > 1
+            resolved_opcodes = resolved_group_opcodes.get(group.group, ())
+            opcodes = resolved_opcodes
+            if planner_mode != "disabled":
+                opcodes = _planner_source_opcodes(group.group)
+            if not opcodes:
+                continue
+            multi_op = len(opcodes) > 1
             for opcode in opcodes:
                 planner_ii_max = _planner_ii_max(
                     _ii_max_for_opcode(
@@ -1277,20 +1755,25 @@ def scan_b524(
                     PlannerGroup(
                         group=group.group,
                         opcode=opcode,
-                        name=group.name,
+                        name=_group_name_for_opcode(group.group, opcode),
                         descriptor=group.descriptor,
                         known=config is not None,
                         ii_max=planner_ii_max,
-                        rr_max=primary_rr_max,
-                        rr_max_full=_rr_max_for_opcode(
+                        rr_max=_rr_max_for_opcode(
                             group=group.group,
                             default_rr_max=group_meta.rr_max,
                             opcode=opcode,
                         ),
+                        rr_max_full=_rr_max_full_for_opcode(
+                            group=group.group,
+                            opcode=opcode,
+                        ),
                         present_instances=present_instances,
-                        namespace_label=(_opcode_label(opcode) if dual_namespace else None),
-                        primary=(opcode == primary_opcode),
-                        exhaustive_only=bool(config and config.get("exhaustive_only")),
+                        namespace_label=(opcode_label(opcode) if multi_op else None),
+                        recommended=_planner_group_is_recommended(
+                            group=group.group,
+                            opcode=opcode,
+                        ),
                     )
                 )
 
@@ -1458,71 +1941,43 @@ def scan_b524(
                     )
                     observer.phase_advance("register_scan", advance=1)
 
-                # Some groups are ambiguous and may respond to either opcode family (0x02 vs 0x06).
-                # When in doubt (unknown group), probe both but keep only the best/most-meaningful
-                # reply in the artifact.
-                opcodes_to_try: tuple[RegisterOpcode, ...]
-                if task.group in GROUP_CONFIG:
-                    opcodes_to_try = (cast(RegisterOpcode, task.opcode),)
-                else:
-                    opcodes_to_try = (_LOCAL_REGISTER_OPCODE, _REMOTE_REGISTER_OPCODE)
-
-                best_entry: RegisterEntry | None = None
-                best_quality = -1
-                for opcode in opcodes_to_try:
-                    schema_entry = (
-                        ebusd_schema.lookup(
-                            opcode=opcode,
-                            group=task.group,
-                            instance=task.instance,
-                            register=task.register,
-                        )
-                        if ebusd_schema is not None
-                        else None
-                    )
-                    myvaillant_entry = (
-                        myvaillant_map.lookup(
-                            group=task.group,
-                            instance=task.instance,
-                            register=task.register,
-                            opcode=opcode,
-                        )
-                        if myvaillant_map is not None
-                        else None
-                    )
-                    type_hint = (
-                        myvaillant_entry.type_hint
-                        if myvaillant_entry is not None and myvaillant_entry.type_hint is not None
-                        else (schema_entry.type_spec if schema_entry is not None else None)
-                    )
-
-                    candidate = read_register(
-                        transport,
-                        dst,
-                        opcode,
+                schema_entry = (
+                    ebusd_schema.lookup(
+                        opcode=task.opcode,
                         group=task.group,
                         instance=task.instance,
                         register=task.register,
-                        type_hint=type_hint,
                     )
-                    if schema_entry is not None:
-                        candidate["ebusd_name"] = schema_entry.name
-
-                    # Prefer a meaningful value over status-only / no_data replies; otherwise prefer
-                    # a clean reply (no error) over transport/decode failures.
-                    quality = (
-                        2
-                        if _entry_has_valid_value(candidate)
-                        else (1 if candidate["error"] is None else 0)
+                    if ebusd_schema is not None
+                    else None
+                )
+                myvaillant_entry = (
+                    myvaillant_map.lookup(
+                        group=task.group,
+                        instance=task.instance,
+                        register=task.register,
+                        opcode=task.opcode,
                     )
-                    if quality > best_quality:
-                        best_entry = candidate
-                        best_quality = quality
-                    if quality == 2:
-                        break
+                    if myvaillant_map is not None
+                    else None
+                )
+                type_hint = (
+                    myvaillant_entry.type_hint
+                    if myvaillant_entry is not None and myvaillant_entry.type_hint is not None
+                    else (schema_entry.type_spec if schema_entry is not None else None)
+                )
 
-                assert best_entry is not None
-                entry = best_entry
+                entry = read_register(
+                    transport,
+                    dst,
+                    task.opcode,
+                    group=task.group,
+                    instance=task.instance,
+                    register=task.register,
+                    type_hint=type_hint,
+                )
+                if schema_entry is not None:
+                    entry["ebusd_name"] = schema_entry.name
                 if myvaillant_map is not None:
                     lookup_opcode: int | None = None
                     read_opcode = entry.get("read_opcode")
@@ -1551,7 +2006,9 @@ def scan_b524(
                                 entry["ebusd_name"] = mapped_ebusd_name
 
                 constraint = _constraint_for_register(
+                    opcode=task.opcode,
                     group=task.group,
+                    instance=task.instance,
                     register=task.register,
                     live_constraints=constraint_map,
                     static_constraints=static_constraints,
@@ -1573,6 +2030,9 @@ def scan_b524(
                                 "constraint_max": constraint.max_value,
                                 "constraint_type": constraint.kind,
                                 "constraint_source": constraint.source,
+                                "constraint_scope": constraint.scope,
+                                "constraint_provenance": constraint.provenance,
+                                "constraint_probe_protocol": CONSTRAINT_SCOPE_PROTOCOL,
                                 "reason": mismatch_reason,
                             }
                         )
@@ -1581,10 +2041,22 @@ def scan_b524(
                 _ensure_group_artifact(
                     artifact,
                     group=task.group,
+                    opcode=task.opcode,
                     name="Unknown",
-                    descriptor_observed=None,
-                    dual_namespace=_is_dual_namespace_group(task.group),
+                    descriptor_observed=0.0,
                 )
+                task_group_meta = metadata_map.get(task.group)
+                if task_group_meta is not None:
+                    _record_namespace_topology(
+                        artifact,
+                        group=task.group,
+                        opcode=task.opcode,
+                        ii_max=_ii_max_for_opcode(
+                            group=task.group,
+                            default_ii_max=task_group_meta.ii_max,
+                            opcode=task.opcode,
+                        ),
+                    )
                 instances_obj = _instances_object(
                     artifact,
                     group=task.group,
@@ -1602,9 +2074,9 @@ def scan_b524(
             artifact["meta"]["constraint_rescan_recommended"] = True
             if observer is not None:
                 observer.log(
-                    "Observed register values outside the bundled static constraint catalog. "
-                    "Review meta.constraint_mismatches and rerun with --probe-constraints if "
-                    "you want live confirmation.",
+                    "Observed register values outside the scoped bundled static "
+                    "constraint catalog. Review meta.constraint_mismatches and rerun "
+                    "with --probe-constraints if you want live confirmation.",
                     level="warn",
                 )
 
@@ -1627,6 +2099,7 @@ def scan_vrc(
     *,
     dst: int,
     b509_ranges: list[tuple[int, int]],
+    b509_dump: bool = False,
     b555_dump: bool = False,
     b516_dump: bool = False,
     ebusd_host: str | None = None,
@@ -1639,7 +2112,7 @@ def scan_vrc(
     planner_preset: PlannerPreset = "recommended",
     probe_constraints: bool = False,
 ) -> dict[str, Any]:
-    """Run the full VRC scan flow: B524 primary scan, optional B555/B516 dumps, then B509."""
+    """Run VRC scan flow: B524 primary scan, optional B555/B516/B509 dumps."""
 
     artifact = scan_b524(
         transport,
@@ -1704,16 +2177,19 @@ def scan_vrc(
                     meta["incomplete_reason"] = f"b516_{reason}"
             return artifact
 
-    b509_dump = scan_b509(
+    if not b509_dump:
+        return artifact
+
+    b509_artifact = scan_b509(
         transport,  # type: ignore[arg-type]
         dst=dst,
         ranges=b509_ranges,
         ebusd_schema=ebusd_schema,
         observer=observer,
     )
-    artifact["b509_dump"] = b509_dump
+    artifact["b509_dump"] = b509_artifact
 
-    b509_meta = b509_dump.get("meta", {})
+    b509_meta = b509_artifact.get("meta", {})
     if isinstance(b509_meta, dict) and bool(b509_meta.get("incomplete")) and isinstance(meta, dict):
         meta["incomplete"] = True
         if "incomplete_reason" not in meta:

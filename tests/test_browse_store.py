@@ -18,7 +18,7 @@ def _sample_artifact() -> dict[str, object]:
                             "0x0001": {
                                 "value": 1.0,
                                 "raw_hex": "00",
-                                "flags_access": "user_rw",
+                                "flags_access": "config_user",
                                 "read_opcode": "0x02",
                                 "ebusd_name": "regulator_param_1",
                             },
@@ -26,14 +26,14 @@ def _sample_artifact() -> dict[str, object]:
                                 "value": 2.0,
                                 "value_display": "HEATING_OR_COOLING (HEATING)",
                                 "raw_hex": "0102",
-                                "flags_access": "technical_rw",
+                                "flags_access": "config_installer",
                                 "read_opcode": "0x06",
                                 "myvaillant_name": "limit_value",
                             },
                             "0x0003": {
                                 "value": 3.0,
                                 "raw_hex": "03",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             },
                         }
@@ -45,18 +45,18 @@ def _sample_artifact() -> dict[str, object]:
 
 
 def _dual_namespace_artifact() -> dict[str, object]:
+    """Operations-first v2.3 fixture with two operations sharing group 0x09."""
     return {
+        "schema_version": "2.3",
         "meta": {
             "destination_address": "0x15",
             "scan_timestamp": "2026-02-11T12:00:00Z",
         },
-        "groups": {
-            "0x09": {
-                "name": "Regulators",
-                "dual_namespace": True,
-                "namespaces": {
-                    "0x02": {
-                        "label": "local",
+        "operations": {
+            "0x02": {
+                "groups": {
+                    "0x09": {
+                        "name": "System",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -64,7 +64,7 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                     "0x0001": {
                                         "value": 20.5,
                                         "raw_hex": "0000a441",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "read_opcode": "0x02",
                                         "read_opcode_label": "local",
                                         "myvaillant_name": "temperature_local",
@@ -72,9 +72,13 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                 },
                             }
                         },
-                    },
-                    "0x06": {
-                        "label": "remote",
+                    }
+                }
+            },
+            "0x06": {
+                "groups": {
+                    "0x09": {
+                        "name": "Regulators",
                         "instances": {
                             "0x00": {
                                 "present": True,
@@ -82,7 +86,7 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                     "0x0001": {
                                         "value": 21.0,
                                         "raw_hex": "0000a841",
-                                        "flags_access": "user_rw",
+                                        "flags_access": "config_user",
                                         "read_opcode": "0x06",
                                         "read_opcode_label": "remote",
                                         "myvaillant_name": "temperature_remote",
@@ -90,9 +94,9 @@ def _dual_namespace_artifact() -> dict[str, object]:
                                 },
                             }
                         },
-                    },
-                },
-            }
+                    }
+                }
+            },
         },
     }
 
@@ -104,7 +108,7 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
 
     by_register = {row.register_key: row for row in store.rows}
     assert by_register["0x0001"].tab == "config"
-    assert by_register["0x0002"].tab == "config_limits"
+    assert by_register["0x0002"].tab == "state"
     assert by_register["0x0003"].tab == "state"
     assert by_register["0x0001"].name == "0x0001"
     assert by_register["0x0002"].name == "limit_value"
@@ -114,34 +118,186 @@ def test_browse_store_builds_rows_and_left_tree_uses_only_myvaillant_name() -> N
     assert by_register["0x0001"].ebusd_name == "regulator_param_1"
     assert by_register["0x0002"].myvaillant_name == "limit_value"
     assert by_register["0x0002"].ebusd_name == ""
-    assert by_register["0x0001"].access_flags == "user_rw"
+    assert by_register["0x0001"].access_flags == "config_user"
+    assert by_register["0x0001"].row_id == "0x00:0x02:0x00:0x0001"
+    assert by_register["0x0002"].row_id == "0x00:0x06:0x00:0x0002"
+    expected_local_path = (
+        "B524/Controller Registers/ReadControllerRegister/Regulator Parameters/0x00/0x0001"
+    )
+    expected_remote_path = (
+        "B524/Device Slots/ReadDeviceSlotRegister/Regulator Parameters/0x00/limit_value"
+    )
+    assert by_register["0x0001"].path == expected_local_path
+    assert by_register["0x0002"].path == expected_remote_path
+    assert by_register["0x0001"].address.label == "B524 GG=0x0 RR=0x1 0x02"
+    assert by_register["0x0002"].address.label == "B524 GG=0x0 RR=0x2 0x06"
+    assert all(":single:" not in row.row_id for row in store.rows if row.protocol == "b524")
 
     by_node_id = {node.node_id: node for node in store.tree_nodes}
     assert by_node_id["proto:b524"].label == "B524"
-    assert by_node_id["b524:group:0x00"].label == "Regulator Parameters (0x00)"
+    assert by_node_id["b524:section:controller_registers"].label == "Controller Registers"
+    assert by_node_id["b524:section:device_slots"].label == "Device Slots"
+    assert by_node_id["b524:group:controller_registers:0x00"].label == "Regulator Parameters (0x00)"
+    assert by_node_id["b524:group:device_slots:0x00"].label == "Regulator Parameters (0x00)"
+    assert "b524:section:group_directory" not in by_node_id
+    assert "b524:section:register_constraints" not in by_node_id
+    assert "b524:section:timer_programs" not in by_node_id
+    assert "b524:section:register_tables" not in by_node_id
     assert not any(node.level == "register" for node in store.tree_nodes)
 
 
 def test_browse_store_filters_rows_for_tree_selection() -> None:
     store = BrowseStore.from_artifact(_sample_artifact())
     protocol_node = next(node for node in store.tree_nodes if node.level == "protocol")
-    group_node = next(
-        node for node in store.tree_nodes if node.level == "group" and node.group_key == "0x00"
+    controller_group_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:group:controller_registers:0x00"
+    )
+    device_group_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:group:device_slots:0x00"
     )
 
-    assert len(store.rows_for_selection(None, tab="state")) == 1
+    assert len(store.rows_for_selection(None, tab="state")) == 2
     assert len(store.rows_for_selection(protocol_node, tab="config")) == 1
-    assert len(store.rows_for_selection(group_node, tab="config_limits")) == 1
-    assert len(store.rows_for_selection(group_node, tab="state")) == 1
+    assert len(store.rows_for_selection(device_group_node, tab="state")) == 1
+    assert len(store.rows_for_selection(controller_group_node, tab="state")) == 1
+
+
+def test_browse_store_single_namespace_instance_node_uses_opcode_identity() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0002": {
+                                "value": 1,
+                                "raw_hex": "0100",
+                                "flags_access": "state_stable",
+                                "read_opcode": "0x02",
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    by_node_id = {node.node_id: node for node in store.tree_nodes}
+    assert "b524:inst:controller_registers:0x02:0x02:0x00" in by_node_id
+    assert not any(
+        ":single:" in node.node_id for node in store.tree_nodes if node.protocol == "b524"
+    )
+
+
+def test_browse_store_instance_selection_is_namespace_isolated_for_mixed_legacy_group() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {
+                                "value": 1,
+                                "raw_hex": "01",
+                                "flags_access": "state_stable",
+                                "read_opcode": "0x02",
+                            },
+                            "0x0002": {
+                                "value": 2,
+                                "raw_hex": "02",
+                                "flags_access": "state_stable",
+                                "read_opcode": "0x06",
+                            },
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    local_instance_node = next(
+        node
+        for node in store.tree_nodes
+        if node.node_id == "b524:inst:controller_registers:0x02:0x02:0x00"
+    )
+    remote_instance_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:inst:device_slots:0x02:0x06:0x00"
+    )
+
+    local_rows = store.rows_for_selection(local_instance_node, tab="state")
+    remote_rows = store.rows_for_selection(remote_instance_node, tab="state")
+    assert {(row.register_key, row.namespace_key) for row in local_rows} == {("0x0001", "0x02")}
+    assert {(row.register_key, row.namespace_key) for row in remote_rows} == {("0x0002", "0x06")}
+
+
+def test_browse_store_drops_missing_namespace_entries_from_split_views() -> None:
+    artifact = {
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "groups": {
+            "0x02": {
+                "name": "Heating Circuits",
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0001": {
+                                "value": 1,
+                                "raw_hex": "01",
+                                "flags_access": "state_stable",
+                                "read_opcode": "0x02",
+                            },
+                            "0x0002": {
+                                "value": 2,
+                                "raw_hex": "02",
+                                "flags_access": "state_stable",
+                                "read_opcode": "0x06",
+                            },
+                            "0x0003": {
+                                "value": 3,
+                                "raw_hex": "03",
+                                "flags_access": "state_stable",
+                            },
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    # 0x0003 has no read_opcode so defaults to 0x02 during migration.
+    assert {row.register_key for row in store.rows} == {"0x0001", "0x0002", "0x0003"}
+
+    local_instance_node = next(
+        node
+        for node in store.tree_nodes
+        if node.node_id == "b524:inst:controller_registers:0x02:0x02:0x00"
+    )
+    remote_instance_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:inst:device_slots:0x02:0x06:0x00"
+    )
+    local_rows = store.rows_for_selection(local_instance_node, tab="state")
+    remote_rows = store.rows_for_selection(remote_instance_node, tab="state")
+    assert {(row.register_key, row.namespace_key) for row in local_rows} == {
+        ("0x0001", "0x02"),
+        ("0x0003", "0x02"),
+    }
+    assert {(row.register_key, row.namespace_key) for row in remote_rows} == {("0x0002", "0x06")}
 
 
 def test_browse_store_builds_namespace_nodes_for_dual_namespace_groups() -> None:
     store = BrowseStore.from_artifact(_dual_namespace_artifact())
 
     by_node_id = {node.node_id: node for node in store.tree_nodes}
-    assert by_node_id["b524:group:0x09"].label == "Regulators (0x09)"
-    assert by_node_id["b524:ns:0x09:0x02"].label == "Local (0x02)"
-    assert by_node_id["b524:ns:0x09:0x06"].label == "Remote (0x06)"
+    assert by_node_id["b524:group:controller_registers:0x09"].label == "System (0x09)"
+    assert by_node_id["b524:group:device_slots:0x09"].label == "Regulators (0x09)"
+    assert "b524:ns:controller_registers:0x09:0x02" not in by_node_id
+    assert "b524:ns:device_slots:0x09:0x06" not in by_node_id
 
     row_ids = {row.row_id for row in store.rows}
     assert row_ids == {
@@ -153,20 +309,83 @@ def test_browse_store_builds_namespace_nodes_for_dual_namespace_groups() -> None
     remote_row = next(row for row in store.rows if row.namespace_key == "0x06")
     assert local_row.namespace_label == "local"
     assert remote_row.namespace_label == "remote"
-    assert local_row.access_flags == "stable_ro"
-    assert remote_row.access_flags == "user_rw"
+    assert local_row.access_flags == "state_stable"
+    assert remote_row.access_flags == "config_user"
+
+
+def test_browse_store_remote_namespace_instance_label_drops_local_group_assumption() -> None:
+    artifact = {
+        "schema_version": "2.3",
+        "meta": {"destination_address": "0x15", "scan_timestamp": "2026-02-11T12:00:00Z"},
+        "operations": {
+            "0x06": {
+                "groups": {
+                    "0x02": {
+                        "name": "Heating Circuits",
+                        "instances": {
+                            "0x00": {
+                                "present": True,
+                                "registers": {
+                                    "0x0001": {
+                                        "value": 21.0,
+                                        "raw_hex": "0000a841",
+                                        "flags_access": "state_stable",
+                                        "read_opcode": "0x06",
+                                        "read_opcode_label": "local",
+                                    }
+                                },
+                            }
+                        },
+                    }
+                }
+            }
+        },
+    }
+
+    store = BrowseStore.from_artifact(artifact)
+    by_node_id = {node.node_id: node for node in store.tree_nodes}
+    assert by_node_id["b524:inst:device_slots:0x02:0x06:0x00"].label == "Remote Slot 1 (0x00)"
+    row = store.rows[0]
+    assert (
+        row.path == "B524/Device Slots/ReadDeviceSlotRegister/Secondary Heating Source/0x00/0x0001"
+    )
 
 
 def test_browse_store_filters_rows_for_namespace_selection() -> None:
     store = BrowseStore.from_artifact(_dual_namespace_artifact())
-    local_node = next(node for node in store.tree_nodes if node.node_id == "b524:ns:0x09:0x02")
-    remote_node = next(node for node in store.tree_nodes if node.node_id == "b524:ns:0x09:0x06")
+    local_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:group:controller_registers:0x09"
+    )
+    remote_node = next(
+        node for node in store.tree_nodes if node.node_id == "b524:group:device_slots:0x09"
+    )
 
     local_rows = store.rows_for_selection(local_node, tab="state")
-    remote_rows = store.rows_for_selection(remote_node, tab="config")
+    remote_rows = store.rows_for_selection(remote_node, tab="state")
 
     assert [row.namespace_key for row in local_rows] == ["0x02"]
     assert [row.namespace_key for row in remote_rows] == ["0x06"]
+
+
+def test_browse_store_instanced_groups_have_no_register_tree_nodes() -> None:
+    store = BrowseStore.from_artifact(_dual_namespace_artifact())
+
+    # Register nodes should NOT be in the tree (registers are shown in the table)
+    register_nodes = [node for node in store.tree_nodes if node.level == "register"]
+    assert register_nodes == []
+
+    # But instance nodes should exist and selecting them should return rows
+    by_node_id = {node.node_id: node for node in store.tree_nodes}
+    local_instance = by_node_id["b524:inst:controller_registers:0x09:0x02:0x00"]
+    remote_instance = by_node_id["b524:inst:device_slots:0x09:0x06:0x00"]
+
+    local_rows = store.rows_for_selection(local_instance, tab="state")
+    remote_rows = store.rows_for_selection(remote_instance, tab="state")
+
+    assert len(local_rows) > 0
+    assert all(row.namespace_key == "0x02" for row in local_rows)
+    assert len(remote_rows) > 0
+    assert all(row.namespace_key == "0x06" for row in remote_rows)
 
 
 def test_browse_store_prefers_register_class_over_flags_access_for_tab() -> None:
@@ -181,7 +400,7 @@ def test_browse_store_prefers_register_class_over_flags_access_for_tab() -> None
                             "0x0021": {
                                 "value": 37,
                                 "raw_hex": "25",
-                                "flags_access": "technical_rw",
+                                "flags_access": "config_installer",
                                 "register_class": "state",
                             }
                         }
@@ -365,7 +584,7 @@ def test_browse_store_treats_unknown_singleton_group_as_singleton() -> None:
                             "0x0000": {
                                 "value": 0.0,
                                 "raw_hex": "00",
-                                "flags_access": "stable_ro",
+                                "flags_access": "state_stable",
                                 "read_opcode": "0x02",
                             }
                         },
@@ -432,13 +651,13 @@ def test_browse_store_hides_rr_zero_and_trailing_unnamed_absent_rows_per_namespa
                                     "0x0035": {
                                         "value": 1,
                                         "raw_hex": "01",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     },
                                     "0x0036": {
                                         "value": 2,
                                         "raw_hex": "02",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     },
                                 }
@@ -458,7 +677,7 @@ def test_browse_store_hides_rr_zero_and_trailing_unnamed_absent_rows_per_namespa
                                     "0x0035": {
                                         "value": 7,
                                         "raw_hex": "07",
-                                        "flags_access": "stable_ro",
+                                        "flags_access": "state_stable",
                                         "error": None,
                                     },
                                     "0x0036": {

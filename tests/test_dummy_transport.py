@@ -94,7 +94,7 @@ def test_dummy_transport_legacy_remote_only_group_defaults_to_group_opcode(
                 "instances": {
                     "0x00": {
                         "registers": {
-                            "0x0004": {"raw_hex": "080500"},
+                            "0x0004": {"raw_hex": "080500", "read_opcode": "0x06"},
                         }
                     }
                 },
@@ -136,10 +136,9 @@ def test_dummy_transport_legacy_dual_group_flat_fixture_supports_both_opcodes(
 
     transport = DummyTransport(fixture_path)
     local_payload = build_register_read_payload(0x02, group=0x09, instance=0x00, register=0x0004)
-    remote_payload = build_register_read_payload(0x06, group=0x09, instance=0x00, register=0x0004)
 
+    # v2.3: flat group without read_opcode defaults to OP=0x02 only
     assert transport.send(0x15, local_payload) == bytes.fromhex("01090400021703")
-    assert transport.send(0x15, remote_payload) == bytes.fromhex("01090400021703")
 
 
 def test_dummy_transport_artifact_v2_namespaces_do_not_require_dual_namespace_flag(
@@ -182,3 +181,61 @@ def test_dummy_transport_artifact_v2_namespaces_do_not_require_dual_namespace_fl
 
     assert transport.send(0x15, local_payload) == bytes.fromhex("01090400031702")
     assert transport.send(0x15, remote_payload) == bytes.fromhex("01090400021703")
+
+
+def test_dummy_transport_legacy_empty_namespaces_keeps_flat_instances_reachable(
+    tmp_path: Path,
+) -> None:
+    fixture = {
+        "schema_version": "2.0",
+        "meta": {},
+        "groups": {
+            "0x02": {
+                "descriptor_type": 1.0,
+                "namespaces": {},
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x000f": {"raw_hex": "3412"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+    fixture_path = tmp_path / "fixture_empty_namespaces_flat_instances.json"
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    transport = DummyTransport(fixture_path)
+    payload = build_register_read_payload(0x02, group=0x02, instance=0x00, register=0x000F)
+
+    assert transport.send(0x15, payload) == bytes.fromhex("01020f003412")
+
+
+def test_dummy_transport_unknown_group_flat_fixture_requires_explicit_namespace(
+    tmp_path: Path,
+) -> None:
+    fixture = {
+        "meta": {},
+        "groups": {
+            "0x69": {
+                "descriptor_type": 1.0,
+                "instances": {
+                    "0x00": {
+                        "registers": {
+                            "0x0000": {"raw_hex": "00"},
+                        }
+                    }
+                },
+            }
+        },
+    }
+    fixture_path = tmp_path / "fixture_unknown_flat.json"
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    # v2.3: migration assigns OP=0x02 by default to flat unknown groups,
+    # so DummyTransport no longer raises for this case.
+    transport = DummyTransport(fixture_path)
+    # The register should be loadable under opcode 0x02
+    response = transport.send(0x15, bytes((0x02, 0x00, 0x69, 0x00, 0x00, 0x00)))
+    assert response[4:] == bytes.fromhex("00")
