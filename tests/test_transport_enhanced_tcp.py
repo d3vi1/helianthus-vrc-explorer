@@ -619,3 +619,281 @@ def test_ve8_cli_default_src() -> None:
     """VE8: CLI default src must match EnhancedTcpConfig default (0xF7)."""
     config = EnhancedTcpConfig()
     assert config.src == 0xF7
+
+
+# ---------------------------------------------------------------------------
+# Adversarial tests added by angry-tester audit
+# ---------------------------------------------------------------------------
+
+
+def test_adv_all_escape_syn_payload() -> None:
+    """ADV: Payload where every byte is 0xA9 (ESCAPE) or 0xAA (SYN)."""
+    src = 0xF1
+    dst = 0x15
+    payload = bytes((0xA9, 0xAA, 0xA9, 0xAA))
+    request_without_crc = bytes((src, dst, 0xB5, 0x24, len(payload))) + payload
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x01,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=0.5, src=src)
+        )
+        result = transport.send(dst, payload)
+    assert result == response
+
+
+def test_adv_crc_value_is_escape_byte() -> None:
+    """ADV: Response CRC value itself is 0xA9 (ESCAPE)."""
+    src = 0xF1
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x32,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+    assert response_crc == 0xA9
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=0.5, src=src)
+        )
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+    assert result == response
+
+
+def test_adv_crc_value_is_syn_byte_raises_timeout() -> None:
+    """ADV: Response CRC value 0xAA (SYN) triggers TransportTimeout.
+
+    KNOWN LIMITATION: The _send_proto_once response-read path checks
+    ``if crc_value == _EBUS_SYN: raise TransportTimeout(...)`` which
+    fires even when the CRC is a legitimate data byte 0xAA delivered
+    via an ENH RECEIVED frame.  On a real bus this CRC value is
+    wire-escaped to [0xA9, 0x01] then un-escaped by the adapter --
+    so the ENH layer sees logical 0xAA.  The transport conservatively
+    treats any 0xAA as bus SYN loss, causing a spurious timeout+retry.
+    This test documents the current behaviour.
+    """
+    import pytest
+
+    src = 0xF1
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x31,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+    assert response_crc == 0xAA
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)  # ACK
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)  # 0xAA
+        # Transport will raise TransportTimeout at this point due to
+        # SYN check; handler can just stay alive briefly.
+        import time as _time
+        _time.sleep(1.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host, port=port, timeout_s=0.3, src=src,
+                timeout_max_retries=0, reconnect_max_retries=0,
+            )
+        )
+        # Current behaviour: raises TransportTimeout because the
+        # response-read path treats CRC byte 0xAA as bus SYN.
+        with pytest.raises((TransportTimeout, TransportError)):
+            transport.send_proto(dst, 0x07, 0x04, b"")
+
+
+def test_adv_four_threads_hammering_send_proto() -> None:
+    """ADV: 4 threads call send_proto() simultaneously."""
+    import time as _time
+
+    src = 0xF1
+    completed: list[bool] = []
+    errors: list[str] = []
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        for _ in range(4):
+            try:
+                cmd, data = _read_enh_frame(conn)
+                if cmd != _ENH_REQ_START:
+                    break
+                _write_enh_frame(conn, _ENH_RES_STARTED, data)
+                while True:
+                    cmd2, data2 = _read_enh_frame(conn)
+                    if cmd2 != _ENH_REQ_SEND:
+                        break
+                    _write_bus_symbol(conn, data2)
+                    if data2 == 0xAA:
+                        break
+            except Exception:
+                break
+        _time.sleep(0.5)
+
+    def _send_one(transport: EnhancedTcpTransport, idx: int) -> None:
+        try:
+            transport.send_proto(0xFE, 0x07, 0xFE, b"", expect_response=False)
+            completed.append(True)
+        except Exception as exc:
+            errors.append(f"thread-{idx}: {type(exc).__name__}: {exc}")
+            completed.append(False)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
+        )
+        threads = [
+            threading.Thread(target=_send_one, args=(transport, i))
+            for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+    assert len(completed) == 4
+    assert any(completed), f"No thread succeeded: {errors}"
+
+
+def test_adv_reconnect_storm_disconnect_every_2nd() -> None:
+    """ADV: Server disconnects after every 2nd message."""
+    import pytest
+
+    connect_count = 0
+
+    def _handler(conn: socket.socket) -> None:
+        nonlocal connect_count
+        connect_count += 1
+        try:
+            _read_enh_frame(conn)
+            _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+            _read_enh_frame(conn)
+        except Exception:
+            pass
+        conn.close()
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host, port=port, timeout_s=0.3, src=0xF1,
+                timeout_max_retries=0,
+                reconnect_max_retries=2,
+                reconnect_delay_s=0.05,
+            )
+        )
+        with pytest.raises((TransportError, TransportTimeout)):
+            transport.send_proto(0x15, 0x07, 0x04, b"")
+    assert connect_count <= 4
+
+
+def test_adv_stream_of_0xff_to_enh_parser() -> None:
+    """ADV: Stream of 0xFF bytes fed to the ENH parser."""
+    import pytest
+
+    def _handler(conn: socket.socket) -> None:
+        try:
+            conn.sendall(bytes([0xFF] * 200))
+        except Exception:
+            pass
+        import time as _time
+        _time.sleep(1.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host, port=port, timeout_s=0.5, src=0xF1,
+                timeout_max_retries=0,
+                reconnect_max_retries=0,
+            )
+        )
+        with pytest.raises((TransportError, TransportTimeout)):
+            transport.send_proto(0x15, 0x07, 0x04, b"")
+
+
+def test_adv_send_symbol_escape_byte_explicit() -> None:
+    """ADV: _send_symbol_with_echo with symbol=0xA9 (ESCAPE) explicitly."""
+    src = 0xF1
+    dst = 0x15
+    payload = bytes((0xA9,))
+    request_without_crc = bytes((src, dst, 0xB5, 0x24, len(payload))) + payload
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x42,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+    symbols_sent: list[int] = []
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            cmd, data = _read_enh_frame(conn)
+            assert cmd == _ENH_REQ_SEND
+            assert data == expected
+            symbols_sent.append(data)
+            _write_bus_symbol(conn, data)
+        _write_bus_symbol(conn, 0x00)
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=0.5, src=src)
+        )
+        result = transport.send(dst, payload)
+    assert result == response
+    assert 0xA9 in symbols_sent

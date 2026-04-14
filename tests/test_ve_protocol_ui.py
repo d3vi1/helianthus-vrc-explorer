@@ -135,3 +135,51 @@ class TestVE26R3PlaceholderCollision:
             "__A__ and __B__", {"__A__": "1", "__B__": "2"}
         )
         assert result == "1 and 2"
+
+
+# ---------------------------------------------------------------------------
+# Adversarial tests added by angry-tester audit
+# ---------------------------------------------------------------------------
+
+
+class TestAdvXssInTitle:
+    """ADV: HTML title containing XSS payload and placeholder collision."""
+
+    def test_script_tag_in_title_escaped(self) -> None:
+        """Title with <script>alert(1)</script> must be HTML-escaped."""
+        xss_title = '<script>alert(1)</script>'
+        result = _json_for_html({"title": xss_title})
+        # _json_for_html escapes angle brackets
+        assert "<script>" not in result
+        assert "<" not in result
+        assert ">" not in result
+
+    def test_artifact_json_placeholder_in_title_no_collision(self) -> None:
+        """Title containing __ARTIFACT_JSON__ must not collide with real data."""
+        template = "<title>__TITLE__</title><data>__ARTIFACT_JSON__</data>"
+        result = _substitute_template(
+            template,
+            {
+                "__TITLE__": "__ARTIFACT_JSON__",
+                "__ARTIFACT_JSON__": '{"real":"data"}',
+            },
+        )
+        assert "<title>__ARTIFACT_JSON__</title>" in result
+        assert '<data>{"real":"data"}</data>' in result
+        # The title must NOT get replaced in a second pass
+        assert "__ARTIFACT_JSON__" in result.split("</title>")[0]
+
+    def test_script_in_artifact_json_escaped(self) -> None:
+        """Artifact data containing script tag must be escaped by _json_for_html."""
+        result = _json_for_html({"payload": "<script>alert(1)</script>"})
+        assert "<script>" not in result
+
+    def test_title_with_nested_placeholders(self) -> None:
+        """Title value itself contains __TITLE__ -- must not recurse."""
+        template = "<h1>__TITLE__</h1>"
+        result = _substitute_template(
+            template,
+            {"__TITLE__": "Hello __TITLE__ World"},
+        )
+        # Single-pass substitution: the inner __TITLE__ is literal, not expanded again
+        assert result == "<h1>Hello __TITLE__ World</h1>"

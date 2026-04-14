@@ -231,3 +231,66 @@ class TestVE18R2ErrorSanitisation:
         source = inspect.getsource(register.read_register)
         # Must use the sanitised form, not the raw exc string.
         assert "type(exc).__name__" in source
+
+
+# ---------------------------------------------------------------------------
+# Adversarial tests added by angry-tester audit
+# ---------------------------------------------------------------------------
+
+
+class TestAdvAllNanF32Constraint:
+    """ADV: All three f32 constraint values are NaN."""
+
+    def test_all_nan_f32_produces_all_none(self) -> None:
+        nan_bytes = struct.pack("<f", float("nan"))
+        body = nan_bytes + nan_bytes + nan_bytes
+        response = _make_response(0x0F, body)
+        entry = _parse_constraint_entry(group=GG, register=RR, response=response)
+        assert entry.min_value is None
+        assert entry.max_value is None
+        assert entry.step_value is None
+        assert entry.kind == "f32_range"
+
+    def test_all_inf_f32_produces_all_none(self) -> None:
+        inf_bytes = struct.pack("<f", float("inf"))
+        neg_inf_bytes = struct.pack("<f", float("-inf"))
+        body = neg_inf_bytes + inf_bytes + inf_bytes
+        response = _make_response(0x0F, body)
+        entry = _parse_constraint_entry(group=GG, register=RR, response=response)
+        assert entry.min_value is None
+        assert entry.max_value is None
+        assert entry.step_value is None
+
+
+class TestAdvDateEdgeCases:
+    """ADV: Additional impossible and boundary dates."""
+
+    def test_dec_31_accepted(self) -> None:
+        result = _decode_constraint_date(bytes((31, 12, 26)))  # Dec 31, 2026
+        assert result == "2026-12-31"
+
+    def test_feb_29_2100_rejected(self) -> None:
+        """2100 is NOT a leap year (divisible by 100 but not 400)."""
+        # year byte = 100 -> year 2100
+        with pytest.raises(ValueError, match="Invalid date triplet"):
+            _decode_constraint_date(bytes((29, 2, 100)))
+
+    def test_month_13_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            _decode_constraint_date(bytes((15, 13, 26)))
+
+    def test_jun_31_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid date triplet"):
+            _decode_constraint_date(bytes((31, 6, 26)))
+
+
+class TestAdvB509RangeExact4097:
+    """ADV: B509 range exactly at 4097 (one above cap)."""
+
+    def test_range_4097_rejected(self) -> None:
+        with pytest.raises(ValueError, match="too large"):
+            parse_b509_range("0x0000..0x1000")
+
+    def test_range_4096_plus_offset_rejected(self) -> None:
+        with pytest.raises(ValueError, match="too large"):
+            parse_b509_range("0x0100..0x1100")

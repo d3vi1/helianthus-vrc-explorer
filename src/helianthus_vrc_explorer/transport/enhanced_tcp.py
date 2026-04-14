@@ -671,6 +671,7 @@ class EnhancedTcpTransport(TransportInterface):
                 self._trace(f"INIT_RESP host_error=0x{data:02X}")
                 raise TransportHostError(f"ENH init host error 0x{data:02X}")
         self._trace("INIT_RESP deadline expired (bus data flooding)")
+        raise TransportTimeout("ENH init deadline expired (bus data flooding)")
 
     def _start_arbitration(self, initiator: int) -> None:
         self._trace(f"START initiator=0x{initiator:02X}")

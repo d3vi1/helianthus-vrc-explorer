@@ -749,18 +749,13 @@ def probe_instance_availability(
             and entry_reply_kind.endswith("_valid")
             and entry["value"] is True
         )
-        # VE13: Device explicitly reports as disconnected — skip further probes.
-        if (
-            not present
-            and entry["error"] is None
-            and entry.get("flags_access") != "absent"
-            and entry["value"] is False
-        ):
-            return InstanceAvailabilityProbe(
-                present=False,
-                contract=contract,
-                evidence=header_evidence,
-            )
+        # VE13 analysis: The audit recommended skipping RR=0x0002-0x0004
+        # when BOOL at RR=0x0001 returns False.  However, the secondary
+        # header evidence fallback is intentional: some remote devices
+        # report device_connected=False but still have valid header registers.
+        # Existing tests (test_is_instance_present_group_09_remote_accepts_
+        # secondary_header_evidence) validate this fallback behavior.
+        # VE13 finding is NOT applied — behavior is correct as-is.
         if not present:
             for register_id, type_hint in _REMOTE_HEADER_PROBE_REGISTERS[1:]:
                 header_entry = read_register(
