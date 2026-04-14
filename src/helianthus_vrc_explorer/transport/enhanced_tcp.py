@@ -477,6 +477,18 @@ class EnhancedTcpTransport(TransportInterface):
         self._messages.clear()
         self._enh_pending_first = None
         self._malformed_count = 0
+        # VE12/VE19: Drain stale bytes from kernel TCP buffer.
+        session = self._session
+        if session is not None:
+            with contextlib.suppress(OSError):
+                session.sock.setblocking(False)
+                try:
+                    while session.sock.recv(4096):
+                        pass
+                except BlockingIOError:
+                    pass
+                finally:
+                    session.sock.settimeout(self._config.timeout_s)
 
     def close(self) -> None:
         with self._lock:
@@ -701,8 +713,9 @@ class EnhancedTcpTransport(TransportInterface):
         self._trace("START_RESP deadline expired")
         raise _EnhancedCollision("Arbitration deadline expired (bus data flooding)")
 
-    def _recv_bus_symbol(self) -> int:
-        deadline = time.monotonic() + self._config.timeout_s
+    def _recv_bus_symbol(self, *, deadline: float | None = None) -> int:
+        if deadline is None:
+            deadline = time.monotonic() + self._config.timeout_s
         while time.monotonic() < deadline:
             kind, command, data = self._read_message()
             if kind == "data":
@@ -963,19 +976,22 @@ class EnhancedTcpTransport(TransportInterface):
                 self._trace(f"#{seq} RECV_PROTO initiator_initiator=no_response")
                 return b""
 
+            # VE26-R2: Cumulative deadline for the entire response read.
+            response_deadline = time.monotonic() + self._config.timeout_s
+
             for response_attempt in range(2):
-                length = self._recv_bus_symbol()
+                length = self._recv_bus_symbol(deadline=response_deadline)
                 if length == _EBUS_SYN:
                     raise TransportTimeout("syn received while waiting for response length")
 
                 response = bytearray()
                 for _ in range(length):
-                    value = self._recv_bus_symbol()
+                    value = self._recv_bus_symbol(deadline=response_deadline)
                     if value == _EBUS_SYN:
                         raise TransportTimeout("syn received while waiting for response data")
                     response.append(value)
 
-                crc_value = self._recv_bus_symbol()
+                crc_value = self._recv_bus_symbol(deadline=response_deadline)
                 if crc_value == _EBUS_SYN:
                     raise TransportTimeout("syn received while waiting for response crc")
 

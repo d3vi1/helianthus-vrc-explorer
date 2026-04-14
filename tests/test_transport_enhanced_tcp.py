@@ -612,3 +612,9 @@ def test_ve23_timeout_retries_accumulate_across_reconnect() -> None:
     # Without VE23 fix (timeout reset): would loop indefinitely
     # With VE23 fix: bounded number of connections
     assert connect_count <= 3  # Bounded, not infinite
+
+
+def test_ve8_cli_default_src() -> None:
+    """VE8: CLI default src must match EnhancedTcpConfig default (0xF7)."""
+    config = EnhancedTcpConfig()
+    assert config.src == 0xF7
