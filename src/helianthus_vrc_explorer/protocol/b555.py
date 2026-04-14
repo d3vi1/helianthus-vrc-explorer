@@ -130,12 +130,24 @@ def parse_b555_timer_read_response(payload: bytes) -> B555TimerRead:
     blob = bytes(payload)
     if len(blob) != 7:
         raise ValueError(f"B555 A5 response must be 7 bytes, got {len(blob)}")
+    sh, sm, eh, em = blob[1], blob[2], blob[3], blob[4]
+    # VE17-R2: Validate time components.
+    # Allow 0xFF sentinel ("no timer") and 24:00 ("end of day").
+    for label, h, m in (("start", sh, sm), ("end", eh, em)):
+        if h == 0xFF:
+            continue
+        if h > 24:
+            raise ValueError(f"Invalid {label} hour: {h}")
+        if h == 24 and m != 0:
+            raise ValueError(f"Invalid {label} time: 24:{m:02d} (only 24:00 is valid)")
+        if m != 0xFF and m > 59:
+            raise ValueError(f"Invalid {label} minute: {m}")
     return B555TimerRead(
         status=blob[0],
-        start_hour=blob[1],
-        start_minute=blob[2],
-        end_hour=blob[3],
-        end_minute=blob[4],
+        start_hour=sh,
+        start_minute=sm,
+        end_hour=eh,
+        end_minute=em,
         temperature_raw_u16=int.from_bytes(blob[5:7], byteorder="little", signed=False),
     )
 
