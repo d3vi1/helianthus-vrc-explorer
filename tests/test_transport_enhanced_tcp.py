@@ -69,9 +69,10 @@ def _run_ens_test_server(
                 raise
 
     server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
-    server.daemon_threads = True
+    # VE9: Non-daemon threads so handler exceptions are visible.
+    server.daemon_threads = False
 
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=False)
     thread.start()
     try:
         host, port = server.server_address
@@ -81,7 +82,7 @@ def _run_ens_test_server(
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=1)
+        thread.join(timeout=5)
         if not errors.empty():
             raise errors.get()
 
