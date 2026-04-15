@@ -1,4 +1,5 @@
 """Tests for VE27, VE29, VE30, and C7 scanner subsystem fixes."""
+
 from __future__ import annotations
 
 import struct
@@ -111,21 +112,13 @@ class TestVE30StepZero:
         assert entry.step_value == 5
 
     def test_u16_step_zero_becomes_none(self) -> None:
-        body = (
-            (0).to_bytes(2, "little")
-            + (1000).to_bytes(2, "little")
-            + (0).to_bytes(2, "little")
-        )
+        body = (0).to_bytes(2, "little") + (1000).to_bytes(2, "little") + (0).to_bytes(2, "little")
         response = _make_response(0x09, body)
         entry = _parse_constraint_entry(group=GG, register=RR, response=response)
         assert entry.step_value is None
 
     def test_u16_step_nonzero_preserved(self) -> None:
-        body = (
-            (0).to_bytes(2, "little")
-            + (500).to_bytes(2, "little")
-            + (10).to_bytes(2, "little")
-        )
+        body = (0).to_bytes(2, "little") + (500).to_bytes(2, "little") + (10).to_bytes(2, "little")
         response = _make_response(0x09, body)
         entry = _parse_constraint_entry(group=GG, register=RR, response=response)
         assert entry.step_value == 10

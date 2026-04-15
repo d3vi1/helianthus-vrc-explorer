@@ -15,9 +15,7 @@ from helianthus_vrc_explorer.ui.html_report import (
 # ---------------------------------------------------------------------------
 
 
-def _timer_payload(
-    status: int, sh: int, sm: int, eh: int, em: int, temp: int = 0xFFFF
-) -> bytes:
+def _timer_payload(status: int, sh: int, sm: int, eh: int, em: int, temp: int = 0xFFFF) -> bytes:
     """Build a 7-byte B555 A5 response payload."""
     return bytes((status, sh, sm, eh, em)) + temp.to_bytes(2, "little")
 
@@ -42,33 +40,25 @@ class TestVE17R2TimerValidation:
             parse_b555_timer_read_response(_timer_payload(0x00, 6, 0, 22, 60))
 
     def test_hour_0xff_sentinel_accepted(self) -> None:
-        result = parse_b555_timer_read_response(
-            _timer_payload(0x00, 0xFF, 0xFF, 0xFF, 0xFF)
-        )
+        result = parse_b555_timer_read_response(_timer_payload(0x00, 0xFF, 0xFF, 0xFF, 0xFF))
         assert result.start_hour == 0xFF
         assert result.end_hour == 0xFF
 
     def test_valid_time_accepted(self) -> None:
-        result = parse_b555_timer_read_response(
-            _timer_payload(0x00, 6, 30, 22, 45)
-        )
+        result = parse_b555_timer_read_response(_timer_payload(0x00, 6, 30, 22, 45))
         assert result.start_hour == 6
         assert result.start_minute == 30
         assert result.end_hour == 22
         assert result.end_minute == 45
 
     def test_boundary_23_59_accepted(self) -> None:
-        result = parse_b555_timer_read_response(
-            _timer_payload(0x00, 23, 59, 0, 0)
-        )
+        result = parse_b555_timer_read_response(_timer_payload(0x00, 23, 59, 0, 0))
         assert result.start_hour == 23
         assert result.start_minute == 59
 
     def test_hour_24_minute_0_accepted(self) -> None:
         """24:00 is a valid eBUS encoding for end-of-day."""
-        result = parse_b555_timer_read_response(
-            _timer_payload(0x00, 0, 0, 24, 0)
-        )
+        result = parse_b555_timer_read_response(_timer_payload(0x00, 0, 0, 24, 0))
         assert result.end_hour == 24
         assert result.end_minute == 0
 
@@ -124,15 +114,11 @@ class TestVE26R3PlaceholderCollision:
         assert "<data>real-json-data</data>" in result
 
     def test_unknown_placeholder_preserved(self) -> None:
-        result = _substitute_template(
-            "Hello __UNKNOWN__", {"__TITLE__": "x"}
-        )
+        result = _substitute_template("Hello __UNKNOWN__", {"__TITLE__": "x"})
         assert result == "Hello __UNKNOWN__"
 
     def test_all_placeholders_substituted(self) -> None:
-        result = _substitute_template(
-            "__A__ and __B__", {"__A__": "1", "__B__": "2"}
-        )
+        result = _substitute_template("__A__ and __B__", {"__A__": "1", "__B__": "2"})
         assert result == "1 and 2"
 
 
@@ -146,7 +132,7 @@ class TestAdvXssInTitle:
 
     def test_script_tag_in_title_escaped(self) -> None:
         """Title with <script>alert(1)</script> must be HTML-escaped."""
-        xss_title = '<script>alert(1)</script>'
+        xss_title = "<script>alert(1)</script>"
         result = _json_for_html({"title": xss_title})
         # _json_for_html escapes angle brackets
         assert "<script>" not in result

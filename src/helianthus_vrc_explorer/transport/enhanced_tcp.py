@@ -627,9 +627,7 @@ class EnhancedTcpTransport(TransportInterface):
                 if cnt >= 3:
                     self._malformed_count = 0
                     self.close()
-                    raise TransportError(
-                        f"Malformed ENH start 0x{value:02X} (3 consecutive)"
-                    )
+                    raise TransportError(f"Malformed ENH start 0x{value:02X} (3 consecutive)")
                 return None
             self._enh_pending_first = value
             return None
@@ -642,9 +640,7 @@ class EnhancedTcpTransport(TransportInterface):
             if cnt >= 3:
                 self._malformed_count = 0
                 self.close()
-                raise TransportError(
-                    f"Malformed ENH end 0x{value:02X} (3 consecutive)"
-                )
+                raise TransportError(f"Malformed ENH end 0x{value:02X} (3 consecutive)")
             return None
 
         first = self._enh_pending_first
@@ -889,9 +885,7 @@ class EnhancedTcpTransport(TransportInterface):
                 except (TransportError, TransportTimeout, OSError) as reconn_exc:
                     self._trace(f"#{seq} RECONNECT failed: {reconn_exc}")
                     if reconnect_retries >= self._config.reconnect_max_retries:
-                        raise TransportError(
-                            f"{exc} (reconnect failed: {reconn_exc})"
-                        ) from exc
+                        raise TransportError(f"{exc} (reconnect failed: {reconn_exc})") from exc
                     time.sleep(self._config.reconnect_delay_s)
                     continue
                 continue

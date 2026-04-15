@@ -348,13 +348,8 @@ def test_ve22_concurrent_session_entry() -> None:
             results.append(False)
 
     with _run_ens_test_server(_handler) as (host, port):
-        transport = EnhancedTcpTransport(
-            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0)
-        )
-        threads = [
-            threading.Thread(target=_session_user, args=(transport,))
-            for _ in range(4)
-        ]
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=2.0))
+        threads = [threading.Thread(target=_session_user, args=(transport,)) for _ in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -366,9 +361,7 @@ def test_ve22_concurrent_session_entry() -> None:
 
 def test_ve17_session_depth_never_negative() -> None:
     """VE17: session depth must never go negative even with spurious close calls."""
-    transport = EnhancedTcpTransport(
-        EnhancedTcpConfig(host="127.0.0.1", port=1, timeout_s=0.1)
-    )
+    transport = EnhancedTcpTransport(EnhancedTcpConfig(host="127.0.0.1", port=1, timeout_s=0.1))
     # Depth starts at 0, multiple closes must not drive it negative
     transport._session_depth = 0
     transport.close()
@@ -454,6 +447,7 @@ def test_ve2_host_error_not_retried() -> None:
 def test_ve6_src_escape_rejected() -> None:
     """VE6: src=0xA9 (ESCAPE) must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="reserved address"):
         EnhancedTcpTransport(EnhancedTcpConfig(src=0xA9))
 
@@ -461,6 +455,7 @@ def test_ve6_src_escape_rejected() -> None:
 def test_ve6_src_syn_rejected() -> None:
     """VE6: src=0xAA (SYN) must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="reserved address"):
         EnhancedTcpTransport(EnhancedTcpConfig(src=0xAA))
 
@@ -468,6 +463,7 @@ def test_ve6_src_syn_rejected() -> None:
 def test_ve6_src_zero_rejected() -> None:
     """VE6: src=0x00 must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="reserved address"):
         EnhancedTcpTransport(EnhancedTcpConfig(src=0x00))
 
@@ -475,6 +471,7 @@ def test_ve6_src_zero_rejected() -> None:
 def test_ve6_src_0xff_rejected() -> None:
     """VE6: src=0xFF must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="reserved address"):
         EnhancedTcpTransport(EnhancedTcpConfig(src=0xFF))
 
@@ -482,6 +479,7 @@ def test_ve6_src_0xff_rejected() -> None:
 def test_ve7_dst_escape_rejected() -> None:
     """VE7: dst=0xA9 (ESCAPE) must be rejected."""
     import pytest
+
     transport = EnhancedTcpTransport(EnhancedTcpConfig())
     with pytest.raises(ValueError, match="reserved address"):
         transport.send_proto(0xA9, 0x07, 0x04, b"")
@@ -490,6 +488,7 @@ def test_ve7_dst_escape_rejected() -> None:
 def test_ve7_dst_syn_rejected() -> None:
     """VE7: dst=0xAA (SYN) must be rejected."""
     import pytest
+
     transport = EnhancedTcpTransport(EnhancedTcpConfig())
     with pytest.raises(ValueError, match="reserved address"):
         transport.send_proto(0xAA, 0x07, 0x04, b"")
@@ -498,6 +497,7 @@ def test_ve7_dst_syn_rejected() -> None:
 def test_ve19r2_negative_timeout_rejected() -> None:
     """VE19-R2: timeout_s <= 0 must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="timeout_s"):
         EnhancedTcpTransport(EnhancedTcpConfig(timeout_s=-1.0))
 
@@ -505,6 +505,7 @@ def test_ve19r2_negative_timeout_rejected() -> None:
 def test_ve19r2_zero_timeout_rejected() -> None:
     """VE19-R2: timeout_s=0 must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="timeout_s"):
         EnhancedTcpTransport(EnhancedTcpConfig(timeout_s=0.0))
 
@@ -512,6 +513,7 @@ def test_ve19r2_zero_timeout_rejected() -> None:
 def test_ve19r2_nan_timeout_rejected() -> None:
     """VE19-R2: timeout_s=NaN must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="timeout_s"):
         EnhancedTcpTransport(EnhancedTcpConfig(timeout_s=float("nan")))
 
@@ -519,6 +521,7 @@ def test_ve19r2_nan_timeout_rejected() -> None:
 def test_ve19r2_port_zero_rejected() -> None:
     """VE19-R2: port=0 must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="port"):
         EnhancedTcpTransport(EnhancedTcpConfig(port=0))
 
@@ -526,6 +529,7 @@ def test_ve19r2_port_zero_rejected() -> None:
 def test_ve19r2_port_too_large_rejected() -> None:
     """VE19-R2: port=99999 must be rejected."""
     import pytest
+
     with pytest.raises(ValueError, match="port"):
         EnhancedTcpTransport(EnhancedTcpConfig(port=99999))
 
@@ -602,8 +606,12 @@ def test_ve23_timeout_retries_accumulate_across_reconnect() -> None:
     with _run_ens_test_server(_handler) as (host, port):
         transport = EnhancedTcpTransport(
             EnhancedTcpConfig(
-                host=host, port=port, timeout_s=0.3, src=0xF1,
-                timeout_max_retries=1, reconnect_max_retries=1,
+                host=host,
+                port=port,
+                timeout_s=0.3,
+                src=0xF1,
+                timeout_max_retries=1,
+                reconnect_max_retries=1,
                 reconnect_delay_s=0.1,
             )
         )
@@ -821,10 +829,7 @@ def test_adv_four_threads_hammering_send_proto() -> None:
         transport = EnhancedTcpTransport(
             EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
         )
-        threads = [
-            threading.Thread(target=_send_one, args=(transport, i))
-            for i in range(4)
-        ]
+        threads = [threading.Thread(target=_send_one, args=(transport, i)) for i in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -853,7 +858,10 @@ def test_adv_reconnect_storm_disconnect_every_2nd() -> None:
     with _run_ens_test_server(_handler) as (host, port):
         transport = EnhancedTcpTransport(
             EnhancedTcpConfig(
-                host=host, port=port, timeout_s=0.3, src=0xF1,
+                host=host,
+                port=port,
+                timeout_s=0.3,
+                src=0xF1,
                 timeout_max_retries=0,
                 reconnect_max_retries=2,
                 reconnect_delay_s=0.05,
@@ -872,12 +880,16 @@ def test_adv_stream_of_0xff_to_enh_parser() -> None:
         with contextlib.suppress(Exception):
             conn.sendall(bytes([0xFF] * 200))
         import time as _time
+
         _time.sleep(1.0)
 
     with _run_ens_test_server(_handler) as (host, port):
         transport = EnhancedTcpTransport(
             EnhancedTcpConfig(
-                host=host, port=port, timeout_s=0.5, src=0xF1,
+                host=host,
+                port=port,
+                timeout_s=0.5,
+                src=0xF1,
                 timeout_max_retries=0,
                 reconnect_max_retries=0,
             )
