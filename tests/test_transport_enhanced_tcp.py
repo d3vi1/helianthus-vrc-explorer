@@ -252,7 +252,7 @@ def test_ve21_response_crc_with_escape_bytes() -> None:
     """VE21/VE25: Verify CRC verification works when response contains 0xA9.
 
     The _crc() function correctly applies escape expansion to logical bytes
-    before CRC computation, matching what the bus slave does.
+    before CRC computation, matching what the bus target does.
 
     Note: 0xAA (SYN) cannot appear as a logical data byte in eBUS responses
     because SYN is the bus frame delimiter.  The escape byte 0xA9 CAN appear
