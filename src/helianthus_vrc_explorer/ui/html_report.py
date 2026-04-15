@@ -25,7 +25,7 @@ def _json_for_html(obj: Any) -> str:
     )
 
 
-_PLACEHOLDER_RE = re.compile(r"__[A-Z_]+__")
+_PLACEHOLDER_RE = re.compile(r"__[A-Z0-9_]+__")
 
 
 def _substitute_template(template: str, substitutions: dict[str, str]) -> str:

@@ -618,6 +618,7 @@ class EnhancedTcpTransport(TransportInterface):
     def _parse_enh_byte(self, value: int) -> tuple[str, int, int] | None:
         if self._enh_pending_first is None:
             if value & 0x80 == 0:
+                self._malformed_count = 0  # Valid data byte resets counter
                 return ("data", value, 0)
             if value & 0xC0 == 0x80:
                 self._malformed_count += 1
