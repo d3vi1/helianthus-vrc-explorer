@@ -483,8 +483,10 @@ class EnhancedTcpTransport(TransportInterface):
             with contextlib.suppress(OSError):
                 session.sock.setblocking(False)
                 try:
-                    while session.sock.recv(4096):
-                        pass
+                    # Cap at 64 KB to avoid spinning on a flooded bus.
+                    for _ in range(16):
+                        if not session.sock.recv(4096):
+                            break
                 except BlockingIOError:
                     pass
                 finally:
@@ -641,6 +643,12 @@ class EnhancedTcpTransport(TransportInterface):
                 self._malformed_count = 0
                 self.close()
                 raise TransportError(f"Malformed ENH end 0x{value:02X} (3 consecutive)")
+            # Resync: re-interpret the current byte instead of discarding.
+            if value & 0x80 == 0:
+                self._malformed_count = 0
+                return ("data", value, 0)
+            # Could be a new ENH frame start (0xC0..0xFF range).
+            self._enh_pending_first = value
             return None
 
         first = self._enh_pending_first
@@ -956,7 +964,9 @@ class EnhancedTcpTransport(TransportInterface):
 
         # VE4: Local NACK retry without re-arbitration (per eBUS spec 7.4).
         # After NACK the bus is still owned — retry the telegram directly.
-        for nack_attempt in range(2):  # original + 1 retry
+        # Honors nack_max_retries config (attempts = 1 + nack_max_retries).
+        max_nack_attempts = 1 + self._config.nack_max_retries
+        for nack_attempt in range(max_nack_attempts):
             if nack_attempt > 0:
                 self._trace(f"#{seq} LOCAL_NACK_RETRY attempt={nack_attempt}")
 
@@ -970,7 +980,7 @@ class EnhancedTcpTransport(TransportInterface):
 
             ack = self._recv_bus_symbol()
             if ack == _EBUS_NACK:
-                if nack_attempt == 0:
+                if nack_attempt < max_nack_attempts - 1:
                     continue  # retry without re-arbitration
                 # Local retry exhausted — raise non-retryable TransportNack
                 # so _send_with_policy does NOT re-arbitrate again.
