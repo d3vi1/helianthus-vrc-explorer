@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import socket
 import socketserver
 import threading
@@ -698,20 +699,14 @@ def test_adv_crc_value_is_escape_byte() -> None:
     assert result == response
 
 
-def test_adv_crc_value_is_syn_byte_raises_timeout() -> None:
-    """ADV: Response CRC value 0xAA (SYN) triggers TransportTimeout.
+def test_adv_crc_value_is_syn_byte_succeeds() -> None:
+    """ADV: Response CRC value 0xAA must succeed (not false-timeout).
 
-    KNOWN LIMITATION: The _send_proto_once response-read path checks
-    ``if crc_value == _EBUS_SYN: raise TransportTimeout(...)`` which
-    fires even when the CRC is a legitimate data byte 0xAA delivered
-    via an ENH RECEIVED frame.  On a real bus this CRC value is
-    wire-escaped to [0xA9, 0x01] then un-escaped by the adapter --
-    so the ENH layer sees logical 0xAA.  The transport conservatively
-    treats any 0xAA as bus SYN loss, causing a spurious timeout+retry.
-    This test documents the current behaviour.
+    In the ENH protocol, 0xAA from _recv_bus_symbol() is a legitimate
+    data byte — the adapter decoded wire-escaped [0xA9, 0x01] back to
+    logical 0xAA.  Bus SYN loss is reported via _ENH_RES_FAILED, not
+    as a RECEIVED frame with data=0xAA.
     """
-    import pytest
-
     src = 0xF1
     dst = 0x15
     request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
@@ -719,7 +714,7 @@ def test_adv_crc_value_is_syn_byte_raises_timeout() -> None:
     response = bytes((0x31,))
     response_segment = bytes((len(response),)) + response
     response_crc = _crc(response_segment)
-    assert response_crc == 0xAA
+    assert response_crc == 0xAA  # This CRC is the SYN byte value
 
     def _handler(conn: socket.socket) -> None:
         assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
@@ -732,23 +727,58 @@ def test_adv_crc_value_is_syn_byte_raises_timeout() -> None:
         _write_bus_symbol(conn, 0x00)  # ACK
         for value in response_segment:
             _write_bus_symbol(conn, value)
-        _write_bus_symbol(conn, response_crc)  # 0xAA
-        # Transport will raise TransportTimeout at this point due to
-        # SYN check; handler can just stay alive briefly.
-        import time as _time
-        _time.sleep(1.0)
+        _write_bus_symbol(conn, response_crc)  # 0xAA — valid CRC byte
+
+        # Transport should send ACK + SYN (success, not timeout)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)  # ACK
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)  # SYN
+        _write_bus_symbol(conn, 0xAA)
 
     with _run_ens_test_server(_handler) as (host, port):
         transport = EnhancedTcpTransport(
-            EnhancedTcpConfig(
-                host=host, port=port, timeout_s=0.3, src=src,
-                timeout_max_retries=0, reconnect_max_retries=0,
-            )
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
         )
-        # Current behaviour: raises TransportTimeout because the
-        # response-read path treats CRC byte 0xAA as bus SYN.
-        with pytest.raises((TransportTimeout, TransportError)):
-            transport.send_proto(dst, 0x07, 0x04, b"")
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    assert result == response
+
+
+def test_adv_response_data_containing_0xaa() -> None:
+    """ADV: Response data byte 0xAA must not trigger false SYN timeout."""
+    src = 0xF1
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    # Response contains 0xAA as a data byte
+    response = bytes((0xAA, 0x42, 0xA9))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)  # ACK
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)  # ACK
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)  # SYN
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
+        )
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    assert result == response
 
 
 def test_adv_four_threads_hammering_send_proto() -> None:
@@ -839,10 +869,8 @@ def test_adv_stream_of_0xff_to_enh_parser() -> None:
     import pytest
 
     def _handler(conn: socket.socket) -> None:
-        try:
+        with contextlib.suppress(Exception):
             conn.sendall(bytes([0xFF] * 200))
-        except Exception:
-            pass
         import time as _time
         _time.sleep(1.0)
 

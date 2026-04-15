@@ -1,7 +1,6 @@
 """Tests for VE27, VE29, VE30, and C7 scanner subsystem fixes."""
 from __future__ import annotations
 
-import math
 import struct
 
 import pytest
@@ -10,7 +9,6 @@ from helianthus_vrc_explorer.scanner.b509 import parse_b509_range
 from helianthus_vrc_explorer.scanner.plan import parse_int_set
 from helianthus_vrc_explorer.scanner.register import _sentinel_value_display
 from helianthus_vrc_explorer.scanner.scan import (
-    ConstraintEntry,
     _decode_constraint_date,
     _parse_constraint_entry,
 )

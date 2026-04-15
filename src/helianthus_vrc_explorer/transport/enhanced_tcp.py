@@ -981,9 +981,10 @@ class EnhancedTcpTransport(TransportInterface):
                 # Local retry exhausted — raise non-retryable TransportNack
                 # so _send_with_policy does NOT re-arbitrate again.
                 raise TransportNack("nack received (local retry exhausted)")
-            if ack == _EBUS_SYN:
-                raise TransportTimeout("syn received while waiting for command ack")
             if ack != _EBUS_ACK:
+                # In ENH protocol, 0xAA (SYN) from _recv_bus_symbol is a data
+                # byte, not a bus-idle signal.  Treat any non-ACK/non-NACK as
+                # an unexpected symbol error (not a timeout).
                 raise TransportError(f"unexpected symbol 0x{ack:02X} while waiting for command ack")
 
             if _is_initiator_capable_address(dst):
@@ -995,20 +996,22 @@ class EnhancedTcpTransport(TransportInterface):
             response_deadline = time.monotonic() + self._config.timeout_s
 
             for response_attempt in range(2):
+                # In the ENH protocol, response bytes arrive via _ENH_RES_RECEIVED
+                # frames.  The adapter firmware handles wire-level SYN detection and
+                # reports bus loss via _ENH_RES_FAILED / _ENH_RES_ERROR_*, NOT by
+                # sending a RECEIVED frame with data=0xAA.  Therefore 0xAA from
+                # _recv_bus_symbol() is a legitimate data byte (the adapter decoded
+                # wire-escaped [0xA9, 0x01] back to logical 0xAA).  SYN guards are
+                # not needed here — _recv_bus_symbol() already raises appropriate
+                # exceptions for real bus errors and timeouts.
                 length = self._recv_bus_symbol(deadline=response_deadline)
-                if length == _EBUS_SYN:
-                    raise TransportTimeout("syn received while waiting for response length")
 
                 response = bytearray()
                 for _ in range(length):
                     value = self._recv_bus_symbol(deadline=response_deadline)
-                    if value == _EBUS_SYN:
-                        raise TransportTimeout("syn received while waiting for response data")
                     response.append(value)
 
                 crc_value = self._recv_bus_symbol(deadline=response_deadline)
-                if crc_value == _EBUS_SYN:
-                    raise TransportTimeout("syn received while waiting for response crc")
 
                 segment = bytes((length,)) + bytes(response)
                 if _crc(segment) != crc_value:

@@ -10,7 +10,6 @@ from helianthus_vrc_explorer.ui.html_report import (
     _substitute_template,
 )
 
-
 # ---------------------------------------------------------------------------
 # VE17-R2: B555 timer must reject impossible time values
 # ---------------------------------------------------------------------------
