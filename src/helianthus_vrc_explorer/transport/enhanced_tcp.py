@@ -31,6 +31,7 @@ _ADDRESS_BROADCAST = 0xFE
 _ENH_REQ_INIT = 0x0
 _ENH_REQ_SEND = 0x1
 _ENH_REQ_START = 0x2
+_ENH_REQ_INFO = 0x3  # D4: Query adapter metadata (INFO ID in data byte)
 
 _ENH_RES_RESETTED = 0x0
 _ENH_RES_RECEIVED = 0x1
@@ -39,6 +40,19 @@ _ENH_RES_INFO = 0x3
 _ENH_RES_FAILED = 0xA
 _ENH_RES_ERROR_EBUS = 0xB
 _ENH_RES_ERROR_HOST = 0xC
+
+# D3: Valid ENH response command set — reject undefined at parse level.
+_ENH_VALID_RESPONSE_COMMANDS: frozenset[int] = frozenset(
+    {
+        _ENH_RES_RESETTED,
+        _ENH_RES_RECEIVED,
+        _ENH_RES_STARTED,
+        _ENH_RES_INFO,
+        _ENH_RES_FAILED,
+        _ENH_RES_ERROR_EBUS,
+        _ENH_RES_ERROR_HOST,
+    }
+)
 
 _CRC_TABLE: tuple[int, ...] = (
     0x00,
@@ -657,6 +671,11 @@ class EnhancedTcpTransport(TransportInterface):
         self._malformed_count = 0
         command = (first >> 2) & 0x0F
         data = ((first & 0x03) << 6) | (value & 0x3F)
+        # D3: Reject undefined ENH command nibbles at parse level
+        # (aligns with Go's stricter ErrInvalidPayload validation).
+        if command not in _ENH_VALID_RESPONSE_COMMANDS:
+            self._trace(f"Rejected undefined ENH command 0x{command:02X}")
+            return None
         return ("frame", command, data)
 
     def _init_transport(self, *, features: int) -> None:
@@ -767,13 +786,17 @@ class EnhancedTcpTransport(TransportInterface):
             if command == _ENH_RES_INFO:
                 continue
             if command == _ENH_RES_FAILED:
+                # D2: Explicitly trace FAILED during response read (Go silently
+                # drops these — Python raises, which is stricter and correct).
+                self._trace(f"BUS_READ_FAILED data=0x{data:02X}")
                 raise _EnhancedCollision(f"Bus FAILED during read (data=0x{data:02X})")
             if command == _ENH_RES_ERROR_EBUS:
                 raise TransportError(f"enhanced bus read eBUS error 0x{data:02X}")
             if command == _ENH_RES_ERROR_HOST:
                 raise TransportHostError(f"enhanced bus read host error 0x{data:02X}")
-            # Unknown ENH command — skip silently (VE28: prevents spin on padding).
-            self._trace(f"Unknown ENH command 0x{command:02X} data=0x{data:02X}")
+            # D3: Unreachable after parse-level rejection in _parse_enh_byte.
+            # Kept as defense-in-depth safety net.
+            self._trace(f"Unexpected ENH command 0x{command:02X} data=0x{data:02X}")
             continue
         raise TransportTimeout("Bus symbol read deadline expired")
 
@@ -800,6 +823,40 @@ class EnhancedTcpTransport(TransportInterface):
 
     def _send_end_of_message(self) -> None:
         self._send_symbol_with_echo(_EBUS_SYN)
+
+    def request_info(self, info_id: int) -> int:
+        """Query adapter metadata via ENH INFO request (D4).
+
+        Sends _ENH_REQ_INFO with the given info_id and waits for the
+        corresponding _ENH_RES_INFO response.  Returns the data byte
+        from the response.
+
+        Known INFO IDs:
+          0x00 — firmware version
+          0x01 — jumper/hardware config
+          0x06 — device identification (gated on 0x00)
+          0x07 — build timestamp (gated on 0x00)
+        """
+        _validate_u8("info_id", info_id)
+        self._trace(f"INFO_REQ id=0x{info_id:02X}")
+        self._send_enh_frame(_ENH_REQ_INFO, info_id)
+        deadline = time.monotonic() + self._config.timeout_s
+        while time.monotonic() < deadline:
+            kind, command, data = self._read_message()
+            if kind != "frame":
+                continue
+            if command == _ENH_RES_INFO:
+                self._trace(f"INFO_RESP id=0x{info_id:02X} data=0x{data:02X}")
+                return data
+            if command == _ENH_RES_ERROR_HOST:
+                raise TransportHostError(f"INFO request 0x{info_id:02X} host error 0x{data:02X}")
+            if command == _ENH_RES_ERROR_EBUS:
+                raise TransportError(f"INFO request 0x{info_id:02X} eBUS error 0x{data:02X}")
+            if command == _ENH_RES_RESETTED:
+                self.close()
+                self._open_session()
+                raise TransportTimeout(f"Adapter reset during INFO (features=0x{data:02X})")
+        raise TransportTimeout(f"INFO request 0x{info_id:02X} deadline expired")
 
     def send(self, dst: int, payload: bytes) -> bytes:
         return self.send_proto(dst, 0xB5, 0x24, payload)
@@ -882,12 +939,12 @@ class EnhancedTcpTransport(TransportInterface):
                             ) from exc
                         time.sleep(self._config.reconnect_delay_s)
                         continue
-                    # VE23: Do NOT reset timeout_retries — counter must be
-                    # cumulative across the entire _send_with_policy invocation
-                    # to prevent unbounded retry loops.
-                    # VE33: Reset collision/nack counters — reconnect establishes
-                    # a fresh bus context where old collision/nack state is
-                    # meaningless.
+                    # R6-VE-NEW-02: Reset ALL retry counters on successful
+                    # reconnect — fresh TCP session deserves fresh budget.
+                    # VE23 originally kept timeout cumulative, but R6 feedback
+                    # showed this starves fresh sessions of timeout retries.
+                    # Unbounded loops are prevented by reconnect_max_retries.
+                    timeout_retries = 0
                     collision_retries = 0
                     nack_retries = 0
                     continue
