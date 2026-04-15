@@ -682,9 +682,9 @@ class ConstraintEntry:
 
     tt: int
     kind: str
-    min_value: int | float | str
-    max_value: int | float | str
-    step_value: int | float
+    min_value: int | float | str | None
+    max_value: int | float | str | None
+    step_value: int | float | None
     raw_hex: str
     source: str = "opcode_0x01"
     scope: str = LIVE_PROBE_CONSTRAINT_SCOPE
@@ -697,8 +697,14 @@ def _decode_constraint_date(value: bytes) -> str:
     day = value[0]
     month = value[1]
     year = 2000 + value[2]
-    if not (1 <= month <= 12 and 1 <= day <= 31):
-        raise ValueError(f"Invalid date triplet: {value.hex()}")
+    try:
+        import datetime as _dt_mod
+
+        _dt_mod.date(year, month, day)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid date triplet: {value.hex()} ({year:04d}-{month:02d}-{day:02d})"
+        ) from exc
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
@@ -727,7 +733,7 @@ def _parse_constraint_entry(
             kind="u8_range",
             min_value=min_u8,
             max_value=max_u8,
-            step_value=step_u8,
+            step_value=step_u8 if step_u8 != 0 else None,
             raw_hex=response.hex(),
         )
     if tt == 0x09:
@@ -741,7 +747,7 @@ def _parse_constraint_entry(
             kind="u16_range",
             min_value=min_u16,
             max_value=max_u16,
-            step_value=step_u16,
+            step_value=step_u16 if step_u16 != 0 else None,
             raw_hex=response.hex(),
         )
     if tt == 0x0F:
@@ -753,9 +759,9 @@ def _parse_constraint_entry(
         return ConstraintEntry(
             tt=tt,
             kind="f32_range",
-            min_value=min_f32,
-            max_value=max_f32,
-            step_value=step_f32,
+            min_value=min_f32 if math.isfinite(min_f32) else None,
+            max_value=max_f32 if math.isfinite(max_f32) else None,
+            step_value=step_f32 if math.isfinite(step_f32) else None,
             raw_hex=response.hex(),
         )
     if tt == 0x0C:
@@ -1394,18 +1400,28 @@ def scan_b524(
                 )
                 observer.phase_start("constraint_probe", total=probe_total or 1)
 
-            for group in classified:
-                group_meta = metadata_map[group.group]
-                constraints = _probe_group_constraints(
-                    transport,
-                    dst=dst,
-                    group=group.group,
-                    rr_max=group_meta.rr_max,
-                    observer=observer,
-                    progress_phase="constraint_probe",
-                )
-                if constraints:
-                    constraint_map[group.group] = constraints
+            try:
+                for group in classified:
+                    group_meta = metadata_map[group.group]
+                    constraints = _probe_group_constraints(
+                        transport,
+                        dst=dst,
+                        group=group.group,
+                        rr_max=group_meta.rr_max,
+                        observer=observer,
+                        progress_phase="constraint_probe",
+                    )
+                    if constraints:
+                        constraint_map[group.group] = constraints
+            except KeyboardInterrupt:
+                # VE32: Preserve partial constraint results, then re-raise
+                # so the outer handler sets meta.incomplete=true.
+                if observer is not None:
+                    observer.log(
+                        "Constraint probe interrupted — partial results preserved.",
+                        level="warn",
+                    )
+                raise
             if observer is not None:
                 observer.phase_finish("constraint_probe")
                 if not constraint_map:

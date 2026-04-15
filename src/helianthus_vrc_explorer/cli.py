@@ -382,7 +382,7 @@ def _build_transport(
             EnhancedTcpConfig(
                 host=settings.host,
                 port=settings.port,
-                src=settings.src if settings.src is not None else 0x31,
+                src=settings.src if settings.src is not None else 0xF7,
                 trace_path=trace_file,
             )
         )

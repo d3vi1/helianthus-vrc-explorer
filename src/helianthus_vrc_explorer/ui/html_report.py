@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from html import escape as _escape_html
 from typing import Any
 
@@ -16,7 +17,23 @@ def _json_for_html(obj: Any) -> str:
 
     raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     # Prevent `</script>` breaks and avoid HTML parser surprises.
-    return raw.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+    return (
+        raw.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("'", "\\u0027")
+    )
+
+
+_PLACEHOLDER_RE = re.compile(r"__[A-Z0-9_]+__")
+
+
+def _substitute_template(template: str, substitutions: dict[str, str]) -> str:
+    """Single-pass placeholder substitution (VE26-R3: prevents collision)."""
+    return _PLACEHOLDER_RE.sub(
+        lambda m: substitutions.get(m.group(0), m.group(0)),
+        template,
+    )
 
 
 _TEMPLATE = """<!doctype html>
@@ -2085,10 +2102,14 @@ def render_html_report(artifact: dict[str, Any], *, title: str | None = None) ->
                 )
     page_title = title or "Regulator Scan Browser"
     return (
-        _TEMPLATE.replace("__TITLE__", _escape_html(page_title))
-        .replace("__IDENTITY_CARD__", identity_html)
-        .replace("__ARTIFACT_JSON__", _json_for_html(artifact))
-        .replace("__B524_GROUP_NAMES__", _json_for_html(group_name_map))
-        .rstrip()
+        _substitute_template(
+            _TEMPLATE,
+            {
+                "__TITLE__": _escape_html(page_title),
+                "__IDENTITY_CARD__": identity_html,
+                "__ARTIFACT_JSON__": _json_for_html(artifact),
+                "__B524_GROUP_NAMES__": _json_for_html(group_name_map),
+            },
+        ).rstrip()
         + "\n"
     )
