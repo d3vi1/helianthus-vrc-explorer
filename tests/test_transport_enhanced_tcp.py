@@ -937,3 +937,37 @@ def test_adv_send_symbol_escape_byte_explicit() -> None:
         result = transport.send(dst, payload)
     assert result == response
     assert 0xA9 in symbols_sent
+
+
+def test_ve_new_07_started_mismatch_aborts_early() -> None:
+    """VE-NEW-07 / EG14/EG39: Abort after 3 STARTED with wrong address."""
+    import pytest
+
+    src = 0xF7
+    wrong_addr = 0x10
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        # Reply with wrong address 3 times
+        for _ in range(3):
+            _write_enh_frame(conn, _ENH_RES_STARTED, wrong_addr)
+
+        import time as _time
+
+        _time.sleep(1.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host,
+                port=port,
+                timeout_s=5.0,
+                src=src,
+                collision_max_retries=0,
+            )
+        )
+        with pytest.raises(TransportError, match="mismatch"):
+            transport.send_proto(0x15, 0x07, 0x04, b"")

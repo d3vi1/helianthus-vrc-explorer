@@ -693,6 +693,7 @@ class EnhancedTcpTransport(TransportInterface):
         # Activity deadline resets on each RECEIVED frame, but the
         # absolute cap (10× timeout) is never extended.
         absolute_cap = now + self._config.timeout_s * 10
+        mismatch_count = 0
         while time.monotonic() < min(deadline, absolute_cap):
             kind, command, data = self._read_message()
             if kind != "frame":
@@ -706,6 +707,22 @@ class EnhancedTcpTransport(TransportInterface):
                 self._trace(f"START_RESP started initiator=0x{data:02X}")
                 self._reset_parser()
                 return
+            if command == _ENH_RES_STARTED and data != initiator:
+                # VE-NEW-07 / EG14/EG39: Abort early on repeated
+                # STARTED with wrong address instead of waiting for
+                # the full absolute cap timeout.
+                mismatch_count += 1
+                self._trace(
+                    f"START_RESP mismatch want=0x{initiator:02X} "
+                    f"got=0x{data:02X} (n={mismatch_count})"
+                )
+                if mismatch_count >= 3:
+                    self._reset_parser()
+                    raise _EnhancedCollision(
+                        f"Arbitration mismatch: expected 0x{initiator:02X}, "
+                        f"got 0x{data:02X} ({mismatch_count}× consecutive)"
+                    )
+                continue
             if command == _ENH_RES_FAILED:
                 self._trace(f"START_RESP failed winner=0x{data:02X}")
                 self._reset_parser()
