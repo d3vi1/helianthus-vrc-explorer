@@ -354,6 +354,15 @@ def _strip_echo_header(payload: bytes, response: bytes) -> bytes:
 
     We validate that the response's (GG, RR) match the request and then strip
     the 4-byte response header, returning only the register value bytes.
+
+    NOTE: B524 response does not echo the instance byte (II).
+    Validation is limited to (GG, RR) -- this is a protocol-level
+    limitation, not a software gap.  If the adapter processes
+    requests out of order (which ENH does not -- it's FIFO), a
+    response for the same (GG, RR) but different II could be
+    mis-bound.  The ENH transport's serialized request-response
+    model (one outstanding request at a time) prevents this
+    scenario in practice.
     """
 
     if len(response) < 4:
