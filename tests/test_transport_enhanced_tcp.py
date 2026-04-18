@@ -971,3 +971,106 @@ def test_ve_new_07_started_mismatch_aborts_early() -> None:
         )
         with pytest.raises(TransportError, match="mismatch"):
             transport.send_proto(0x15, 0x07, 0x04, b"")
+
+
+def test_send_symbol_with_echo_suppresses_post_grant_syn() -> None:
+    """XR-SYN-GUARD: Idle SYN bytes between STARTED and first echo are suppressed.
+
+    Same bug family as adaptermux AM-NEW-42, ebusgo postGrantPreEcho,
+    proxy requestBytesSeen==0 guard.
+
+    Race: adapter emits RECEIVED(0xAA) idle SYN between STARTED and
+    our first SEND.  Without suppression, _recv_bus_symbol returns
+    0xAA as the echo, which mismatches the real DST byte and raises
+    _EnhancedCollision.  With suppression, the SYN is silently
+    consumed and the real echo is returned.
+    """
+    src = 0xF1
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x01,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+
+        # Emit 2 idle SYN RECEIVED frames BEFORE the client sends its first byte.
+        _write_bus_symbol(conn, 0xAA)
+        _write_bus_symbol(conn, 0xAA)
+
+        # Client sends first telegram byte (dst).  Should get real echo,
+        # not the suppressed SYN.
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+
+        _write_bus_symbol(conn, 0x00)  # ACK
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host,
+                port=port,
+                timeout_s=2.0,
+                src=src,
+                collision_max_retries=0,
+            )
+        )
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    assert result == response
+
+
+def test_post_grant_syn_guard_clears_on_first_non_syn() -> None:
+    """XR-SYN-GUARD: Flag clears on first non-SYN byte, so SYN after echo
+    is treated as a real bus symbol (not suppressed)."""
+    src = 0xF1
+    dst = 0x15
+    # Response containing 0xAA as a legitimate data byte AFTER the first echo.
+    response = bytes((0xAA, 0x42))
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        # No idle SYN before first send — normal path.
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)  # ACK
+        # Response contains 0xAA as data — must NOT be suppressed because
+        # the flag was cleared on the first echo.
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
+        )
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    # 0xAA in response must be preserved, not suppressed.
+    assert result == response
