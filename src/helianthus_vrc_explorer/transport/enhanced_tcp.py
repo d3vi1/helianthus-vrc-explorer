@@ -470,6 +470,10 @@ class EnhancedTcpTransport(TransportInterface):
         self._messages = deque[tuple[str, int, int]]()
         self._enh_pending_first: int | None = None
         self._malformed_count: int = 0
+        # XR-SYN-GUARD: Suppress idle SYN bytes between arbitration grant and
+        # first real echo.  Same pattern as adaptermux AM-NEW-42, ebusgo
+        # postGrantPreEcho, proxy requestBytesSeen==0 guard.
+        self._post_grant_pre_echo: bool = False
         self._lock = threading.RLock()
 
     def _trace(self, message: str) -> None:
@@ -491,6 +495,9 @@ class EnhancedTcpTransport(TransportInterface):
         self._messages.clear()
         self._enh_pending_first = None
         self._malformed_count = 0
+        # XR-SYN-GUARD: Clear post-grant flag on reset — arbitration was
+        # torn down, so any subsequent echo will come from a fresh grant.
+        self._post_grant_pre_echo = False
         # VE12/VE19: Drain stale bytes from kernel TCP buffer.
         session = self._session
         if session is not None:
@@ -730,6 +737,11 @@ class EnhancedTcpTransport(TransportInterface):
             if command == _ENH_RES_STARTED and data == initiator:
                 self._trace(f"START_RESP started initiator=0x{data:02X}")
                 self._reset_parser()
+                # XR-SYN-GUARD: Arm post-grant SYN suppression.
+                # Idle SYN bytes arriving between STARTED and first send-echo
+                # must be discarded, not returned to the echo check.
+                # Set AFTER _reset_parser (which clears the flag).
+                self._post_grant_pre_echo = True
                 return
             if command == _ENH_RES_STARTED and data != initiator:
                 # VE-NEW-07 / EG14/EG39: Abort early on repeated
@@ -777,8 +789,18 @@ class EnhancedTcpTransport(TransportInterface):
         while time.monotonic() < deadline:
             kind, command, data = self._read_message()
             if kind == "data":
+                # XR-SYN-GUARD: Suppress idle SYN between grant and first echo.
+                if self._post_grant_pre_echo and command == _EBUS_SYN:
+                    self._trace(f"POST_GRANT_SYN suppressed data=0x{command:02X}")
+                    continue
+                self._post_grant_pre_echo = False
                 return command
             if command == _ENH_RES_RECEIVED:
+                # XR-SYN-GUARD: Suppress idle SYN between grant and first echo.
+                if self._post_grant_pre_echo and data == _EBUS_SYN:
+                    self._trace(f"POST_GRANT_SYN suppressed data=0x{data:02X}")
+                    continue
+                self._post_grant_pre_echo = False
                 return data
             if command == _ENH_RES_RESETTED:
                 self.close()
@@ -789,16 +811,21 @@ class EnhancedTcpTransport(TransportInterface):
             if command == _ENH_RES_FAILED:
                 # D2: Explicitly trace FAILED during response read (Go silently
                 # drops these — Python raises, which is stricter and correct).
+                self._post_grant_pre_echo = False
                 self._trace(f"BUS_READ_FAILED data=0x{data:02X}")
                 raise _EnhancedCollision(f"Bus FAILED during read (data=0x{data:02X})")
             if command == _ENH_RES_ERROR_EBUS:
+                self._post_grant_pre_echo = False
                 raise TransportError(f"enhanced bus read eBUS error 0x{data:02X}")
             if command == _ENH_RES_ERROR_HOST:
+                self._post_grant_pre_echo = False
                 raise TransportHostError(f"enhanced bus read host error 0x{data:02X}")
             # D3: Unreachable after parse-level rejection in _parse_enh_byte.
             # Kept as defense-in-depth safety net.
             self._trace(f"Unexpected ENH command 0x{command:02X} data=0x{data:02X}")
             continue
+        # XR-SYN-GUARD: Clear post-grant flag on timeout — no echo arrived.
+        self._post_grant_pre_echo = False
         raise TransportTimeout("Bus symbol read deadline expired")
 
     def _send_symbol_with_echo(self, symbol: int) -> None:
