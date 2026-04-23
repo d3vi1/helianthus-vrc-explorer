@@ -471,7 +471,7 @@ class EnhancedTcpTransport(TransportInterface):
         self._enh_pending_first: int | None = None
         self._malformed_count: int = 0
         # XR-SYN-GUARD: Suppress idle SYN bytes between arbitration grant and
-        # first real echo.  Same pattern as adaptermux AM-NEW-42, ebusgo
+        # first real echo. Same pattern as adaptermux AM-NEW-42, ebusgo
         # postGrantPreEcho, proxy requestBytesSeen==0 guard.
         self._post_grant_pre_echo: bool = False
         self._lock = threading.RLock()
@@ -495,7 +495,7 @@ class EnhancedTcpTransport(TransportInterface):
         self._messages.clear()
         self._enh_pending_first = None
         self._malformed_count = 0
-        # XR-SYN-GUARD: Clear post-grant flag on reset — arbitration was
+        # XR-SYN-GUARD: Clear post-grant flag on reset; arbitration was
         # torn down, so any subsequent echo will come from a fresh grant.
         self._post_grant_pre_echo = False
         # VE12/VE19: Drain stale bytes from kernel TCP buffer.
@@ -740,7 +740,7 @@ class EnhancedTcpTransport(TransportInterface):
                 # XR-SYN-GUARD: Arm post-grant SYN suppression.
                 # Idle SYN bytes arriving between STARTED and first send-echo
                 # must be discarded, not returned to the echo check.
-                # Set AFTER _reset_parser (which clears the flag).
+                # Set after _reset_parser(), which clears the flag.
                 self._post_grant_pre_echo = True
                 return
             if command == _ENH_RES_STARTED and data != initiator:
@@ -820,11 +820,13 @@ class EnhancedTcpTransport(TransportInterface):
             if command == _ENH_RES_ERROR_HOST:
                 self._post_grant_pre_echo = False
                 raise TransportHostError(f"enhanced bus read host error 0x{data:02X}")
-            # D3: Unreachable after parse-level rejection in _parse_enh_byte.
-            # Kept as defense-in-depth safety net.
-            self._trace(f"Unexpected ENH command 0x{command:02X} data=0x{data:02X}")
-            continue
-        # XR-SYN-GUARD: Clear post-grant flag on timeout — no echo arrived.
+            # XR3: Unknown ENH command — explicit protocol error.
+            # Reset parser to prevent stale data from poisoning the next
+            # request on this TCP session.
+            self._post_grant_pre_echo = False
+            self._reset_parser()
+            raise TransportError(f"Unknown ENH response command 0x{command:02X} data=0x{data:02X}")
+        # XR-SYN-GUARD: Clear post-grant flag on timeout; no echo arrived.
         self._post_grant_pre_echo = False
         raise TransportTimeout("Bus symbol read deadline expired")
 
@@ -852,39 +854,116 @@ class EnhancedTcpTransport(TransportInterface):
     def _send_end_of_message(self) -> None:
         self._send_symbol_with_echo(_EBUS_SYN)
 
-    def request_info(self, info_id: int) -> int:
-        """Query adapter metadata via ENH INFO request (D4).
+    def request_info(self, info_id: int) -> bytes:
+        """Query adapter metadata via ENH INFO request.
 
-        Sends _ENH_REQ_INFO with the given info_id and waits for the
-        corresponding _ENH_RES_INFO response.  Returns the data byte
-        from the response.
+        Sends _ENH_REQ_INFO with the given info_id and collects the
+        response.  INFO responses are length-prefixed: the first INFO
+        frame carries the payload length N, followed by N data frames.
+        Returns the assembled payload bytes.
 
         Known INFO IDs:
           0x00 — firmware version
           0x01 — jumper/hardware config
           0x06 — device identification (gated on 0x00)
           0x07 — build timestamp (gated on 0x00)
+
+        XR1: Serialized under _lock to prevent interleaving with
+        send_proto().
+        XR2: Drains only stale INFO frames (preserves pending RESETTED).
         """
         _validate_u8("info_id", info_id)
-        self._trace(f"INFO_REQ id=0x{info_id:02X}")
-        self._send_enh_frame(_ENH_REQ_INFO, info_id)
-        deadline = time.monotonic() + self._config.timeout_s
-        while time.monotonic() < deadline:
-            kind, command, data = self._read_message()
-            if kind != "frame":
-                continue
-            if command == _ENH_RES_INFO:
-                self._trace(f"INFO_RESP id=0x{info_id:02X} data=0x{data:02X}")
-                return data
-            if command == _ENH_RES_ERROR_HOST:
-                raise TransportHostError(f"INFO request 0x{info_id:02X} host error 0x{data:02X}")
-            if command == _ENH_RES_ERROR_EBUS:
-                raise TransportError(f"INFO request 0x{info_id:02X} eBUS error 0x{data:02X}")
-            if command == _ENH_RES_RESETTED:
-                self.close()
-                self._open_session()
-                raise TransportTimeout(f"Adapter reset during INFO (features=0x{data:02X})")
-        raise TransportTimeout(f"INFO request 0x{info_id:02X} deadline expired")
+        with self._lock:
+            # XR2: Selective pre-drain — discard stale INFO from BOTH the
+            # kernel TCP buffer and the message queue, while preserving
+            # RESETTED and other control frames.
+            #
+            # Step 1: Non-blocking socket drain into message queue.
+            session = self._session
+            if session is not None:
+                with contextlib.suppress(OSError):
+                    session.sock.setblocking(False)
+                    try:
+                        for _ in range(16):
+                            chunk = session.sock.recv(4096)
+                            if not chunk:
+                                break
+                            for value in chunk:
+                                message = self._parse_enh_byte(value)
+                                if message is not None:
+                                    self._messages.append(message)
+                    except BlockingIOError:
+                        pass
+                    finally:
+                        session.sock.settimeout(self._config.timeout_s)
+                # Clear parser carry-over from partial ENH frames that may
+                # have been split at the TCP chunk boundary during drain.
+                self._enh_pending_first = None
+            # Step 2: Remove only stale INFO from message queue.
+            preserved = deque[tuple[str, int, int]]()
+            while self._messages:
+                msg = self._messages.popleft()
+                if msg[0] == "frame" and msg[1] == _ENH_RES_INFO:
+                    self._trace(f"INFO_DRAIN stale data=0x{msg[2]:02X}")
+                    continue
+                preserved.append(msg)
+            self._messages = preserved
+
+            # Check for pending RESETTED that was preserved.
+            for msg in self._messages:
+                if msg[0] == "frame" and msg[1] == _ENH_RES_RESETTED:
+                    self._trace(f"INFO pre-drain found RESETTED (features=0x{msg[2]:02X})")
+                    self.close()
+                    self._open_session()
+                    raise TransportTimeout(
+                        f"Adapter reset detected before INFO (features=0x{msg[2]:02X})"
+                    )
+
+            self._trace(f"INFO_REQ id=0x{info_id:02X}")
+            self._send_enh_frame(_ENH_REQ_INFO, info_id)
+            deadline = time.monotonic() + self._config.timeout_s
+
+            # First INFO frame carries the payload length.
+            payload_len: int | None = None
+            payload = bytearray()
+
+            while time.monotonic() < deadline:
+                kind, command, data = self._read_message()
+                if kind != "frame":
+                    continue
+                if command == _ENH_RES_INFO:
+                    if payload_len is None:
+                        payload_len = data
+                        if payload_len == 0:
+                            self._trace(f"INFO_RESP id=0x{info_id:02X} len=0")
+                            return b""
+                    else:
+                        payload.append(data)
+                        if len(payload) >= payload_len:
+                            self._trace(
+                                f"INFO_RESP id=0x{info_id:02X} "
+                                f"len={payload_len} "
+                                f"hex={bytes(payload).hex()}"
+                            )
+                            return bytes(payload)
+                    continue
+                if command == _ENH_RES_ERROR_HOST:
+                    raise TransportHostError(
+                        f"INFO request 0x{info_id:02X} host error 0x{data:02X}"
+                    )
+                if command == _ENH_RES_ERROR_EBUS:
+                    raise TransportError(f"INFO request 0x{info_id:02X} eBUS error 0x{data:02X}")
+                if command == _ENH_RES_RESETTED:
+                    self.close()
+                    self._open_session()
+                    raise TransportTimeout(f"Adapter reset during INFO (features=0x{data:02X})")
+                # Unknown command in INFO path — explicit error, not timeout.
+                self._reset_parser()
+                raise TransportError(
+                    f"INFO request 0x{info_id:02X}: unexpected ENH command "
+                    f"0x{command:02X} data=0x{data:02X}"
+                )
+            raise TransportTimeout(f"INFO request 0x{info_id:02X} deadline expired")
 
     def send(self, dst: int, payload: bytes) -> bytes:
         return self.send_proto(dst, 0xB5, 0x24, payload)
@@ -1002,6 +1081,10 @@ class EnhancedTcpTransport(TransportInterface):
                         raise TransportError(f"{exc} (reconnect failed: {reconn_exc})") from exc
                     time.sleep(self._config.reconnect_delay_s)
                     continue
+                # Reset retry budgets on successful reconnect (same as timeout path).
+                timeout_retries = 0
+                collision_retries = 0
+                nack_retries = 0
                 continue
             except _EnhancedCollision as exc:
                 # Collision is normal on a shared bus.  Per eBUS spec

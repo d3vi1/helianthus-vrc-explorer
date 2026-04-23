@@ -10,10 +10,13 @@ from queue import Queue
 
 from helianthus_vrc_explorer.transport.base import TransportError, TransportNack, TransportTimeout
 from helianthus_vrc_explorer.transport.enhanced_tcp import (
+    _ENH_REQ_INFO,
     _ENH_REQ_INIT,
     _ENH_REQ_SEND,
     _ENH_REQ_START,
+    _ENH_RES_ERROR_EBUS,
     _ENH_RES_ERROR_HOST,
+    _ENH_RES_INFO,
     _ENH_RES_RECEIVED,
     _ENH_RES_RESETTED,
     _ENH_RES_STARTED,
@@ -980,9 +983,9 @@ def test_send_symbol_with_echo_suppresses_post_grant_syn() -> None:
     proxy requestBytesSeen==0 guard.
 
     Race: adapter emits RECEIVED(0xAA) idle SYN between STARTED and
-    our first SEND.  Without suppression, _recv_bus_symbol returns
+    our first SEND. Without suppression, _recv_bus_symbol returns
     0xAA as the echo, which mismatches the real DST byte and raises
-    _EnhancedCollision.  With suppression, the SYN is silently
+    _EnhancedCollision. With suppression, the SYN is silently
     consumed and the real echo is returned.
     """
     src = 0xF1
@@ -1000,11 +1003,11 @@ def test_send_symbol_with_echo_suppresses_post_grant_syn() -> None:
         assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
         _write_enh_frame(conn, _ENH_RES_STARTED, src)
 
-        # Emit 2 idle SYN RECEIVED frames BEFORE the client sends its first byte.
+        # Emit 2 idle SYN RECEIVED frames before the client sends its first byte.
         _write_bus_symbol(conn, 0xAA)
         _write_bus_symbol(conn, 0xAA)
 
-        # Client sends first telegram byte (dst).  Should get real echo,
+        # Client sends first telegram byte (dst). Should get real echo,
         # not the suppressed SYN.
         for expected in request[1:]:
             assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
@@ -1036,10 +1039,9 @@ def test_send_symbol_with_echo_suppresses_post_grant_syn() -> None:
 
 def test_post_grant_syn_guard_clears_on_first_non_syn() -> None:
     """XR-SYN-GUARD: Flag clears on first non-SYN byte, so SYN after echo
-    is treated as a real bus symbol (not suppressed)."""
+    is treated as a real bus symbol, not suppressed."""
     src = 0xF1
     dst = 0x15
-    # Response containing 0xAA as a legitimate data byte AFTER the first echo.
     response = bytes((0xAA, 0x42))
     request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
     request = request_without_crc + bytes((_crc(request_without_crc),))
@@ -1051,13 +1053,12 @@ def test_post_grant_syn_guard_clears_on_first_non_syn() -> None:
         _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
         assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
         _write_enh_frame(conn, _ENH_RES_STARTED, src)
-        # No idle SYN before first send — normal path.
         for expected in request[1:]:
             assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
             _write_bus_symbol(conn, expected)
         _write_bus_symbol(conn, 0x00)  # ACK
-        # Response contains 0xAA as data — must NOT be suppressed because
-        # the flag was cleared on the first echo.
+        # Response contains 0xAA as data; it must not be suppressed after
+        # the flag was cleared by the first echo.
         for value in response_segment:
             _write_bus_symbol(conn, value)
         _write_bus_symbol(conn, response_crc)
@@ -1072,5 +1073,623 @@ def test_post_grant_syn_guard_clears_on_first_non_syn() -> None:
         )
         result = transport.send_proto(dst, 0x07, 0x04, b"")
 
-    # 0xAA in response must be preserved, not suppressed.
     assert result == response
+
+
+def test_xr_enh_parser_reset_after_read_timeout() -> None:
+    """XR_ENH_ParserReset_AfterReadTimeout: Partial frame timeout no contamination."""
+    src = 0xF1
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x01,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    call_count = 0
+
+    def _handler(conn: socket.socket) -> None:
+        nonlocal call_count
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+
+        # First attempt: respond to START, send telegram echoes, ACK,
+        # but only send partial response length byte with no data.
+        # The client will timeout waiting for the remaining data bytes.
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)  # ACK
+        _write_bus_symbol(conn, 0x05)  # length=5 but we send 0 data bytes -> timeout
+        call_count += 1
+        # Don't send more data.  The client times out (0.3s), resets the
+        # parser, and retries with a new START on the same TCP session.
+        # We just fall through to read the retry START immediately.
+
+        # Second attempt (after timeout retry on the same session): full success.
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)  # ACK
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)  # ACK
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)  # SYN
+        _write_bus_symbol(conn, 0xAA)
+        call_count += 1
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host,
+                port=port,
+                timeout_s=0.3,
+                src=src,
+                timeout_max_retries=1,
+            )
+        )
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    assert result == response
+    assert call_count == 2
+
+
+def test_xr_disconnect_reconnect_resets_retry_budget() -> None:
+    """Item 5: Retry budgets must reset after successful reconnect on disconnect."""
+    src = 0xF1
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x01,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    connect_count = 0
+
+    def _handler(conn: socket.socket) -> None:
+        nonlocal connect_count
+        connect_count += 1
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+
+        if connect_count == 1:
+            # First connection: respond to START then disconnect (EOF).
+            assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+            _write_enh_frame(conn, _ENH_RES_STARTED, src)
+            conn.close()
+            return
+
+        if connect_count == 2:
+            # Second connection (after reconnect): timeout once so
+            # timeout_retries goes to 1. If budget was NOT reset, the
+            # next timeout would exhaust it (timeout_max_retries=1).
+            assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+            _write_enh_frame(conn, _ENH_RES_STARTED, src)
+            for expected in request[1:]:
+                assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+                _write_bus_symbol(conn, expected)
+            _write_bus_symbol(conn, 0x00)  # ACK
+            # Send partial response to trigger timeout (length=5, no data)
+            _write_bus_symbol(conn, 0x05)
+            # Don't send more data -- client times out, resets parser,
+            # retries with START on the same connection.
+
+            # After timeout retry (timeout_retries should be 1 now),
+            # succeed on the retry.
+            assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+            _write_enh_frame(conn, _ENH_RES_STARTED, src)
+            for expected in request[1:]:
+                assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+                _write_bus_symbol(conn, expected)
+            _write_bus_symbol(conn, 0x00)  # ACK
+            for value in response_segment:
+                _write_bus_symbol(conn, value)
+            _write_bus_symbol(conn, response_crc)
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)  # ACK
+            _write_bus_symbol(conn, 0x00)
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)  # SYN
+            _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host,
+                port=port,
+                timeout_s=0.3,
+                src=src,
+                timeout_max_retries=1,
+                reconnect_max_retries=1,
+                reconnect_delay_s=0.05,
+            )
+        )
+        # Without the budget reset fix, the timeout on connection 2 would
+        # be the 2nd timeout overall, exhausting timeout_max_retries=1
+        # and then exhausting reconnect_max_retries=1 -> failure.
+        # With the fix, disconnect-reconnect resets timeout_retries to 0,
+        # so the single timeout on connection 2 is fine.
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    assert result == response
+    assert connect_count == 2
+
+
+# ---------------------------------------------------------------------------
+# XR1-XR4: ENS/ENH alignment tests
+# ---------------------------------------------------------------------------
+
+
+def test_xr1_info_serialized_with_send_proto() -> None:
+    """XR1: request_info must be serialized under lock with send_proto.
+
+    Both threads must complete with deterministic results — no parser
+    corruption, no response theft, no silent partial success.
+    """
+    import time as _time
+
+    src = 0xF1
+    info_result: list[bytes | None] = [None]
+    send_result: list[bytes | None] = [None]
+    info_error: list[Exception | None] = [None]
+    send_error: list[Exception | None] = [None]
+
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x01,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+
+        # Serve two requests sequentially (lock ensures ordering).
+        for _ in range(2):
+            try:
+                cmd, data = _read_enh_frame(conn)
+            except Exception:
+                return
+
+            if cmd == _ENH_REQ_INFO:
+                # INFO: length=1, payload=0x42
+                _write_enh_frame(conn, _ENH_RES_INFO, 0x01)  # len=1
+                _write_enh_frame(conn, _ENH_RES_INFO, 0x42)  # data
+            elif cmd == _ENH_REQ_START:
+                _write_enh_frame(conn, _ENH_RES_STARTED, data)
+                for expected in request[1:]:
+                    assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+                    _write_bus_symbol(conn, expected)
+                _write_bus_symbol(conn, 0x00)
+                for value in response_segment:
+                    _write_bus_symbol(conn, value)
+                _write_bus_symbol(conn, response_crc)
+                assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)
+                _write_bus_symbol(conn, 0x00)
+                assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)
+                _write_bus_symbol(conn, 0xAA)
+
+    def _do_info(transport: EnhancedTcpTransport) -> None:
+        try:
+            info_result[0] = transport.request_info(0x00)
+        except Exception as exc:
+            info_error[0] = exc
+
+    def _do_send(transport: EnhancedTcpTransport) -> None:
+        try:
+            send_result[0] = transport.send_proto(dst, 0x07, 0x04, b"")
+        except Exception as exc:
+            send_error[0] = exc
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=3.0, src=src)
+        )
+        t1 = threading.Thread(target=_do_info, args=(transport,))
+        t2 = threading.Thread(target=_do_send, args=(transport,))
+        t1.start()
+        _time.sleep(0.05)
+        t2.start()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+
+    # Both must succeed — lock serializes access.
+    assert info_error[0] is None, f"INFO failed: {info_error[0]}"
+    assert send_error[0] is None, f"send failed: {send_error[0]}"
+    assert info_result[0] == b"\x42", f"INFO result: {info_result[0]}"
+    assert send_result[0] == response, f"send result: {send_result[0]}"
+
+
+def test_xr2_info_stale_response_drained() -> None:
+    """XR2: Stale INFO in kernel TCP buffer must be drained, not accepted.
+
+    The server sends a stale INFO frame immediately after RESETTED (same
+    TCP stream, before the client sends its INFO request).  request_info()
+    calls _reset_parser() which drains the kernel TCP buffer non-blockingly,
+    discarding the stale frame.  Only the fresh response is returned.
+    """
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        # Send RESETTED + stale INFO in one burst — both land in kernel
+        # buffer before the client calls request_info().
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        _write_enh_frame(conn, _ENH_RES_INFO, 0xBB)  # stale
+
+        # Wait for the actual INFO request
+        cmd, data = _read_enh_frame(conn)
+        assert cmd == _ENH_REQ_INFO
+        assert data == 0x00
+        # Send fresh response: length=1, payload=0x42
+        _write_enh_frame(conn, _ENH_RES_INFO, 0x01)  # len
+        _write_enh_frame(conn, _ENH_RES_INFO, 0x42)  # data
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=2.0))
+        with transport.session():
+            # _reset_parser() in request_info drains stale 0xBB from
+            # kernel buffer before sending the new INFO request.
+            result = transport.request_info(0x00)
+
+    # Must get fresh payload b"\x42", not stale 0xBB.
+    assert result == b"\x42"
+
+
+def test_xr2_info_error_host() -> None:
+    """XR2 negative: ERROR_HOST during INFO raises TransportHostError."""
+    import pytest
+
+    from helianthus_vrc_explorer.transport.base import TransportHostError
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_INFO, 0x00)
+        _write_enh_frame(conn, _ENH_RES_ERROR_HOST, 0x01)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=2.0))
+        with transport.session(), pytest.raises(TransportHostError, match="host error"):
+            transport.request_info(0x00)
+
+
+def test_xr2_info_error_ebus() -> None:
+    """XR2 negative: ERROR_EBUS during INFO raises TransportError."""
+    import pytest
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_INFO, 0x00)
+        _write_enh_frame(conn, _ENH_RES_ERROR_EBUS, 0x02)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=2.0))
+        with transport.session(), pytest.raises(TransportError, match="eBUS error"):
+            transport.request_info(0x00)
+
+
+def test_xr2_info_resetted_during_exchange() -> None:
+    """XR2 negative: RESETTED during INFO exchange raises TransportTimeout."""
+    import pytest
+
+    def _handler(conn: socket.socket) -> None:
+        try:
+            cmd, data = _read_enh_frame(conn)
+        except (AssertionError, OSError):
+            return
+        if cmd == _ENH_REQ_INIT:
+            _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+            try:
+                cmd2, _ = _read_enh_frame(conn)
+            except (AssertionError, OSError):
+                return
+            if cmd2 == _ENH_REQ_INFO:
+                # RESETTED instead of INFO response
+                _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        # Client closes this connection and reconnects (new handler).
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=2.0))
+        with transport.session(), pytest.raises(TransportTimeout, match="reset"):
+            transport.request_info(0x00)
+
+
+def test_xr2_info_unknown_command_explicit_error() -> None:
+    """XR2 negative: Unknown ENH command during INFO raises TransportError."""
+    import pytest
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_INFO, 0x00)
+        _write_enh_frame(conn, 0x0D, 0x00)
+        import time as _time
+
+        _time.sleep(1.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=2.0))
+        with transport.session(), pytest.raises(TransportError, match="unexpected ENH"):
+            transport.request_info(0x00)
+
+
+def test_xr2_info_truncated_payload_timeout() -> None:
+    """XR2 negative: INFO with length=3 but only 1 data frame times out."""
+    import pytest
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_INFO, 0x00)
+        _write_enh_frame(conn, _ENH_RES_INFO, 0x03)  # length=3
+        _write_enh_frame(conn, _ENH_RES_INFO, 0x42)  # only 1 of 3
+        import time as _time
+
+        _time.sleep(2.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=0.5))
+        with transport.session(), pytest.raises(TransportTimeout):
+            transport.request_info(0x00)
+
+
+def test_xr3_enh_unknown_command_explicit_error() -> None:
+    """XR3: Unknown ENH command in _recv_bus_symbol must produce TransportError.
+
+    After arbitration succeeds, the server sends an unknown ENH command
+    (0x0D) instead of a valid bus symbol.  This must raise TransportError,
+    not silently continue.
+    """
+    import pytest
+
+    src = 0xF1
+    dst = 0x15
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+
+        # Echo first telegram byte normally
+        cmd, data = _read_enh_frame(conn)
+        assert cmd == _ENH_REQ_SEND
+        _write_bus_symbol(conn, data)
+
+        # Now send an unknown ENH command 0x0D (not in valid set)
+        _write_enh_frame(conn, 0x0D, 0x00)
+
+        import time as _time
+
+        _time.sleep(1.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(
+                host=host,
+                port=port,
+                timeout_s=2.0,
+                src=src,
+                # Disable retries to observe the raw error
+                timeout_max_retries=0,
+                collision_max_retries=0,
+                reconnect_max_retries=0,
+            )
+        )
+        with pytest.raises(TransportError, match="Unknown ENH response command"):
+            transport.send_proto(dst, 0x07, 0x04, b"")
+
+
+def test_xr4_init_resetted_plus_malformed_tail() -> None:
+    """XR4: RESETTED + malformed tail in same TCP chunk must not fail INIT.
+
+    The server sends RESETTED followed by a single malformed byte (0x85)
+    in the same sendall().  VE15 tolerates 1-2 malformed bytes (below the
+    3-consecutive threshold), and _reset_parser() after RESETTED clears
+    the malformed counter and drains the TCP buffer.
+    """
+    src = 0xF1
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        # Send RESETTED + 1 malformed byte in one chunk.
+        resetted_frame = _encode_enh(_ENH_RES_RESETTED, 0x01)
+        malformed_tail = bytes((0x85,))
+        conn.sendall(resetted_frame + malformed_tail)
+
+        # The transport should have survived INIT.  Verify it can
+        # process a subsequent INFO request normally.
+        cmd, data = _read_enh_frame(conn)
+        assert cmd == _ENH_REQ_INFO
+        # INFO: length=1, payload=0x42
+        _write_enh_frame(conn, _ENH_RES_INFO, 0x01)
+        _write_enh_frame(conn, _ENH_RES_INFO, 0x42)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
+        )
+        with transport.session():
+            result = transport.request_info(0x00)
+
+    assert result == b"\x42"
+
+
+def test_xr4_init_resetted_plus_heavy_malformed_tail() -> None:
+    """XR4 defense-in-depth: 3 malformed bytes after RESETTED in same chunk.
+
+    When 3 consecutive malformed bytes appear in the same recv chunk as
+    RESETTED, _parse_enh_byte raises TransportError (with close()) before
+    _read_message returns the RESETTED frame.  This is expected behavior:
+    the malformed threshold fires cleanly, and _open_session's except
+    block handles the re-raise.
+    """
+    import pytest
+
+    src = 0xF1
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        resetted_frame = _encode_enh(_ENH_RES_RESETTED, 0x01)
+        malformed_tail = bytes((0x85, 0x85, 0x85))
+        conn.sendall(resetted_frame + malformed_tail)
+
+        import time as _time
+
+        _time.sleep(1.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
+        )
+        # 3 consecutive malformed bytes after RESETTED in the same recv
+        # chunk causes _parse_enh_byte to raise TransportError before
+        # RESETTED is returned.  Clean error, not a hang or crash.
+        with pytest.raises(TransportError, match="Malformed ENH start"), transport.session():
+            pass
+
+
+# ---------------------------------------------------------------------------
+# XR_ Shared ENS/ENH Conformance Tests (alignment with proxy, adaptermux, ebusgo)
+# ---------------------------------------------------------------------------
+#
+# XR Coverage Manifest — VRC Explorer
+#
+# VRC Explorer only implements the ENH transport (enhanced_tcp.py).
+# It does NOT implement ENS or ebusd-tcp transports.  Therefore:
+#
+#   IMPLEMENTED (ENH-only, no ENS counterpart needed):
+#     XR_INIT_TimeoutFailOpen_Bounded  → test_xr_init_timeout_fail_closed_bounded
+#       (VRC DEVIATION: fail-closed, not fail-open — documented)
+#     XR_ENH_UnknownCommand_ExplicitError → test_xr3_enh_unknown_command_explicit_error
+#     XR_ENH_0xAA_DataNotSYN             → test_xr_enh_0xaa_data_not_syn
+#     XR_START_WriteAll_NoDoubleSend
+#       → test_xr_start_request_start_write_all_no_double_send
+#     XR_ENH_ParserReset_AfterReadTimeout → test_xr_enh_parser_reset_after_read_timeout
+#     XR_INFO_FrameLength_AndSerialAccess → test_xr1_info_serialized_with_send_proto
+#       + test_xr2_info_stale_response_drained
+#       + test_xr2_info_error_host/ebus/resetted/unknown/truncated
+#     XR_INFO_RESETTED_CachePolicy_Explicit → covered by XR2 stale drain + RESETTED preservation
+#
+#   NOT APPLICABLE (VRC has no ENS transport):
+#     XR_START_Cancel_ReleasesOwnership — VRC is synchronous, no cancel path
+#     Any ENS-specific tests — no ENS codec in VRC Explorer
+#
+
+
+def test_xr_init_timeout_fail_closed_bounded() -> None:
+    """XR_INIT_TimeoutFailOpen_Bounded — VRC DEVIATION: fail-closed.
+
+    The canonical XR invariant is fail-open (degraded state with
+    init_confirmed=false).  VRC Explorer deviates: it cannot operate
+    without confirmed INIT because the scanner requires accurate
+    adapter feature flags for escape/protocol selection.  INIT timeout
+    raises TransportTimeout, which _open_session propagates to the
+    caller.  The session is bounded (timeout_s) and deterministic.
+    """
+    import pytest
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        # Never respond — let client timeout
+        import time as _time
+
+        _time.sleep(2.0)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(EnhancedTcpConfig(host=host, port=port, timeout_s=0.3))
+        with pytest.raises(TransportTimeout), transport.session():
+            pass  # session() calls _open_session → _init_transport
+
+
+def test_xr_enh_0xaa_data_not_syn() -> None:
+    """XR_ENH_0xAA_DataNotSYN: 0xAA in response data/CRC must not trigger false timeout."""
+    src = 0xF1
+    dst = 0x15
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    # Response with 0xAA as a data byte
+    response = bytes((0xAA, 0x42))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    def _handler(conn: socket.socket) -> None:
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+        assert _read_enh_frame(conn) == (_ENH_REQ_START, src)
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)  # ACK
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)  # ACK
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)  # SYN
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
+        )
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    assert result == response
+
+
+def test_xr_start_request_start_write_all_no_double_send() -> None:
+    """XR_START_RequestStart_WriteAll_NoDoubleSend: Exactly one START, full write, no duplicate.
+
+    Drive the transaction to a deterministic terminal state (complete
+    send+response) and verify exactly one START frame was sent.
+    """
+    src = 0xF1
+    dst = 0x15
+    start_frames_seen = 0
+    request_without_crc = bytes((src, dst, 0x07, 0x04, 0x00))
+    request = request_without_crc + bytes((_crc(request_without_crc),))
+    response = bytes((0x01,))
+    response_segment = bytes((len(response),)) + response
+    response_crc = _crc(response_segment)
+
+    def _handler(conn: socket.socket) -> None:
+        nonlocal start_frames_seen
+        assert _read_enh_frame(conn) == (_ENH_REQ_INIT, 0x01)
+        _write_enh_frame(conn, _ENH_RES_RESETTED, 0x01)
+
+        cmd, data = _read_enh_frame(conn)
+        assert cmd == _ENH_REQ_START
+        assert data == src
+        start_frames_seen += 1
+        _write_enh_frame(conn, _ENH_RES_STARTED, src)
+
+        # Complete full exchange to terminal state
+        for expected in request[1:]:
+            assert _read_enh_frame(conn) == (_ENH_REQ_SEND, expected)
+            _write_bus_symbol(conn, expected)
+        _write_bus_symbol(conn, 0x00)  # ACK
+        for value in response_segment:
+            _write_bus_symbol(conn, value)
+        _write_bus_symbol(conn, response_crc)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0x00)
+        _write_bus_symbol(conn, 0x00)
+        assert _read_enh_frame(conn) == (_ENH_REQ_SEND, 0xAA)
+        _write_bus_symbol(conn, 0xAA)
+
+    with _run_ens_test_server(_handler) as (host, port):
+        transport = EnhancedTcpTransport(
+            EnhancedTcpConfig(host=host, port=port, timeout_s=2.0, src=src)
+        )
+        result = transport.send_proto(dst, 0x07, 0x04, b"")
+
+    assert result == response
+    assert start_frames_seen == 1  # Exactly one START, no duplicate
