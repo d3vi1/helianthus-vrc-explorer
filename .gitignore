@@ -34,3 +34,6 @@ AGENTS-local.md
 AGENT-local.md
 .env
 b524_scan_*
+
+# Claude Code orchestrator-session artifacts (per-session tool/skills config, not repo-tracked)
+.claude/
